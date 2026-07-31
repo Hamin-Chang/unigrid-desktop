@@ -1,0 +1,32 @@
+# ── §4.2 폴더 규칙: 실코드가 아닌 것은 저장소에 안 올린다 ──
+# ⚠️ 주석은 반드시 줄 맨 앞에. 패턴 뒤에 붙이면 git 이 주석으로 안 보고
+#    패턴의 일부로 읽어서 아무것도 안 걸러진다.
+# 임시 스크립트·습작
+scratch/
+# 화면 캡처
+shots/
+# 엔진 .ctf 옛 판 (크고, 이력은 여기서 관리하지 않는다)
+_backup/
+
+# ── 파이썬 ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── 빌드 산출물 (크다) ──
+# 컴파일 엔진은 engine/ 의 .ctf 와 __init__.py 만 올린다.
+# MATLAB 이 만드는 설치본·재배포 묶음은 올리지 않는다.
+*/for_redistribution/
+*/for_redistribution_files_only/
+*.app/
+build/
+dist/
+
+# ── 실행 결과 ──
+output/
+results/
+
+# ── 맥 · iCloud ──
+.DS_Store
+*.icloud
