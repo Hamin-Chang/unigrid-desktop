@@ -33,13 +33,12 @@ CASES = REPO / "cases"
 BASELINE = HERE / "baseline"
 
 # ── 계산 쪽 코드를 어디서 가져오나 ────────────────────────────────
-# ⚠️ 1단계(이식) 전이라 아직 뼈대 폴더를 본다. 이식이 끝나면 REPO/"src" 로 바꾼다.
-#    그때 이 파일에서 고칠 곳은 이 두 줄뿐이다.
-SKELETON = (REPO.parent / "Phase A_Balance/newest/v14/UNIGRID_desktop")
+# ✅ 1단계(이식) 완료 — 이제 이 저장소의 `src/` 를 본다(뼈대가 아니라).
+SRC = REPO / "src"
 PUBLIC = (REPO.parent.parent
           / "03_전기연자문_2026_3/04_python_conversion/02_GitHub_unigrid/acdc_powerflow")
 
-for p in (SKELETON, PUBLIC):
+for p in (SRC, PUBLIC):
     if p.is_dir() and str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
@@ -51,7 +50,7 @@ def _imports():
         from load_case import load_case  # type: ignore
     except Exception as exc:
         print("계산 쪽 코드를 불러오지 못했습니다.")
-        print(f"  뼈대 폴더 : {SKELETON}  ({'있음' if SKELETON.is_dir() else '없음'})")
+        print(f"  앱 코드   : {SRC}  ({'있음' if SRC.is_dir() else '없음'})")
         print(f"  공개 패키지: {PUBLIC}  ({'있음' if PUBLIC.is_dir() else '없음'})")
         print(f"  원인      : {exc}")
         sys.exit(2)

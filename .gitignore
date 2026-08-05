@@ -15,7 +15,7 @@ __pycache__/
 venv/
 
 # ── 빌드 산출물 (크다) ──
-# 컴파일 엔진은 engine/ 의 .ctf 와 __init__.py 만 올린다.
+# 컴파일 엔진은 engine/<패키지이름>/ 의 .ctf 와 __init__.py 만 올린다.
 # MATLAB 이 만드는 설치본·재배포 묶음은 올리지 않는다.
 */for_redistribution/
 */for_redistribution_files_only/
@@ -26,6 +26,11 @@ dist/
 # ── 실행 결과 ──
 output/
 results/
+
+# ── 앱이 쓰면서 만드는 것 (사람마다 달라지는 상태 · 코드가 아니다) ──
+# 최근 연 파일 목록 / 계통도에서 끌어 옮긴 자리
+.recent.json
+.topology_places.json
 
 # ── 맥 · iCloud ──
 .DS_Store
