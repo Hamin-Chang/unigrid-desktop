@@ -20,11 +20,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 SRC = REPO / "src"
-PUBLIC = (REPO.parent.parent
-          / "03_전기연자문_2026_3/04_python_conversion/02_GitHub_unigrid/acdc_powerflow")
-for p in (SRC, PUBLIC):
-    if p.is_dir() and str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+if SRC.is_dir() and str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 import convert_case                      # noqa: E402
 import read_v2                           # noqa: E402

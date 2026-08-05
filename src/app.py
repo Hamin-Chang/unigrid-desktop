@@ -32,14 +32,12 @@ import engine_path
 import charts
 import exporter
 
-# 케이스 읽기(load_case)는 공개 repo 쪽 모듈을 그대로 쓴다.
-# 자리는 app_engine 이 이름으로 훑어 찾는다 (칸 수를 숫자로 박지 않는다).
-_REPO = ENGINE.public_package_dir()
-if _REPO is not None and str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
+# 케이스 읽기는 **이 저장소 안**에 있다 (2026-08-05 들여옴).
+# 예전에는 옆 폴더의 공개 파이썬 패키지를 빌려 썼는데, 그 폴더는 이 맥에만 있어
+# 남의 컴퓨터에서는 앱이 떠도 파일을 하나도 못 열었다 — 공개 배포가 안 되는 구조였다.
 try:
     from load_case import load_case
-except Exception:                      # 경로가 바뀌었을 때도 앱은 뜨게
+except Exception:                      # 그래도 앱은 뜨게 (무엇이 없는지는 불러올 때 알린다)
     load_case = None
 
 # 읽기 전에 위험한 형태를 거른다 (2026-08-03). 공개 패키지는 안 건드리고 여기서만 막는다.

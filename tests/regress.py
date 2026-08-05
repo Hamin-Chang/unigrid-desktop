@@ -34,13 +34,10 @@ BASELINE = HERE / "baseline"
 
 # ── 계산 쪽 코드를 어디서 가져오나 ────────────────────────────────
 # ✅ 1단계(이식) 완료 — 이제 이 저장소의 `src/` 를 본다(뼈대가 아니라).
-SRC = REPO / "src"
-PUBLIC = (REPO.parent.parent
-          / "03_전기연자문_2026_3/04_python_conversion/02_GitHub_unigrid/acdc_powerflow")
+SRC = REPO / "src"          # 케이스 읽기까지 전부 여기 있다 (2026-08-05 들여옴)
 
-for p in (SRC, PUBLIC):
-    if p.is_dir() and str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+if SRC.is_dir() and str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 
 def _imports():
@@ -51,7 +48,6 @@ def _imports():
     except Exception as exc:
         print("계산 쪽 코드를 불러오지 못했습니다.")
         print(f"  앱 코드   : {SRC}  ({'있음' if SRC.is_dir() else '없음'})")
-        print(f"  공개 패키지: {PUBLIC}  ({'있음' if PUBLIC.is_dir() else '없음'})")
         print(f"  원인      : {exc}")
         sys.exit(2)
     return app_engine, load_case

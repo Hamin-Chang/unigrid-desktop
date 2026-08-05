@@ -134,22 +134,6 @@ class Solution:
 _solve_count = 0
 
 
-def public_package_dir() -> Path | None:
-    """케이스를 읽는 `load_case` 가 사는 공개 파이썬 패키지 자리.
-
-    ⚠️ **위로 몇 칸인지를 숫자로 박지 않는다.** 뼈대는 `parents[5]` 로 박아 두었는데
-    폴더를 한 칸만 옮겨도 조용히 어긋나고(그러면 `load_case = None` 이 되어 앱은 뜨지만
-    파일을 못 연다) 그 사실이 화면에 안 나타난다. 이름으로 훑어 올라간다.
-    """
-    rel = Path("03_전기연자문_2026_3/04_python_conversion"
-               "/02_GitHub_unigrid/acdc_powerflow")
-    for base in _HERE.parents:
-        cand = base / rel
-        if cand.is_dir():
-            return cand
-    return None
-
-
 def solved_before() -> bool:
     """이 엔진으로 이미 한 번이라도 풀어 봤나.
 
@@ -477,7 +461,7 @@ def shutdown() -> None:
 
 if __name__ == "__main__":
     # 자체 확인:  python src/app_engine.py <케이스파일>
-    sys.path.insert(0, str(public_package_dir()))
+    sys.path.insert(0, str(_HERE))
     from load_case import load_case  # type: ignore
 
     path = sys.argv[1] if len(sys.argv) > 1 else "ACDC_CIGRE_MVACMVDCLVDC_24h.xlsx"
