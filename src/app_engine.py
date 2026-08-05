@@ -274,7 +274,7 @@ class _Worker:
 
     def __init__(self, mwpython: str | Path | None):
         # 자리를 못 찾으면 engine_path 가 EngineNotFound(안내문을 들고 있음)를 던진다.
-        # 부르는 쪽(prototype)이 그것을 받아 안내 대화상자로 띄운다.
+        # 부르는 쪽(app.py)이 그것을 받아 안내 대화상자로 띄운다.
         self.exe = str(mwpython or engine_path.find_mwpython())
         self.proc = subprocess.Popen(
             [self.exe, str(_HERE / "app_worker.py"), "--serve"],

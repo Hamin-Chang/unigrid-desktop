@@ -247,7 +247,7 @@ def save_compare_figures(c, sol, axis, targets, items, folder: Path,
 def save_figures(c, sol, mode, folder: Path, wanted, t=0, bus_row=0,
                  on_step=None) -> list[Path]:
     """고른 탭을 PNG·PDF 로 각각 한 장씩."""
-    from prototype import GRAPHS       # 늦게 부른다 — 서로 부르는 꼴을 피하려고
+    from app import GRAPHS             # 늦게 부른다 — 서로 부르는 꼴을 피하려고
     spec = {n: (pl, la) for n, pl, la in GRAPHS.get(mode, [])}
     folder.mkdir(parents=True, exist_ok=True)
     out = []

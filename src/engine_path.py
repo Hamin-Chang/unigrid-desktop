@@ -148,14 +148,18 @@ def release_warning(path: Path) -> str | None:
 
 # ─────────────────────────────────────────────── 안내
 def guidance(steps: list[Step]) -> str:
-    """못 찾았을 때 보여 줄 글. **어디를 봤는지까지** 말한다."""
+    """못 찾았을 때 보여 줄 글. **어디를 봤는지까지** 말한다.
+
+    ⚠️ 이 글은 **화면 대화상자에 그대로 뜬다** — 여기에는 `**굵게**` 같은 글 표시를 넣지 않는다.
+    별표가 그대로 보인다(2026-08-05에 실제로 보고 걷어냈다).
+    """
     looked = "\n".join(
         f"    {s.order}. {s.where}: " + (str(s.path) if s.path else (s.note or "없음"))
         for s in steps if s.order > 0 and s.order < 5)
     return (
         "계산 엔진을 실행할 MATLAB Runtime 을 찾지 못했습니다.\n\n"
         "  UNIGRID 의 계산은 MATLAB 에서 컴파일한 엔진이 합니다.\n"
-        f"  그 엔진을 돌리려면 **MATLAB Runtime {REQUIRED_RELEASE}** 가 필요합니다(무료).\n\n"
+        f"  그 엔진을 돌리려면 MATLAB Runtime {REQUIRED_RELEASE} 가 필요합니다(무료).\n\n"
         f"  받는 곳: {RUNTIME_URL}\n\n"
         "  찾아본 자리:\n" + looked + "\n\n"
         "  이미 깔려 있다면 [직접 고르기] 로 mwpython 자리를 알려 주세요.\n"

@@ -77,7 +77,7 @@ engine/unigrid_app_mac/unigrid_app_mac.ctf
 앱 실행:
 
 ```
-~/venvs/unigrid-acdc/bin/python src/prototype.py
+~/venvs/unigrid-acdc/bin/python src/app.py
 ```
 
 | 단계 | 무엇 |

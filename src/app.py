@@ -1,8 +1,14 @@
-"""UNIGRID 데스크톱 — 클릭해볼 수 있는 시제품 (기능 없음, 화면만 진짜).
+"""UNIGRID 데스크톱 — 앱 본체 (창·탭·표·그래프·계통도).
 
-계산은 하지 않는다. 값은 전부 가짜. 화면 전환·탭·창 열기만 실제로 동작한다.
-실행:  .venv/bin/python prototype.py
+계산은 컴파일된 MATLAB 엔진이 한다(`app_engine` → `app_worker` → `engine/`).
+케이스를 열기 전까지는 화면 모양을 보이려고 **가짜 값**을 그리고,
+케이스를 열면 그 자리에 실제 결과가 들어온다.
+
+실행:  ~/venvs/unigrid-acdc/bin/python src/app.py
+
+⚠️ 아직 안 만든 것은 화면에서 그렇게 말한다 — 엑셀로 만들기(§7 3단계).
 """
+import os
 import sys
 import time
 import math
@@ -456,11 +462,12 @@ class ConvertDialog(QDialog):
 
     def _pick(self, name):
         d = QDialog(self)
-        d.setWindowTitle("시제품")
+        d.setWindowTitle("아직 만들지 않았습니다")
         d.setStyleSheet(self.styleSheet())
         v = QVBoxLayout(d)
         v.setContentsMargins(22, 20, 22, 20)
-        lb = QLabel(f"여기서 '{name}' 파일 선택 창이 열립니다.\n(시제품이라 실제 변환은 하지 않습니다)")
+        lb = QLabel(f"여기서 '{name}' 파일 선택 창이 열립니다.\n"
+                    "(이 기능은 아직 만들지 않았습니다 — PDR §7 3단계)")
         v.addWidget(lb)
         ok = QPushButton("확인")
         ok.clicked.connect(d.accept)
@@ -753,7 +760,7 @@ class Proto(QMainWindow):
         self.compare_targets = "3, 7, 12"
         self.picked = {"전압 크기"}
         self.case = ("ACDC_CIGRE_MVACMVDCLVDC.xlsx", "AC/DC 혼합 · AC 14 / DC 11")
-        self.sol = None               # 실제 계산 결과 (없으면 시제품 가짜값)
+        self.sol = None               # 실제 계산 결과 (없으면 화면 모양용 가짜값)
         self.t = 0                    # 보고 있는 시간대 (0부터)
         self.bus_row = 0              # 다이나믹에서 고른 버스 (행 번호)
         self.case_has_vsc = True      # AC-only 케이스면 False
@@ -762,7 +769,7 @@ class Proto(QMainWindow):
         self.graph_tab = 0            # 보고 있던 그래프 탭 (재생성 때 되돌리려고)
         self.visible = {k: {n for n, d in v if d} for k, v in TABLE_SPECS.items()}
         self.split_sizes = None
-        self.setWindowTitle("UNIGRID  (시제품 — 계산은 하지 않습니다)")
+        self.setWindowTitle("UNIGRID")
         self.resize(1440, 950)
         self.build()
 
@@ -1318,7 +1325,7 @@ class Proto(QMainWindow):
         bh.addWidget(self.warm_dot)
         bh.addWidget(self.warm_txt)
         bh.addStretch()
-        ver = QLabel("시제품 — 그래프는 아직 그리지 않습니다")
+        ver = QLabel("UNIGRID Desktop — 개발 중")
         ver.setStyleSheet(f"color:{c['muted']};font-size:12px;")
         bh.addWidget(ver)
         outer.addWidget(bar)
@@ -2126,10 +2133,53 @@ class Proto(QMainWindow):
         QMessageBox.critical(self, "계산 실패", msg[:1500])
 
     def _engine_missing(self, msg):
-        """계산 엔진을 못 찾았을 때 — 어디를 찾아봤는지까지 담긴 안내를 그대로 띄운다."""
+        """계산 엔진을 못 찾았을 때 — 어디를 찾아봤는지까지 담긴 안내를 띄운다.
+
+        안내문이 "[직접 고르기] 로 알려 주세요" 라고 말하므로 **그 버튼이 실제로 있어야 한다.**
+        고른 자리는 `engine_path.remember()` 가 기억하므로 다음부터는 묻지 않는다.
+        """
         if getattr(self, "prog", None) is not None:
             self.prog.close()
-        QMessageBox.warning(self, "계산 엔진을 찾지 못했습니다", msg[:2000])
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("계산 엔진을 찾지 못했습니다")
+        box.setText(msg[:2000])
+        pick = box.addButton("직접 고르기…", QMessageBox.ActionRole)
+        box.addButton("닫기", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is pick:
+            self._pick_engine()
+
+    def _pick_engine(self):
+        """mwpython 자리를 직접 고른다. 쓸 수 있는 자리면 기억하고 다시 계산한다."""
+        start = "/Applications"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "mwpython 자리 고르기 (보통 <설치자리>/bin/mwpython)", start)
+        if not path:
+            return
+        p = Path(path)
+        if p.name != "mwpython":
+            QMessageBox.warning(
+                self, "다시 골라 주세요",
+                f"고른 파일 이름이 'mwpython' 이 아닙니다: {p.name}\n"
+                "보통 <MATLAB 또는 Runtime 설치자리>/bin/mwpython 입니다.")
+            return
+        if not os.access(p, os.X_OK):
+            QMessageBox.warning(self, "다시 골라 주세요",
+                                f"이 파일은 실행할 수 없습니다:\n{p}")
+            return
+
+        engine_path.remember(p)
+        warn = engine_path.release_warning(p)
+        QMessageBox.information(
+            self, "자리를 기억했습니다",
+            f"{p}\n\n다음부터는 묻지 않습니다."
+            + (f"\n\n{warn}" if warn else ""))
+        # 방금 고른 자리로 다시 풀어 본다 (일꾼은 옛 자리로 떠 있을 수 있으니 정리하고)
+        last = getattr(self, "_last_path", None)
+        if last:
+            ENGINE.shutdown()
+            self._start_solve(last)
 
     def do_export(self):
         ExportDialog(self, self.c, self.mode, self.numbers, self.picked).exec()

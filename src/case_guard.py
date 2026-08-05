@@ -72,7 +72,7 @@ def load_case_checked(load_case, path: str | Path):
     """`check_case_file` 을 거친 뒤 원래 `load_case` 로 읽는다.
 
     `load_case` 를 인자로 받는 이유: 이 파일이 공개 패키지 경로를 몰라도 되게 하려고.
-    부르는 쪽(prototype.py)이 이미 그것을 들고 있다.
+    부르는 쪽(app.py)이 이미 그것을 들고 있다.
     """
     check_case_file(path)
     return load_case(path)
