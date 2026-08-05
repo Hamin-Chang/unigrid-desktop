@@ -6,7 +6,7 @@
     엔진에 넘어가는 표를 v1 경로와 v2 경로 양쪽에서 만들어 **자리마다 견준다.**
     같으면 서식만 바뀌고 계통은 그대로라는 뜻이다.
 
-    python tests/test_format_v2.py            # cases/ 전부
+    python tests/test_format_v2.py            # tests/cases_v1/ 전부
     python tests/test_format_v2.py --only 71  # 이름에 그 글자가 든 것만
 """
 
@@ -107,8 +107,10 @@ def main() -> int:
     ap.add_argument("--only", metavar="글자")
     args = ap.parse_args()
 
-    files = sorted((REPO / "cases").glob("*.xlsx"))
-    files = [f for f in files if not f.stem.endswith("_v2")]
+    # ⚠️ `cases/` 는 2026-08-05 에 **v2 로 갈아탔다.** 이 시험은 "v1 을 바꿔도 같은가"를
+    #    보는 것이라 v1 원본이 있어야 뜻이 선다 ⇒ 시험용 v1 몇 개를 여기 남겨 두었다.
+    #    고르는 기준: 열 폭이 서로 다른 것들(11열·13열)과 혼합 계통.
+    files = sorted((HERE / "cases_v1").glob("*.xlsx"))
     if args.only:
         files = [f for f in files if args.only.lower() in f.name.lower()]
 

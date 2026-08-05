@@ -82,18 +82,26 @@ def convert_sheet(sheet: F.Sheet, ws) -> tuple[list[str], list[list]]:
     if not src:
         # 값이 없는 시트(머리글만)는 모양을 몰라도 잘못 읽을 것이 없다.
         # 계통에 그 설비가 없을 때 흔하다 — 여기서 막으면 파일 전체가 막힌다.
-        return [c.header for c in sheet.cols], []
+        keep = [c for c in sheet.cols if c.v1_col is None or c.v1_col <= max(width, 1)]
+        return [c.header for c in (keep or sheet.cols)], []
 
     if sheet.v1_widths and width not in sheet.v1_widths:
         raise Refused(
             f"'{sheet.source_name}' 의 열 수가 {width} 인데 아는 모양은 "
             f"{list(sheet.v1_widths)} 입니다. 서식 세대가 다를 수 있어 바꾸지 않았습니다.")
 
-    head = [c.header for c in sheet.cols]
+    # 🚨 **옛 파일에 없던 선택 열은 만들지 않는다.**
+    #    엔진은 `size(표, 2) >= N` 으로 기능이 있나를 가린다 — 빈 칸이라도 자리를 만들면
+    #    없던 기능이 생긴 것으로 읽힌다(`AConly_case118` 에서 발전기 한계 표가 없다가 생겼다).
+    #    반대로 자리를 없애면 있던 기능이 사라진다 — 엔진의 가름이 **짝으로** 걸려 있어서다
+    #    (13 이상이면 Qmax·Qmin 둘 다 · 15 이상이면 Pmax·Pmin · 16 이상이면 S_N).
+    cols = [c for c in sheet.cols if c.v1_col is None or c.v1_col <= width]
+
+    head = [c.header for c in cols]
     rows = []
     for r in src:
         line = []
-        for c in sheet.cols:
+        for c in cols:
             if c.v1_col is None or c.v1_col > len(r):
                 line.append(c.default)             # 신설이거나 옛 파일에 없던 열
                 continue

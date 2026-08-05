@@ -108,7 +108,14 @@ def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
             out.append([bus] + vals)
         return np.asarray(out, dtype=float)
 
-    width = max((c.v1_col or 0) for c in sheet.cols)
+    # 🚨 표의 **폭**을 파일에 실제로 있는 머리글로 정한다.
+    #    엔진은 `size(표, 2) >= N` 으로 기능이 있나를 가리므로 폭이 곧 뜻이다 —
+    #    한 칸만 넓거나 좁아도 없던 한계가 생기거나 있던 한계가 사라진다.
+    #    (`ACDC_71bus_L2_qmax08`: 빈 `Qmin` 열까지 잘라 12열로 만들었더니
+    #     엔진이 13열 미만이라 보고 **Qmax 를 통째로 무시**해 답이 1.7% 달라졌다.)
+    present = [c.v1_col for c in sheet.cols
+               if c.v1_col is not None and _find(head, c) is not None]
+    width = max(present) if present else max((c.v1_col or 0) for c in sheet.cols)
 
     if not body:
         # 🚨 값이 없는 시트를 빈 배열로 주면 안 된다. 컴파일된 전처리기 일부가
@@ -139,6 +146,7 @@ def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
         raise MissingColumn(
             f"'{sheet.name}' 시트에서 못 찾은 열: {', '.join(missing)}\n"
             f"  있는 머리글: {', '.join(h for h in head if h)}")
+
     return out
 
 
