@@ -1,0 +1,180 @@
+"""read_v2.py — 새 서식(v2) 엑셀을 읽어 **엔진이 아는 자리**로 되돌린다.
+
+핵심 생각
+    계산 엔진은 지금처럼 **열 위치**로 받는다. 그래서 v2 는 사람이 보는 서식일 뿐이고,
+    여기서 머리글을 보고 값을 찾아 `format_v2` 에 적힌 `v1_col` 자리에 놓아 준다.
+    ⇒ MATLAB 을 안 고쳐도 되고(재컴파일 0), 화면·엔진 어느 쪽도 서식 변화를 모른다.
+
+읽는 방법이 v1 과 정반대다
+    v1 : 머리글을 안 보고 **위치**로 읽는다 (그래서 열이 밀리면 조용히 틀렸다)
+    v2 : **머리글로 찾는다** — 열 순서가 바뀌어도, 선택 열이 빠져 있어도 제대로 읽힌다.
+         못 찾으면 **어느 열이 없는지 말한다**(PDR 위험 R5 가 여기서 사라진다).
+
+    python src/read_v2.py <v2파일>          # 표 모양을 찍어 본다
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+import numpy as np
+from openpyxl import load_workbook
+
+import format_v2 as F
+
+# 내부 키 ← v2 시트 이름 (엔진에 넘기는 차례는 app_worker.TABLE_ORDER 와 같다)
+TABLE_OF_SHEET = {
+    "Base": "Base_dat",
+    "AC Bus Data": "AC_Bus_dat",
+    "AC Line Data": "AC_Line_dat",
+    "AC Gen Data": "AC_gen_dat",
+    "AC 3w Transformer Data": "AC_3wtrans_dat",
+    "DC Bus Data": "DC_Bus_dat",
+    "DC Line Data": "DC_Line_dat",
+    "DC Gen Data": "DC_gen_dat",
+    "ACDC IC Data": "IC_dat",
+    "MVDC LVDC Converter Data": "DCDC_Conv_dat",
+    "AC P Consume Data": "AC_PLoad_dat",
+    "AC Q Consume Data": "AC_QLoad_dat",
+    "DC P Consume Data": "DC_PLoad_dat",
+}
+
+
+class MissingColumn(ValueError):
+    """머리글을 못 찾았다 — 무엇이 없는지 말해 준다."""
+
+
+def is_v2(path: str | Path) -> bool:
+    """v2 파일인가. `읽어보기` 시트와 `Base` 시트로 가린다."""
+    wb = load_workbook(path, read_only=True)
+    try:
+        names = set(wb.sheetnames)
+    finally:
+        wb.close()
+    return "Base" in names or "읽어보기" in names
+
+
+# ─────────────────────────────────────────────── 머리글 맞추기
+def _key(text: str) -> str:
+    """머리글을 견주기 좋게 다듬는다 — 단위·공백·대소문자를 무시한다."""
+    t = re.sub(r"\[.*?\]", " ", str(text or ""))      # [MW] 같은 단위는 뗀다
+    t = re.sub(r"\s+", " ", t).strip().lower()
+    return t
+
+
+def _find(headers: list[str], col: F.Col) -> int | None:
+    """그 열이 몇 번째에 있나 (0부터). 없으면 None."""
+    want = _key(col.name)
+    keys = [_key(h) for h in headers]
+    if want in keys:
+        return keys.index(want)
+    return None
+
+
+# ─────────────────────────────────────────────── 읽기
+def _sheet_rows(ws) -> tuple[list[str], list[list]]:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+    head = [("" if c is None else str(c)) for c in rows[0]]
+    body = [list(r) for r in rows[1:]
+            if any(v is not None and v != "" for v in r)]
+    return head, body
+
+
+def _num(v) -> float:
+    if v is None or v == "" or v == "-":
+        return np.nan
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
+    """v2 시트 하나 → 엔진이 아는 자리에 놓인 배열."""
+    head, body = _sheet_rows(ws)
+
+    if sheet.time_series:
+        # 부하 시트: 첫 열이 버스, 그다음이 시각. MW → W 로 되돌린다.
+        if not body:
+            return np.full((1, max(len(head), 1)), np.nan)
+        out = []
+        for r in body:
+            bus = _num(r[0])
+            vals = [_num(x) * F.MW_TO_W for x in r[1:]]
+            out.append([bus] + vals)
+        return np.asarray(out, dtype=float)
+
+    width = max((c.v1_col or 0) for c in sheet.cols)
+
+    if not body:
+        # 🚨 값이 없는 시트를 빈 배열로 주면 안 된다. 컴파일된 전처리기 일부가
+        #    `any(isnan(...))` 로 "데이터 없음"을 가리므로 **1줄짜리 NaN 행**이어야 한다
+        #    (`load_case._read_numeric_sheet` 가 같은 이유로 그렇게 만든다).
+        return np.full((1, width), np.nan)
+    out = np.full((len(body), width), np.nan)
+    missing = []
+    for col in sheet.cols:
+        if col.v1_col is None:
+            continue                                  # v2 에서만 있는 열(예: DC/DC Status)
+        at = _find(head, col)
+        if at is None:
+            if col.required and col.default is None:
+                missing.append(col.header)
+            elif col.default is not None:
+                out[:, col.v1_col - 1] = col.default
+            continue
+        vals = np.array([_num(r[at]) if at < len(r) else np.nan for r in body])
+        if col.scale != F.KEEP:
+            # v2 → 엔진 단위로 되돌린다.
+            # ⚠️ `/ 1e-6` 이 아니라 `* 1e6` 으로 한다 — 1e-6 은 이진수로 딱 안 떨어져
+            #    나누면 오차가 더 붙는다(1e6 은 딱 떨어진다).
+            vals = vals * (1.0 / col.scale)
+        out[:, col.v1_col - 1] = vals
+
+    if missing:
+        raise MissingColumn(
+            f"'{sheet.name}' 시트에서 못 찾은 열: {', '.join(missing)}\n"
+            f"  있는 머리글: {', '.join(h for h in head if h)}")
+    return out
+
+
+def read_tables(path: str | Path) -> dict[str, np.ndarray]:
+    """v2 파일 → 엔진에 넘길 표 묶음 (`load_case(...).tables` 와 같은 모양)."""
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        tables: dict[str, np.ndarray] = {}
+        for sheet in F.SHEETS:
+            key = TABLE_OF_SHEET.get(sheet.name)
+            if key is None:
+                continue                              # Mode 는 따로 읽는다
+            if sheet.name not in wb.sheetnames:
+                tables[key] = np.zeros((0, 0))
+                continue
+            tables[key] = read_sheet(sheet, wb[sheet.name])
+        return tables
+    finally:
+        wb.close()
+
+
+def read_mode(path: str | Path) -> float:
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb["Mode"]
+        for r in ws.iter_rows(min_row=2, values_only=True):
+            v = _num(r[0])
+            if not np.isnan(v):
+                return float(v)
+    finally:
+        wb.close()
+    return 0.0
+
+
+if __name__ == "__main__":
+    p = Path(sys.argv[1])
+    print(f"{p.name}  (v2 = {is_v2(p)})  Mode = {read_mode(p)}")
+    for k, v in read_tables(p).items():
+        print(f"  {k:<16} {v.shape}")
