@@ -88,13 +88,44 @@ class ACDCCase:
         )
 
 
+def _looks_v2(sheet_names: set[str]) -> bool:
+    """새 서식(v2) 파일인가.
+
+    가리는 표시는 **시트 이름**이다 — v2 는 `Sbase,frequency` 를 `Base` 로 바꾸고
+    `읽어보기` 시트를 둔다. 열 머리글이 아니라 시트로 가리는 이유:
+    파일을 열자마자, 표를 하나도 읽기 전에 알 수 있어야 하기 때문이다.
+
+    🚨 두 서식은 **값의 단위가 다르다**(v1 은 W, v2 는 MW). 잘못 가리면
+    백만 배 어긋난 계통이 조용히 만들어진다 — 그래서 헷갈릴 수 없는 표시를 쓴다.
+    """
+    return "Base" in sheet_names or "읽어보기" in sheet_names
+
+
+def _load_v2(path: Path, sheet_names: set[str]) -> ACDCCase:
+    """새 서식 파일을 읽는다. 값은 **엔진이 아는 자리·단위**로 되돌아온다."""
+    import read_v2                                     # 늦게 부른다 (서로 부르는 꼴 방지)
+
+    tables: dict[str, pd.DataFrame] = {}
+    for key, arr in read_v2.read_tables(path).items():
+        frame = pd.DataFrame(arr)
+        if key in LOAD_SHEETS and not frame.empty:
+            frame = _name_load_columns(frame)
+        tables[key] = frame
+    for key in TABLE_ORDER:                            # 빠진 것이 없게
+        tables.setdefault(key, pd.DataFrame())
+    return ACDCCase(case_name=path.name, mode=read_v2.read_mode(path), tables=tables)
+
+
 def load_acdc_case(excel_path: str | Path) -> ACDCCase:
     path = Path(excel_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Excel 파일을 찾을 수 없습니다: {path}")
 
-    mode = _read_mode(path)
     available = set(pd.ExcelFile(path).sheet_names)
+    if _looks_v2(available):
+        return _load_v2(path, available)
+
+    mode = _read_mode(path)
 
     tables: dict[str, pd.DataFrame] = {}
     for key in TABLE_ORDER:

@@ -88,6 +88,17 @@ def check(path: Path, out_dir: Path) -> list[str]:
     for k in KEYS:
         a = np.asarray(getattr(v1.get(k), "values", v1.get(k)), dtype=float)
         bad += compare(k, a, v2.get(k, np.zeros((0, 0))))
+
+    # 같은 진입점(`load_case`)이 새 서식도 알아보고 같은 값을 주는지.
+    # 여기가 깨지면 앱이 v2 파일을 열지 못한다.
+    through = load_case(str(out))
+    if float(through.mode) != float(load_case(str(path)).mode):
+        bad.append(f"Mode 가 다름 {load_case(str(path)).mode} → {through.mode}")
+    for k in KEYS:
+        a = np.asarray(getattr(v1.get(k), "values", v1.get(k)), dtype=float)
+        b = np.asarray(getattr(through.tables.get(k), "values",
+                               through.tables.get(k)), dtype=float)
+        bad += [f"(load_case 경유) {m}" for m in compare(k, a, b)]
     return bad
 
 
