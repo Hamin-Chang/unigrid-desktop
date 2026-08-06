@@ -96,6 +96,15 @@ for s in win.book.items:
     print(f"   {s.name:<28} {s.summary:<8} 전압최저 {s.vmin():.4f}")
 shot("1_시나리오_넷")
 
+# 비교 모드 · 시나리오끼리 — 겹쳐 그리기
+win.show_scenario(win.book.base())
+win.mode = "비교"
+win.compare_axis = "시나리오끼리"
+win.rebuild()
+shot("3_시나리오끼리_겹쳐그리기")
+win.mode = "스냅샷"
+win.rebuild()
+
 # 원본으로 되돌아가기 — 다시 계산하지 않는다
 t0 = time.perf_counter()
 win.show_scenario(win.book.base())

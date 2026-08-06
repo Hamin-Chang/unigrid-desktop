@@ -1011,6 +1011,127 @@ def is_chart(w) -> bool:
     return isinstance(w, QChartView)
 
 
+def _cmp_by_scenario(c, pairs, item, t):
+    """시나리오끼리 — x축이 **버스**고 시나리오마다 선 하나 (PDR §7 2단계).
+
+    pairs = [(이름, Solution), ...] · t = 볼 시각 (0부터)
+
+    왜 x축이 버스인가: 선로를 끊었을 때 보고 싶은 것은 **전압 곡선이 어떻게 주저앉나**다.
+    한 버스만 시간축으로 보면 그 그림이 안 나온다.
+    상·하한 점선은 깐다 — 모든 선이 같은 버스들을 보므로 한계가 뜻을 갖는다.
+    """
+    ch = _new_chart(c, f"{item} 비교   ·   x축 = 버스   ·   {t + 1}H")
+    names, lo_all, hi_all, ys = [], None, None, []
+    skipped = []
+    for k, (label, sol) in enumerate(pairs):
+        if sol is None:
+            skipped.append(label)
+            continue
+        if item == "전압 크기":
+            nm, vals, vmin, vmax, _ = _bus_table(sol, t)
+        else:
+            ac = sol.at("AC", t)
+            if not ac.size:
+                skipped.append(label)
+                continue
+            cols = sol.cols("AC")
+            nm = [f"{int(r[0])}" for r in ac]
+            vals = np.asarray(ac[:, cols.index("Angle[deg]")], dtype=float)
+            vmin = vmax = None
+        if not len(nm):
+            skipped.append(label)
+            continue
+        # 🚨 버스 수가 다르면 겹쳐 그릴 수 없다. 조건을 바꿔도 버스는 그대로지만,
+        #    다른 케이스를 섞으면 어긋난다 — 조용히 어긋난 그림을 그리느니 뺀다.
+        if names and len(nm) != len(names):
+            skipped.append(f"{label}(버스 수 다름)")
+            continue
+        names = nm
+        x = np.arange(1, len(nm) + 1)
+        color = CYCLE[k % len(CYCLE)]
+        ch.addSeries(_line(zip(x, vals), color, 1.8, name=label))
+        d = _dots(list(zip(x, vals)), color, label, size=7.0)
+        ch.addSeries(d)
+        _hide_from_legend(ch, d)
+        ys.append(np.asarray(vals, dtype=float))
+        if vmin is not None:
+            lo_all, hi_all = np.asarray(vmin), np.asarray(vmax)
+    if not ys:
+        return _note(c, "그릴 시나리오가 없습니다 — 목록에서 하나 이상 체크하세요")
+
+    x = np.arange(1, len(names) + 1)
+    if lo_all is not None:
+        top = _line(zip(x, hi_all), LIMIT_GRAY, 1.0, dashed=True, name="한계")
+        bot = _line(zip(x, lo_all), LIMIT_GRAY, 1.0, dashed=True)
+        ch.addSeries(top); ch.addSeries(bot)
+        _hide_from_legend(ch, bot)
+    xa = _bus_axis(c, names)
+    ya = _style_axis(QValueAxis(), c)
+    ya.setLabelFormat("%.3f" if item == "전압 크기" else "%.2f")
+    ya.setTickCount(6)
+    lo = min(float(np.min(y)) for y in ys)
+    hi = max(float(np.max(y)) for y in ys)
+    if lo_all is not None:
+        lo, hi = min(lo, float(lo_all.min())), max(hi, float(hi_all.max()))
+    pad = max(1e-4, (hi - lo) * 0.12)
+    ya.setRange(lo - pad, hi + pad)
+    if skipped:
+        ch.setTitle(ch.title() + f"   (뺀 것: {', '.join(skipped)})")
+    return _finish(ch, c, xa, ya)
+
+
+def _cmp_scen_scalar(c, pairs, item):
+    """주파수·손실을 시나리오끼리 — 이 둘은 계통에 하나뿐이라 x축이 **시간**이다."""
+    ch = _new_chart(c, f"{item} 비교   ·   x축 = 시간")
+    ys = []
+    for k, (label, sol) in enumerate(pairs):
+        if sol is None:
+            continue
+        if item == "주파수":
+            y = np.asarray(sol.freq, dtype=float).ravel()
+        else:
+            arr = np.asarray(sol.loss, dtype=float)
+            y = np.nansum(arr[:, :3], axis=1) if arr.size else np.array([])
+        if y.size == 0:
+            continue
+        x = np.arange(1, y.size + 1)
+        color = CYCLE[k % len(CYCLE)]
+        ch.addSeries(_line(zip(x, y), color, 1.8, name=label))
+        d = _dots(list(zip(x, y)), color, label, size=7.0)
+        ch.addSeries(d)
+        _hide_from_legend(ch, d)
+        ys.append(y)
+    if not ys:
+        return _note(c, "그릴 시나리오가 없습니다 — 목록에서 하나 이상 체크하세요")
+    n = max(y.size for y in ys)
+    xa = _style_axis(QValueAxis(), c)
+    xa.setLabelFormat("%d")
+    xa.setRange(1, max(2, n))
+    xa.setTickCount(min(12, max(2, n)))
+    ya = _style_axis(QValueAxis(), c)
+    ya.setTickCount(6)
+    lo = min(float(np.min(y)) for y in ys)
+    hi = max(float(np.max(y)) for y in ys)
+    pad = max(1e-9, (hi - lo) * 0.15) if hi > lo else max(1e-9, abs(hi) * 0.05)
+    ya.setRange(lo - pad, hi + pad)
+    return _finish(ch, c, xa, ya)
+
+
+def compare_scenarios(c, pairs, item, t):
+    """시나리오끼리 비교 그래프 하나. 못 그리면 이유를 적은 상자를 돌려준다."""
+    if not pairs:
+        return _note(c, "겹쳐 볼 시나리오를 목록에서 체크하세요")
+    try:
+        if item in ("주파수", "손실"):
+            return _cmp_scen_scalar(c, pairs, item)
+        if item == "위상각" and int(getattr(pairs[0][1], "mode", 0)) == 2:
+            return _note(c, "DC only 계통이라 위상각이 없습니다")
+        return _cmp_by_scenario(c, pairs, item, t)
+    except Exception as exc:
+        print(f"[시나리오 비교] {item} 실패: {exc}")
+        return _note(c, f"{item} 을 그리지 못했습니다 ({type(exc).__name__})")
+
+
 def compare_chart(c, sol, item, axis, targets):
     """비교 모드 그래프 하나. 못 그리면 이유를 적은 상자를 돌려준다.
 

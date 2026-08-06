@@ -808,6 +808,7 @@ class Proto(QMainWindow):
         self.numbers = False
         self.mode = "스냅샷"
         self.compare_axis = "버스끼리"
+        self.overlay = set()          # 겹쳐 볼 시나리오 (Book 안 자리 번호) — 비면 전부
         self.compare_targets = "3, 7, 12"
         self.picked = {"전압 크기"}
         self.case = ("ACDC_CIGRE_MVACMVDCLVDC.xlsx", "AC/DC 혼합 · AC 14 / DC 11")
@@ -1058,16 +1059,36 @@ class Proto(QMainWindow):
             seg2.setStyleSheet(
                 f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
                 f"border-radius:8px; }}")
-            s2 = QHBoxLayout(seg2)
+            s2 = QVBoxLayout(seg2)          # 세 개는 한 줄에 안 들어간다 — 두 줄로
             s2.setContentsMargins(3, 3, 3, 3)
             s2.setSpacing(3)
+            top2 = QHBoxLayout()
+            top2.setSpacing(3)
             for a in ["버스끼리", "시간끼리"]:
                 b = QPushButton(a)
                 b.setObjectName("seg_on" if self.compare_axis == a else "seg_off")
                 b.clicked.connect(lambda _, x=a: self.set_axis(x))
-                s2.addWidget(b)
+                top2.addWidget(b)
+            s2.addLayout(top2)
+            b3 = QPushButton("시나리오끼리")
+            b3.setObjectName(
+                "seg_on" if self.compare_axis == "시나리오끼리" else "seg_off")
+            b3.clicked.connect(lambda: self.set_axis("시나리오끼리"))
+            s2.addWidget(b3)
             v.addWidget(seg2)
             v.addSpacing(8)
+
+            if self.compare_axis == "시나리오끼리":
+                lb3 = QLabel("겹쳐 볼 시나리오")
+                lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+                v.addWidget(lb3)
+                n3 = QLabel("위의 시나리오 목록에서 체크한 것을 겹쳐 그립니다.\n"
+                            "전압·위상각은 x축이 버스, 주파수·손실은 x축이 시간입니다.")
+                n3.setWordWrap(True)
+                n3.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+                v.addWidget(n3)
+                v.addStretch(1)
+                return sb
 
             lb2 = QLabel("비교할 " + ("버스" if self.compare_axis == "버스끼리" else "시간"))
             lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
@@ -1118,6 +1139,10 @@ class Proto(QMainWindow):
         v.setSpacing(11)
 
         if self.mode == "비교":
+            # 겹쳐 보기 체크칸이 이 목록에 있다 — 비교 모드에서 오히려 더 필요하다
+            sb = self.scenario_bar()
+            if sb is not None:
+                v.addWidget(sb)
             v.addWidget(self.compare_area(), 1)
             return w
 
@@ -1808,6 +1833,91 @@ class Proto(QMainWindow):
         self._start_solve(getattr(self, "_last_path", self.base_case.case_name),
                           case=SC.apply(self.base_case, self._pending))
 
+    def overlay_pairs(self):
+        """겹쳐 그릴 (이름, 결과) 목록. 체크한 것 중 **풀린 것만**."""
+        out = []
+        for i, s in enumerate(self.book.items):
+            if self.overlay and i not in self.overlay:
+                continue
+            if s.solved:
+                out.append((s.name, s.solution))
+        return out
+
+    def toggle_overlay(self, i, on):
+        if not self.overlay:                       # 비어 있으면 '전부' 라는 뜻
+            self.overlay = set(range(len(self.book.items)))
+        self.overlay = (self.overlay | {i}) if on else (self.overlay - {i})
+        self.rebuild()
+
+    def compare_scenarios_area(self, picked):
+        """시나리오끼리 비교 — 목록에서 체크한 것을 한 그래프에 겹쳐 그린다."""
+        c = self.c
+        tabs = QTabWidget()
+        pairs = self.overlay_pairs()
+        if len(self.book.items) < 2:
+            page = QWidget(); pv = QVBoxLayout(page)
+            lb = QLabel("아직 담아 둔 시나리오가 없습니다.\n"
+                        "계통 데이터 탭에서 조건을 바꾸고 [이 조건으로 계산] 을 누르면 쌓입니다.")
+            lb.setAlignment(Qt.AlignCenter)
+            lb.setStyleSheet(f"color:{c['muted']};font-size:15px;")
+            pv.addWidget(lb)
+            tabs.addTab(page, "결과")
+            return tabs
+        for name in picked:
+            page = QWidget()
+            pv = QVBoxLayout(page)
+            pv.setContentsMargins(10, 10, 10, 10)
+            pv.setSpacing(9)
+            pv.addWidget(charts.compare_scenarios(c, pairs, name, self.t), 2)
+            tb = self.scenario_table(name, pairs)
+            if tb is not None:
+                pv.addWidget(tb, 1)
+            tabs.addTab(page, name)
+        return tabs
+
+    def scenario_table(self, item, pairs):
+        """겹쳐 그린 시나리오의 요약 표 — 최저·최고·원본 대비."""
+        if item in ("주파수", "손실") or not pairs:
+            return None
+        col = {"전압 크기": "VM[pu]", "위상각": "Angle[deg]"}.get(item)
+        if col is None:
+            return None
+        rows = []
+        base_lo = None
+        for name, sol in pairs:
+            vals = []
+            for kind in ("AC", "DC"):
+                arr = sol.at(kind, self.t)
+                cols = sol.cols(kind)
+                if arr.size and col in cols:
+                    vals.append(np.asarray(arr[:, cols.index(col)], dtype=float))
+            if not vals:
+                continue
+            y = np.concatenate(vals)
+            lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+            if base_lo is None:
+                base_lo = lo
+            rows.append((name, lo, hi, lo - base_lo))
+        if not rows:
+            return None
+        heads = ["시나리오", "최저", "최고", "첫 줄 대비"]
+        tb = QTableWidget(len(rows), len(heads))
+        tb.setHorizontalHeaderLabels(heads)
+        tb.verticalHeader().setVisible(False)
+        tb.verticalHeader().setDefaultSectionSize(28)
+        tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tb.setAlternatingRowColors(True)
+        for r, (name, lo, hi, d) in enumerate(rows):
+            for cc, txt in enumerate([name, f"{lo:.4f}", f"{hi:.4f}",
+                                      "—" if r == 0 else f"{d:+.4f}"]):
+                it = QTableWidgetItem(txt)
+                if cc:
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if cc == 3 and r and d < -1e-6:
+                    it.setForeground(QColor(self.c["warn"]))
+                tb.setItem(r, cc, it)
+        return tb
+
     def scenario_bar(self):
         """담아 둔 시나리오 목록. 원본뿐이면 안 만든다(줄 하나짜리 목록은 군더더기다).
 
@@ -1837,7 +1947,7 @@ class Proto(QMainWindow):
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(3)
         for j, (name, w) in enumerate(
-                [("", 16), ("이름", 0), ("바꾼 것", 52), ("결과", 66),
+                [("겹쳐", 46), ("이름", 0), ("바꾼 것", 52), ("결과", 66),
                  ("전압 최저", 82), ("원본 대비", 74), ("", 210)]):
             if name:
                 q = QLabel(name)
@@ -1857,9 +1967,19 @@ class Proto(QMainWindow):
         c = self.c
         here = list(s.changes) == list(self.applied)     # 지금 화면이 이것인가
 
+        left0 = QHBoxLayout()
+        left0.setSpacing(4)
         dot = QLabel("●" if here else "○")
         dot.setStyleSheet(f"color:{c['accent'] if here else c['border']};font-size:12px;")
-        g.addWidget(dot, i, 0)
+        left0.addWidget(dot)
+        if s.solved:
+            cb = QCheckBox()
+            cb.setChecked((i - 1) in self.overlay if self.overlay else True)
+            cb.setToolTip("비교 모드에서 겹쳐 그릴지")
+            cb.toggled.connect(lambda on, k=i - 1: self.toggle_overlay(k, on))
+            left0.addWidget(cb)
+        left0.addStretch(1)
+        g.addLayout(left0, i, 0)
 
         left = QHBoxLayout()
         left.setSpacing(7)
@@ -2242,8 +2362,9 @@ class Proto(QMainWindow):
 
     def compare_area(self):
         c = self.c
+        wide = self.compare_axis in ("시간끼리", "시나리오끼리")
         picked = [n for n, always in COMPARE_ITEMS
-                  if n in self.picked and (always or self.compare_axis == "시간끼리")]
+                  if n in self.picked and (always or wide)]
         tabs = QTabWidget()
         if not picked:
             page = QWidget()
@@ -2254,6 +2375,8 @@ class Proto(QMainWindow):
             pv.addWidget(lb)
             tabs.addTab(page, "결과")
             return tabs
+        if self.compare_axis == "시나리오끼리":
+            return self.compare_scenarios_area(picked)
         targets = [t.strip() for t in self.compare_targets.split(",") if t.strip()]
         unit = "버스" if self.compare_axis == "버스끼리" else "시간"
         for name in picked:
