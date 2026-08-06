@@ -71,6 +71,40 @@ def _grid_headers():
 
 GRID_HEADERS = _grid_headers()
 
+
+def _grid_scales():
+    """엔진 값 → 화면 값 배율. 🚨 이게 없으면 W 를 [MW] 머리글 아래 찍는다.
+
+    (실제로 그랬다 — 발전기 `P_gen [MW]` 칸에 10000000 이 찍혔다. 10이어야 한다.)
+    """
+    try:
+        import format_v2 as F
+        import read_v2
+    except Exception:
+        return {}
+    out = {}
+    for sheet in F.SHEETS:
+        key = read_v2.TABLE_OF_SHEET.get(sheet.name)
+        if key is None:
+            continue
+        m = {c.v1_col - 1: c.scale for c in sheet.cols
+             if c.v1_col and c.scale != F.KEEP}
+        if m:
+            out[key] = m
+    return out
+
+
+GRID_SCALES = _grid_scales()
+
+# ③ 운전 조건 — **여기만 고칠 수 있다** (0부터 센 열 번호).
+# 나머지 칸은 회색으로 두어 "④ 계통 자체는 엑셀에서" 라는 선을 화면으로 보여 준다(PDR §4.3).
+GRID_EDITABLE = {
+    "AC_gen_dat": {2, 3, 4, 7},        # 운전모드 · P-f droop · Q-V droop · 지정전압
+    "DC_gen_dat": {2, 3, 5},           # 운전모드 · P-Vdc droop · 지정전압
+    "IC_dat": {2, 3, 4, 5, 6, 7, 8},   # AC/DC 제어모드 · droop 셋 · P·Q 동작점
+    "DCDC_Conv_dat": {5, 6, 7, 9},     # droop 둘 · 동작점 · 운전모드
+}
+
 # 계통 데이터 탭에 보여 줄 표 (차례대로). 켜고 끌 수 있는 것이 앞에 온다.
 GRID_TABLES = [
     ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
@@ -1754,11 +1788,18 @@ class Proto(QMainWindow):
         return w
 
     def grid_table_widget(self):
-        """지금 고른 표 하나를 그린다. 켤 수 있는 표면 첫 칸이 스위치."""
+        """지금 고른 표 하나를 그린다.
+
+        · 켤 수 있는 표면 첫 칸이 스위치
+        · **화면 단위로 바꿔서** 보여 준다 (엔진은 W, 화면은 MW — 머리글이 [MW] 니까)
+        · ③ 운전 조건 칸만 고칠 수 있고, 나머지는 회색이다
+        """
         c = self.c
         key = self.grid_key
         sw = SC.SWITCHES.get(key)
         heads = GRID_HEADERS.get(key, [])
+        scales = GRID_SCALES.get(key, {})
+        editable = GRID_EDITABLE.get(key, set())
         eff = self.applied + self.changes      # 화면에 보이는 조건 = 푼 것 + 얹은 것
         arr = SC._values(SC.apply(self.base_case, eff), key)
         ncol = min(arr.shape[1], len(heads)) if heads else arr.shape[1]
@@ -1772,10 +1813,11 @@ class Proto(QMainWindow):
         tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tb.setAlternatingRowColors(True)
 
-        touched = {ch.row for ch in self.changes
+        touched = {(ch.row, ch.col) for ch in self.changes
                    if isinstance(ch, SC.Cell) and ch.table == key}
+        off = 1 if sw else 0
+        self._grid_loading = True              # 그리는 동안의 itemChanged 는 무시
         for r in range(arr.shape[0]):
-            off = 0
             if sw:
                 on = SC.is_on(self.base_case, key, r, eff)
                 b = QPushButton("켜짐" if on else "꺼짐")
@@ -1783,19 +1825,59 @@ class Proto(QMainWindow):
                 b.setCursor(Qt.PointingHandCursor)
                 b.clicked.connect(lambda _, rr=r: self.flip_row(rr))
                 tb.setCellWidget(r, 0, b)
-                off = 1
             for j in range(ncol):
-                val = arr[r, j]
+                val = arr[r, j] * scales.get(j, 1.0)
                 txt = "" if np.isnan(val) else (
                     f"{val:.0f}" if float(val).is_integer() and abs(val) < 1e9
                     else f"{val:,.4f}".rstrip("0").rstrip("."))
                 it = QTableWidgetItem(txt)
                 if j > 0:
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if r in touched:
+                if j in editable:
+                    it.setToolTip("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
+                                  "위의 [이 조건으로 계산] 을 눌러야 풉니다")
+                else:
+                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                    it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
+                if (r, j) in touched:
                     it.setForeground(QColor(c["warn"]))
                 tb.setItem(r, j + off, it)
+        self._grid_loading = False
+        tb.itemChanged.connect(lambda item: self.grid_edited(key, item, off, scales))
         return tb
+
+    def grid_edited(self, key, item, off, scales):
+        """운전 조건 칸을 고쳤다. **계산은 안 한다** — 바꾼 목록에만 얹는다."""
+        if getattr(self, "_grid_loading", False):
+            return
+        col = item.column() - off
+        if col < 0 or col not in GRID_EDITABLE.get(key, set()):
+            return
+        txt = item.text().strip().replace(",", "")
+        try:
+            shown = float(txt)
+        except ValueError:
+            QMessageBox.information(self, "숫자를 넣어 주세요",
+                                    f"'{item.text()}' 는 숫자가 아닙니다.")
+            self.rebuild()
+            return
+        scale = scales.get(col, 1.0)
+        value = shown * (1.0 / scale) if scale != 1.0 else shown
+        row = item.row()
+        before = float(SC._values(
+            SC.apply(self.base_case, self.applied + self.changes), key)[row, col])
+        if abs(before - value) <= abs(before) * 1e-12:
+            return                              # 안 바뀐 값 — 목록을 더럽히지 않는다
+        head = GRID_HEADERS.get(key, [])
+        name = head[col] if col < len(head) else f"{col + 1}열"
+        self.changes = [ch for ch in self.changes
+                        if not (isinstance(ch, SC.Cell) and ch.table == key
+                                and ch.row == row and ch.col == col)]
+        self.changes.append(SC.Cell(
+            table=key, row=row, col=col, value=value,
+            label=f"{SC.describe_row(self.base_case, key, row)} {name} → {shown:g}",
+            mark=SC.row_mark(self.base_case, key, row)))
+        self.rebuild()
 
     def set_grid_table(self, key):
         self.grid_key = key
