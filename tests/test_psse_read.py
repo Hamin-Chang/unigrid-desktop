@@ -131,5 +131,68 @@ if t3.is_file():
     n = np.asarray(c.tables["AC_Bus_dat"], float).shape[0]
     ok(n == 42, "t_psse_case3.raw (rev 30) 이 읽힌다", f"버스 {n}개")
 
+# ── 5. 옛 판은 버스 줄의 칸 배치가 다르다 ──────────────────────────────
+print("\n5) 버스 줄의 칸 배치 (판마다 다르다)")
+#   rev ≤ 30 : I, NAME, BASKV, IDE, **GL, BL**, AREA, ZONE, VM, VA
+#   rev ≥ 31 : I, NAME, BASKV, IDE, AREA, ZONE, OWNER, VM, VA
+OLD_BUS = """\
+ 0,   100.00        / PSS/E-29.0
+c1
+c2
+    1 'B1' 345.0 3   1.5   -2.5   7   8 1.04000   3.5000  1
+ 0   / END OF BUS DATA, BEGIN LOAD DATA
+ 0   / END OF LOAD DATA, BEGIN GENERATOR DATA
+ 0   / END OF GENERATOR DATA, BEGIN BRANCH DATA
+ 0   / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+ 0   / END OF TRANSFORMER DATA, BEGIN AREA DATA
+ 0   / END OF AREA DATA
+"""
+p5 = write(OLD_BUS)
+B = np.asarray(UC.psse_to_case(p5).tables["AC_Bus_dat"], float)
+ok(abs(B[0, 11] - 1.04) < 1e-9, "옛 판 — 전압을 VM 자리에서 읽는다", f"{B[0, 11]:g} pu")
+ok(abs(B[0, 12] - 3.5) < 1e-9, "옛 판 — 위상각을 VA 자리에서 읽는다", f"{B[0, 12]:g} deg")
+ok(abs(B[0, 1] - 1.5) < 1e-9 and abs(B[0, 2] + 2.5) < 1e-9,
+   "옛 판 — 버스 줄 안의 션트(GL·BL)를 집는다", f"Gs {B[0,1]:g} · Bs {B[0,2]:g}")
+ok(abs(B[0, 16] - 7.0) < 1e-9, "옛 판 — Area 자리도 맞다", f"{B[0,16]:g}")
+p5.unlink()
+
+# ── 6. 🚨 버스 번호의 음수 부호는 계량단 표시일 뿐이다 ─────────────────
+print("\n6) 버스 번호의 음수 부호 (계량단 표시)")
+NEG = """\
+0,   100.00, 33, 0, 0, 60.00 / rev33
+c1
+c2
+    1,'B1', 345.0,3,   1,   1,   1,1.04000,   0.0000
+    2,'B2', 345.0,1,   1,   1,   1,1.00000,   0.0000
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+    1,   -2,'1 ',0.01000,0.10000,0.02000, 200.0, 200.0, 200.0,0,0,0,0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA DATA
+0 / END OF AREA DATA
+"""
+p6 = write(NEG)
+L = np.asarray(UC.psse_to_case(p6).tables["AC_Line_dat"], float)
+ok(L.shape[0] == 1, "`1, -2` 로 적힌 선로를 버리지 않는다", f"선로 {L.shape[0]}개")
+ok(L.size and L[0, 1] == 1 and L[0, 2] == 2, "부호를 떼고 2번 버스로 읽는다",
+   f"{int(L[0,1])}–{int(L[0,2])}" if L.size else "")
+p6.unlink()
+
+# ── 7. MATPOWER 의 정답 변환본과 대조 ──────────────────────────────────
+print("\n7) MATPOWER 정답본과 대조 (t_psse_case2)")
+if (MP / "t_psse_case2.raw").is_file() and (MP / "t_psse_case2.m").is_file():
+    a = load_case(str(MP / "t_psse_case2.raw"))
+    b = load_case(str(MP / "t_psse_case2.m"))
+    for k, lim in (("AC_Bus_dat", 0.05), ("AC_Line_dat", 0.11), ("AC_gen_dat", 1e-9)):
+        x = np.asarray(a.tables[k], float); y = np.asarray(b.tables[k], float)
+        if x.shape != y.shape:
+            ok(False, f"{k} 모양이 같다", f"{x.shape} vs {y.shape}"); continue
+        d = np.abs(np.nan_to_num(x) - np.nan_to_num(y))
+        rel = (d / np.maximum(np.abs(np.nan_to_num(y)), 1.0)).max()
+        ok(rel <= lim, f"{k} 가 정답본과 맞는다", f"최대 상대차 {rel:.3g}")
+    # 남은 차이는 전압 한계 기본값(0.94/1.06 vs 0.9/1.1)이라 물리가 아니다
+
 print(f"\n{'✅ 전부 통과' if bad == 0 else f'🚨 {bad}건 틀림'}")
 sys.exit(1 if bad else 0)

@@ -250,6 +250,8 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
             "다른 형식이라면 그 형식으로 열어 보세요 (.xlsx · .m).")
     baseMVA = hv[1]
     freq = hv[5] if len(hv) >= 6 and np.isfinite(hv[5]) and hv[5] > 0 else 60.0
+    # 판(rev). 없으면 29 로 본다 — 칸이 2개뿐인 것은 rev 29 다.
+    rev = int(hv[2]) if len(hv) >= 3 and np.isfinite(hv[2]) and hv[2] > 0 else 29
 
     # ---- 섹션 분리 (4번째 줄부터, BUS로 시작) ----
     sections: dict[str, list[str]] = {}
@@ -277,10 +279,24 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
         return sections.get(name, [])
 
     # ---- Bus: [BusID, BASKV, IDE, VM, VA, AREA, Vmin, Vmax] ----
-    bus_all = []
+    # 🚨 **버스 레코드의 칸 배치가 판마다 다르다** (2026-08-06 확인).
+    #    rev ≤ 30 : I, NAME, BASKV, IDE, **GL, BL**, AREA, ZONE, VM, VA, OWNER
+    #    rev ≥ 31 : I, NAME, BASKV, IDE, AREA, ZONE, OWNER, VM, VA, …
+    #      (rev 31 부터 버스 안에 있던 션트 GL·BL 이 FIXED SHUNT 구역으로 빠졌고,
+    #       그만큼 뒤 칸이 두 자리 앞으로 당겨졌다.)
+    #    새 판 자리로만 읽어서 옛 판 파일은 **VM 자리에서 VA 를 읽었다** —
+    #    전압이 전부 1.0 이 되고 위상각에 전압이 들어가 발산했다
+    #    (`t_psse_case2.raw`: MATPOWER 정답본과 버스 값이 최대 1.04 어긋났다).
+    old_bus = rev <= 30
+    i_vm, i_va, i_area = (9, 10, 7) if old_bus else (8, 9, 5)
+    bus_all, bus_shunt = [], []
     for ln in sec("BUS"):
         v = _parse_line(ln)
-        bus_all.append([_g(v, 1), _g(v, 3), _g(v, 4), _g(v, 8), _g(v, 9), _g(v, 5), 0.94, 1.06])
+        bus_all.append([_g(v, 1), _g(v, 3), _g(v, 4),
+                        _g(v, i_vm), _g(v, i_va), _g(v, i_area), 0.94, 1.06])
+        if old_bus and (_g(v, 5) or _g(v, 6)):
+            # 옛 판은 션트가 버스 줄 안에 있다 (새 판의 FIXED SHUNT 구역에 해당)
+            bus_shunt.append([_g(v, 1), _g(v, 5), _g(v, 6)])
     bus_all = np.array(bus_all, dtype="float64").reshape(-1, 8)
     active = bus_all[:, 2] != 4
     active_ids = set(bus_all[active, 0].tolist())
@@ -300,6 +316,7 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
 
     # ---- Fixed shunt: [bus, GL, BL] + Switched shunt(BINIT) ----
     sh = []
+    sh.extend(bus_shunt)                 # 옛 판(rev ≤ 30)은 버스 줄 안에 션트가 있다
     for ln in sec("FIXED_SHUNT"):
         v = _parse_line(ln)
         if is_active(_g(v, 1)):
@@ -325,8 +342,13 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
     br = []
     for ln in sec("BRANCH"):
         v = _parse_line(ln)
-        if is_active(_g(v, 1)) and is_active(_g(v, 2)):
-            br.append([_g(v, 1), _g(v, 2), _g(v, 4), _g(v, 5), _g(v, 6),
+        # 🚨 PSS/E 는 **계량단(metered end)을 버스 번호의 음수 부호**로 나타낸다.
+        #    `151, -152` 는 152번 버스이고, 계량을 152 쪽에서 한다는 뜻일 뿐이다.
+        #    부호를 안 떼서 `is_active(-152)` 가 거짓이 되어 **선로가 통째로 버려졌다**
+        #    (`t_psse_case3.raw`: 30개 중 **26개**가 사라졌다 — 2026-08-06 확인).
+        i, j = abs(_g(v, 1)), abs(_g(v, 2))
+        if is_active(i) and is_active(j):
+            br.append([i, j, _g(v, 4), _g(v, 5), _g(v, 6),
                        _g(v, 7), _g(v, 8), _g(v, 9), _g(v, 14)])
     br = np.array(br, dtype="float64").reshape(-1, 9)
 
@@ -440,6 +462,10 @@ def _psse_transformers(raw_tr, baseMVA, active_ids):
     n = len(raw_tr)
     while ii < n:
         v1 = _parse_line(raw_tr[ii])
+        # 선로와 같은 이유로 버스 번호의 부호를 뗀다 (PSS/E 는 부호로 계량단을 표시한다).
+        for _k in (1, 2, 3):
+            if 0 <= _k - 1 < len(v1) and np.isfinite(v1[_k - 1]):
+                v1[_k - 1] = abs(v1[_k - 1])
         K = _g(v1, 3)
         if K == 0:
             # ----- 2권선 (4줄) -----
