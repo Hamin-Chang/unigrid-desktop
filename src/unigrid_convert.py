@@ -455,8 +455,13 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
     return _assemble_ac_case(path.name, ac_tables)
 
 
+# 엔진이 아직 못 받아 넘긴 STAT=4 3권선 (버스 세 쌍). 읽은 쪽이 알려 주려고 남긴다.
+_skipped_stat4: list[tuple] = []
+
+
 def _psse_transformers(raw_tr, baseMVA, active_ids):
     """TRANSFORMER 섹션 → (tr_list[nx11] 2권선, tr3w_list[nx30] 3권선 raw)."""
+    _skipped_stat4.clear()
     tr_list, tr3w_list = [], []
     ii = 0
     n = len(raw_tr)
@@ -497,18 +502,29 @@ def _psse_transformers(raw_tr, baseMVA, active_ids):
             v3 = _parse_line(raw_tr[ii + 2])
             v4 = _parse_line(raw_tr[ii + 3])
             v5 = _parse_line(raw_tr[ii + 4])
+            # PSS/E 3권선 STAT — 어느 권선이 빠졌나
+            #   1 = 다 있음 · 2 = 권선2 빠짐 · 3 = 권선3 빠짐 · 4 = **권선1 빠짐** · 0 = 통째로 빠짐
+            # 🚨 2026-08-06 전에는 **STAT=4 를 통째로 버렸다.** 권선 1만 빠지고 2·3 은 살아
+            #    있는데 변압기를 통째로 없애 버리니, **버스 두 개가 서로 끊긴 계통**이 됐다.
+            #    `psse_3w_sample.raw` 가 그 경우다(209·217·218) — MATPOWER 는 217·218 을
+            #    중성점으로 이어 두는데 우리만 끊겨 전압이 크게 어긋났다(215 버스 0.92 vs 1.11).
+            # 🚨 STAT=0(통째로 빠짐)은 정상인데 **예외를 던져 파일 전체를 못 읽게** 했다.
             stat = round(_g(v1, 12))
-            if stat == 1:
-                req = [_g(v1, 1), _g(v1, 2), _g(v1, 3)]
-            elif stat == 2:
-                req = [_g(v1, 1), _g(v1, 3)]
-            elif stat == 3:
-                req = [_g(v1, 1), _g(v1, 2)]
-            elif stat == 4:
+            need = {1: (1, 2, 3), 2: (1, 3), 3: (1, 2), 4: (2, 3)}.get(stat)
+            if need is None:                      # 0 = 통째로 빠짐 (그 밖의 값도 조용히 넘긴다)
                 ii += 5
                 continue
-            else:
-                raise ValueError(f"지원하지 않는 3권선 변압기 STAT={stat}")
+            if stat == 4:
+                # ⏸ **엔진이 아직 STAT=4 를 못 받는다** (2026-08-06).
+                #    `preprocess_3W_transformer_v2.m:119` 가 **권선 1의 버스를 필수로** 찾는데,
+                #    PSS/E STAT=4 는 바로 그 권선 1이 빠진다는 뜻이라 거기서 죽는다
+                #    (`decode_threeW_status` 도 STAT=4 를 "권선 2·3 빠짐 + 비활성" 으로 본다 — 반대다).
+                #    엔진을 고쳐 재컴파일하기 전까지는 넘긴다. **넘기면 그 두 버스가 서로 끊긴다** —
+                #    `psse_3w_sample` 에서 MATPOWER 대비 전압이 최대 0.197 pu 어긋나는 원인이다.
+                _skipped_stat4.append((_g(v1, 1), _g(v1, 2), _g(v1, 3)))
+                ii += 5
+                continue
+            req = [_g(v1, k) for k in need]
             if not all(b in active_ids for b in req):
                 ii += 5
                 continue
