@@ -1788,6 +1788,15 @@ class Proto(QMainWindow):
             total += float(np.nansum(arr[:, col]))
         return total / 1e6
 
+    def load_times(self):
+        """부하표가 들고 있는 시각 수 (1이면 한 시각짜리 계통)."""
+        n = 1
+        for key in SC.LOAD_TABLES:
+            arr = SC._values(self.base_case, key)
+            if arr.size and arr.shape[1] > 1:
+                n = max(n, arr.shape[1] - 1)          # 0열은 버스 번호
+        return n
+
     def has_load(self):
         return self.base_case is not None and any(
             SC._values(self.base_case, k).size for k in SC.LOAD_TABLES)
@@ -1816,7 +1825,10 @@ class Proto(QMainWindow):
         sl.setFixedWidth(240)
         sl.setTickPosition(QSlider.TicksBelow)
         sl.setTickInterval(25)
-        sl.setToolTip("모든 부하에 같은 수를 곱합니다 (24시각 케이스면 모든 시각에 함께).")
+        n_t = self.load_times()
+        sl.setToolTip("모든 부하에 같은 수를 곱합니다."
+                      + (f"\n이 계통은 {n_t}시각짜리이고, **모든 시각에 함께** 걸립니다."
+                         if n_t > 1 else ""))
         h.addWidget(sl)
 
         val = QLabel(f"×{now:.2f}")
@@ -1824,11 +1836,18 @@ class Proto(QMainWindow):
         val.setStyleSheet(f"color:{c['accent']};font-size:14px;font-weight:700;")
         h.addWidget(val)
 
+        # 🚨 곱하기는 **모든 시각**에 걸리는데 여기 뜨는 합계는 **보고 있는 시각 하나**다.
+        #    시간을 바꾸면 이 숫자도 따라 움직여서 "이 시각에만 걸리나?" 로 읽힌다
+        #    (2026-08-06 사용자 질문) ⇒ 여러 시각짜리면 어느 시각인지 라벨에 밝힌다.
         base_mw = self.load_total([])
         now_mw = self.load_total(self.applied + self.changes)
-        tot = QLabel(f"총 부하 {base_mw:,.1f} → {now_mw:,.1f} MW"
-                     if abs(now - 1.0) > 1e-9 else f"총 부하 {base_mw:,.1f} MW")
+        when = f" ({min(self.t, n_t - 1) + 1} H)" if n_t > 1 else ""
+        tot = QLabel(f"총 부하 {base_mw:,.1f} → {now_mw:,.1f} MW{when}"
+                     if abs(now - 1.0) > 1e-9 else f"총 부하 {base_mw:,.1f} MW{when}")
         tot.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        if n_t > 1:
+            tot.setToolTip(f"지금 보고 있는 시각의 합입니다. "
+                           f"곱하기는 {n_t}시각 전부에 걸립니다.")
         h.addWidget(tot)
         h.addStretch(1)
 

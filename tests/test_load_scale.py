@@ -97,6 +97,48 @@ ok(SC.auto_name(case, win.changes).startswith("AC 선로"),
 # 7. 부하 표가 없는 계통이면 슬라이더를 안 만든다
 ok(win.has_load(), "case14 는 부하가 있다")
 
+# 8. 옆에 뜨는 합계에 **어느 시각인지**가 붙는다 (2026-08-06 사용자 질문)
+#    곱하기는 모든 시각에 걸리는데 합계는 보고 있는 시각 하나라, 안 밝히면 오해한다.
+from PySide6.QtWidgets import QLabel                # noqa: E402
+
+
+def load_labels(w):
+    bar = w.load_bar()
+    return [bar.layout().itemAt(i).widget().text()
+            for i in range(bar.layout().count())
+            if isinstance(bar.layout().itemAt(i).widget(), QLabel)]
+
+
+win.applied = []
+win.changes = []
+win.t = 0
+ok(win.load_times() == 1, "case14 는 한 시각짜리")
+ok(not any("H)" in s for s in load_labels(win)),
+   "한 시각짜리면 시각을 안 붙인다", " · ".join(load_labels(win)))
+
+win24 = APP.Proto()
+c24 = load_case(str(REPO / "cases/ACDC_71bus_3IC_parallel.xlsx"))
+win24.base_case = c24
+win24.applied = []
+win24.changes = []
+win24.t = 0
+ok(win24.load_times() == 24, "71bus 는 24시각", str(win24.load_times()))
+ok(any("(1 H)" in s for s in load_labels(win24)),
+   "여러 시각이면 어느 시각인지 붙인다", " · ".join(load_labels(win24)))
+t0 = [s for s in load_labels(win24) if "총 부하" in s][0]
+win24.t = 1
+t1 = [s for s in load_labels(win24) if "총 부하" in s][0]
+ok("(2 H)" in t1 and t0 != t1, "시간을 바꾸면 합계도 따라간다", f"{t0}  →  {t1}")
+
+# 곱하기는 **모든 시각**에 걸린다 — 합계가 한 시각만 보여 준다고 곱하기까지 한 시각인 건 아니다
+win24.scale_loads(1.20)
+a = SC._values(c24, "AC_PLoad_dat")
+b = SC._values(SC.apply(c24, win24.changes), "AC_PLoad_dat")
+ok(np.allclose(np.nan_to_num(b[:, 1:]), np.nan_to_num(a[:, 1:]) * 1.2),
+   "곱하기는 24시각 전부에 걸린다",
+   f"1 H {np.nansum(a[:,1])/1e6:.3f}→{np.nansum(b[:,1])/1e6:.3f} · "
+   f"24 H {np.nansum(a[:,24])/1e6:.3f}→{np.nansum(b[:,24])/1e6:.3f} MW")
+
 print(f"\n{'✅ 전부 통과' if bad == 0 else f'🚨 {bad}건 틀림'}")
 # Proto 가 띄워 둔 스레드가 정리되기 전에 파이썬이 내려가면 Qt 가 죽으며 134 를 뱉는다.
 # 판정은 위에서 끝났으니 곧바로 나간다.
