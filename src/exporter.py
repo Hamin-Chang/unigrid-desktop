@@ -32,14 +32,18 @@ TABLE_FILES = {
     "DC 결과":   ("DC", "DC_results.xlsx"),
     "선로 조류": ("Branch", "Branch_results.xlsx"),
     "손실":      ("Loss", "Loss_results.xlsx"),
+    # 아래는 원본 MATLAB 앱에 없던 것 — 이름이 겹치지 않으니 옛 스크립트도 안 깨진다.
+    "점검":      ("Check", "Check_results.xlsx"),
 }
 
 # 계통 종류(케이스 엑셀 `Mode` 시트)별로 나오는 표.
 # 원본 `ExportButtonPushed` 의 switch 문과 같다 — 0 혼합 / 1 AC only / 2 DC only.
+# **점검**은 계통 종류와 무관하게 늘 있다 (2026-08-06 사용자 요청 — 큰 계통에서는
+# 화면 대신 엑셀로 값을 보게 할 것이라, 위반 목록이 빠지면 반쪽이 된다).
 MODE_TABLES = {
-    0: ["AC 결과", "DC 결과", "선로 조류", "손실"],
-    1: ["AC 결과", "선로 조류", "손실"],
-    2: ["DC 결과", "선로 조류", "손실"],
+    0: ["AC 결과", "DC 결과", "선로 조류", "손실", "점검"],
+    1: ["AC 결과", "선로 조류", "손실", "점검"],
+    2: ["DC 결과", "선로 조류", "손실", "점검"],
 }
 
 FIG_W, FIG_H = 1100, 620            # 그림 한 장 크기 [px]
@@ -61,6 +65,9 @@ def table_names(sol) -> list[str]:
     keep = []
     for n in names:
         which, _ = TABLE_FILES[n]
+        if which == "Check":
+            keep.append(n)                  # 위반이 0건이어도 낸다 — "0건" 이 결과다
+            continue
         arr = sol.loss if which == "Loss" else getattr(sol, which, None)
         if arr is not None and getattr(arr, "size", 0):
             keep.append(n)
@@ -98,6 +105,30 @@ def _sheet(wb, title, cols, arr):
         ws.append([float(v) if np.isfinite(v) else None for v in r])
 
 
+def _check_sheets(wb, sol) -> None:
+    """점검(위반) — **한 시간에 시트 하나**, 그 안에 네 가지를 위아래로 쌓는다.
+
+    시트를 종류별로 가르지 않는 이유: 24시각이면 4×24 = 96장이 되어 못 본다.
+    한 장 안에서 `▶ 전압 위반 (2건)` 처럼 제목 줄로 갈라 두면 눈으로 훑기 쉽다.
+
+    값이 글자다(예: `"AC 12"`·`"Vmax 1.05"`) — 숫자 표를 쓰는 `_sheet` 를 못 쓴다.
+    """
+    import checks                              # 늦게 부른다 (서로 부르는 꼴 방지)
+
+    for t in range(max(1, int(sol.n_time))):
+        viol = checks.real_violations(sol, t)
+        ws = wb.create_sheet(f"{t + 1}H")
+        ws.append(["점검 결과", f"모두 {checks.violation_count(viol)}건"])
+        for title, (cols, rows) in viol.items():
+            ws.append([])
+            ws.append([f"▶ {title}", f"{len(rows)}건"])
+            ws.append(list(cols))
+            for r in rows:
+                ws.append(list(r))
+        for col, width in zip("ABCDE", (16, 14, 18, 12, 12)):
+            ws.column_dimensions[col].width = width
+
+
 def save_tables(sol, folder: Path, names, on_step=None) -> list[Path]:
     """표를 엑셀로. **한 시간에 시트 하나**, 이름은 `1H`·`2H`… (원본과 동일).
 
@@ -110,7 +141,9 @@ def save_tables(sol, folder: Path, names, on_step=None) -> list[Path]:
         which, fname = TABLE_FILES[name]
         wb = Workbook()
         wb.remove(wb.active)                    # 기본으로 생기는 빈 시트 제거
-        if which == "Loss":
+        if which == "Check":
+            _check_sheets(wb, sol)
+        elif which == "Loss":
             _sheet(wb, "Loss", sol.cols("Loss"), sol.loss)
         else:
             for t in range(max(1, int(sol.n_time))):

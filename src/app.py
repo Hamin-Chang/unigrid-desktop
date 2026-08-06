@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import math
+import re
 import random
 from pathlib import Path
 
@@ -30,6 +31,9 @@ import json
 import app_engine as ENGINE
 import engine_path
 import charts
+import checks
+from checks import (col_index, gen_limit_rows, real_violations,   # noqa: F401
+                    violation_count, GEN_LIMIT_COLS)
 import exporter
 
 # 케이스 읽기는 **이 저장소 안**에 있다 (2026-08-05 들여옴).
@@ -279,12 +283,6 @@ CONV = dict(
 )
 
 
-def col_index(cols, name):
-    try:
-        return cols.index(name)
-    except ValueError:
-        return -1
-
 
 def dynamic_table(sol, bus_row):
     """다이나믹 — 고른 버스 하나의 시간별 값 (지금 앱에는 없던 표)."""
@@ -333,118 +331,6 @@ def real_tables(sol, mode, t, show_vsc):
     if show_vsc and sol.VSC_bus is not None and sol.VSC_bus.size:
         out.append(("VSC 버스", sol.cols("VSC_bus"), sol.VSC_bus))
     return out
-
-
-def real_violations(sol, t):
-    """전압 위반 · 과부하 · 변환기 한계를 결과에서 걸러낸다."""
-    res = {}
-
-    # 전압 위반 (AC · DC 둘 다 Vmin/Vmax 열을 갖고 있다)
-    rows = []
-    for which in ("AC", "DC"):
-        arr = sol.at(which, t)
-        if not arr.size:
-            continue
-        cols = sol.cols(which)
-        iB, iV = col_index(cols, "Bus"), col_index(cols, "VM[pu]")
-        iLo, iHi = col_index(cols, "Vmin[pu]"), col_index(cols, "Vmax[pu]")
-        if min(iB, iV, iLo, iHi) < 0:
-            continue
-        for r in arr:
-            v, lo, hi = r[iV], r[iLo], r[iHi]
-            if v > hi:
-                rows.append([f"{which} {int(r[iB])}", f"{v:.4f}",
-                             f"Vmax {hi:.3f}", f"+{v - hi:.4f}"])
-            elif v < lo:
-                rows.append([f"{which} {int(r[iB])}", f"{v:.4f}",
-                             f"Vmin {lo:.3f}", f"{v - lo:.4f}"])
-    res["전압 위반"] = (["버스", "V[pu]", "한계", "초과량"], rows)
-
-    # 과부하 선로
-    rows = []
-    arr = sol.at("Branch", t)
-    if arr.size:
-        cols = sol.cols("Branch")
-        iF, iT = col_index(cols, "From"), col_index(cols, "To")
-        iL = col_index(cols, "Loading[%]")
-        iC = col_index(cols, "Capacity[MVA]")
-        if min(iF, iT, iL) >= 0:
-            for r in arr:
-                if r[iL] > 100.0:
-                    cap = f"{r[iC]:.1f}" if iC >= 0 else "—"
-                    rows.append([str(int(r[iF])), str(int(r[iT])),
-                                 f"{r[iL]:.1f}", cap])
-    res["과부하 선로"] = (["From", "To", "Loading[%]", "용량[MVA]"], rows)
-
-    # 변환기 한계 (0=한계 안 · 2=용량곡선 · 3=전류한계)
-    rows = []
-    label = {2: "용량곡선(S_N) 도달", 3: "전류한계 도달"}
-    for i, m in enumerate(sol.IC_lim_mode or []):
-        if int(m) in label:
-            rows.append([f"변환기 {i + 1}", label[int(m)]])
-    res["변환기 한계"] = (["변환기", "상태"], rows)
-
-    # 발전기 한계 (2026-07-27) — 유효·무효를 따로 세고, 무효는 걸린 한계까지 밝힌다.
-    res["발전기 한계"] = (GEN_LIMIT_COLS, gen_limit_rows(sol))
-    return res
-
-
-GEN_LIMIT_COLS = ["발전기", "항목", "걸린 한계", "출력", "한계값"]
-
-# 발전기 한계 표의 종류 열 (1~4) → 화면에 쓸 이름
-_GEN_KIND = {1: "AC", 2: "DC", 3: "AC", 4: "DC"}
-
-
-def _fmt_num(x):
-    """무한대·빈값은 '—' 로. 한계가 없는 발전기는 ±inf 로 온다.
-
-    소수 2자리 — 용량 원(S_N)에 걸린 값은 0.8732 처럼 어중간해서
-    1자리로는 출력과 한계값이 둘 다 '0.9' 로 보인다 (2026-07-28).
-    """
-    if x is None or not math.isfinite(float(x)):
-        return "—"
-    return f"{float(x):.2f}"
-
-
-def gen_limit_rows(sol):
-    """발전기 출력한계에 걸린 것만 골라 점검 탭 줄로 만든다.
-
-    한 발전기가 유효·무효 둘 다 걸리면 두 줄이 된다 (한 줄에 뭉치면
-    어느 쪽이 걸렸는지가 흐려진다).
-    """
-    rows = []
-    tbl = getattr(sol, "gen_limit", None)
-    if tbl is None or len(tbl) == 0:
-        return rows
-
-    for r in tbl:
-        kind, bus = int(r[0]), int(r[1])
-        name = f"{_GEN_KIND.get(kind, '?')} {bus}"
-
-        sat_p = int(r[5])
-        if sat_p:
-            edge = "Pmax 상한" if sat_p > 0 else "Pmin 하한"
-            limit = r[4] if sat_p > 0 else r[3]
-            rows.append([name, "유효 P", edge, _fmt_num(r[2]), _fmt_num(limit)])
-
-        sat_q = int(r[9])
-        if sat_q:
-            qsrc = int(r[10])
-            if qsrc == 2:
-                # "S_N" 은 논문에서 연계 변환기(IC)의 정격 기호($S^N_{VSC,c}$)라
-                # 그대로 쓰면 헷갈린다 → 발전기 쪽임을 이름에 밝힌다 (2026-07-28).
-                edge = "발전기 용량 원"
-            else:
-                edge = "Qmax 상한" if sat_q > 0 else "Qmin 하한"
-            limit = r[8] if sat_q > 0 else r[7]
-            rows.append([name, "무효 Q", edge, _fmt_num(r[6]), _fmt_num(limit)])
-
-    return rows
-
-
-def violation_count(viol=None):
-    src = viol if viol is not None else VIOLATIONS
-    return sum(len(rows) for _, rows in src.values())
 
 
 COMPARE_ITEMS = [
@@ -864,6 +750,8 @@ class Proto(QMainWindow):
         self.changes = []             # 그 위에 얹었지만 **아직 계산 안 한** 것
         self.book = SC.Book()         # 담아 둔 시나리오
         self.grid_key = "AC_Line_dat" # 계통 데이터 탭에서 보고 있는 표
+        self.grid_find = ""           # 계통 데이터 탭에서 찾는 버스 번호
+        self._grid_rows = []          # 화면 줄 → 진짜 줄 (찾기로 좁혔을 때)
         # 부하 일괄 증감 슬라이더 — 끌고 있는 동안 화면을 다시 그리면 손잡이가 사라진다.
         # 그래서 놓았을 때(sliderReleased) 또는 잠깐 멈췄을 때만 반영한다.
         self._load_pending = 1.0
@@ -1921,8 +1809,74 @@ class Proto(QMainWindow):
         if load is not None:
             v.addWidget(load)
 
+        v.addWidget(self.find_bar())           # 버스 번호로 찾기
         v.addWidget(self.grid_table_widget(), 1)
         return w
+
+    # ── 버스 번호로 찾기 ──────────────────────────────────────────────
+    # 🚨 큰 계통에서는 표를 다 그리는 것 자체가 비싸다 — 6,495버스 케이스의 AC 선로 표는
+    #    9,019줄이고 그리는 데 1.7초다(2026-08-06 실측). 그런데 그때 하려는 일은
+    #    "9천 줄 훑어보기" 가 아니라 "그 선로 하나 끊어 보기" 다. 번호로 좁힌다.
+
+    def find_rows(self, key, arr):
+        """찾는 번호에 걸리는 줄 번호들. 찾는 게 없으면 None (= 전부)."""
+        want = {int(x) for x in re.findall(r"\d+", self.grid_find or "")}
+        if not want:
+            return None
+        sw = SC.SWITCHES.get(key)
+        # 그 표에서 **버스 번호가 든 열** — 스위치가 아는 것이 있으면 그것을, 없으면 0열
+        idc = [ci for ci in (sw.ident if sw else (0,)) if ci < arr.shape[1]]
+        out = []
+        for r in range(arr.shape[0]):
+            for ci in idc:
+                v = arr[r, ci]
+                if np.isfinite(v) and int(v) in want:
+                    out.append(r)
+                    break
+        return out
+
+    def find_bar(self):
+        c = self.c
+        bar = QFrame()
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        lab = QLabel("버스 번호로 찾기")
+        lab.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        h.addWidget(lab)
+
+        box = QLineEdit(self.grid_find or "")
+        box.setPlaceholderText("예: 38   ·   38 39 40   (비우면 전부)")
+        box.setFixedWidth(260)
+        box.returnPressed.connect(lambda: self.set_find(box.text()))
+        box.editingFinished.connect(lambda: self.set_find(box.text()))
+        h.addWidget(box)
+
+        arr = SC._values(self.base_case, self.grid_key)
+        rows = self.find_rows(self.grid_key, arr)
+        if rows is not None:
+            got = QLabel(f"{arr.shape[0]:,}줄 중 **{len(rows):,}줄**"
+                         .replace("**", ""))
+            got.setStyleSheet(f"color:{c['accent']};font-size:12px;font-weight:600;")
+            h.addWidget(got)
+            clr = QPushButton("전부 보기")
+            clr.setCursor(Qt.PointingHandCursor)
+            clr.clicked.connect(lambda: self.set_find(""))
+            h.addWidget(clr)
+        else:
+            got = QLabel(f"{arr.shape[0]:,}줄")
+            got.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            h.addWidget(got)
+        h.addStretch(1)
+        return bar
+
+    def set_find(self, text):
+        text = (text or "").strip()
+        if text == (self.grid_find or ""):
+            return
+        self.grid_find = text
+        self.rebuild()
 
     def grid_table_widget(self):
         """지금 고른 표 하나를 그린다.
@@ -1943,7 +1897,12 @@ class Proto(QMainWindow):
         cols = (["상태"] if sw else []) + \
                [heads[i] if i < len(heads) else f"{i + 1}열" for i in range(ncol)]
 
-        tb = QTableWidget(arr.shape[0], len(cols))
+        # 🚨 찾기로 좁히면 **보이는 줄 번호와 진짜 줄 번호가 달라진다.**
+        #    켜고 끄기·값 고치기는 진짜 번호로 해야 하므로 그 대응을 들고 있는다.
+        picked = self.find_rows(key, arr)
+        self._grid_rows = list(range(arr.shape[0])) if picked is None else picked
+
+        tb = QTableWidget(len(self._grid_rows), len(cols))
         tb.setHorizontalHeaderLabels(cols)
         tb.verticalHeader().setVisible(False)
         tb.verticalHeader().setDefaultSectionSize(30)
@@ -1957,14 +1916,14 @@ class Proto(QMainWindow):
                    if isinstance(ch, SC.Cell) and ch.table == key}
         off = 1 if sw else 0
         self._grid_loading = True              # 그리는 동안의 itemChanged 는 무시
-        for r in range(arr.shape[0]):
+        for at, r in enumerate(self._grid_rows):     # at = 화면 줄, r = 진짜 줄
             if sw:
                 on = SC.is_on(self.base_case, key, r, eff)
                 b = QPushButton("켜짐" if on else "꺼짐")
                 b.setObjectName("seg_on" if on else "seg_off")
                 b.setCursor(Qt.PointingHandCursor)
                 b.clicked.connect(lambda _, rr=r: self.flip_row(rr))
-                tb.setCellWidget(r, 0, b)
+                tb.setCellWidget(at, 0, b)
             for j in range(ncol):
                 val = arr[r, j] * scales.get(j, 1.0)
                 txt = "" if np.isnan(val) else (
@@ -1981,7 +1940,7 @@ class Proto(QMainWindow):
                     it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
                 if (r, j) in touched:
                     it.setForeground(QColor(c["warn"]))
-                tb.setItem(r, j + off, it)
+                tb.setItem(at, j + off, it)
         self._grid_loading = False
         tb.itemChanged.connect(lambda item: self.grid_edited(key, item, off, scales))
         return tb
@@ -2003,7 +1962,9 @@ class Proto(QMainWindow):
             return
         scale = scales.get(col, 1.0)
         value = shown * (1.0 / scale) if scale != 1.0 else shown
-        row = item.row()
+        # 찾기로 좁혀 놓았으면 화면 줄 ≠ 진짜 줄
+        seen = getattr(self, "_grid_rows", None)
+        row = seen[item.row()] if seen and item.row() < len(seen) else item.row()
         before = float(SC._values(
             SC.apply(self.base_case, self.applied + self.changes), key)[row, col])
         if abs(before - value) <= abs(before) * 1e-12:
