@@ -109,6 +109,13 @@ GRID_EDITABLE = {
     "DCDC_Conv_dat": {5, 6, 7, 9},     # droop 둘 · 동작점 · 운전모드
 }
 
+# 이 버스 수를 넘으면 **그래프를 접은 채로 연다** (2026-08-06 사용자 확정).
+#   이유는 속도가 아니라 **읽기 어려워서**다 — 6,495버스면 점이 6,495개라 빨간 덩어리가 된다.
+#   ⚠️ 접어도 별로 안 빨라진다(실측 0.86~1.49배, `실측_R4_버스수대시간.csv`). 표가 그만큼
+#      넓어져 줄을 더 그리기 때문이다. 그러니 "빨라진다"고 말하지 않는다.
+#   숫자는 점이 겹쳐 보이기 시작하는 지점으로 잡았다. 바꾸려면 여기 한 줄만 고치면 된다.
+BIG_BUSES = 1000
+
 # 계통 데이터 탭에 보여 줄 표 (차례대로). 켜고 끌 수 있는 것이 앞에 온다.
 GRID_TABLES = [
     ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
@@ -727,6 +734,7 @@ class Proto(QMainWindow):
         self.drop_label = None
         self.dark = False
         self.numbers = False
+        self.numbers_auto = False     # 큰 계통이라 **자동으로** 접힌 것인가
         self.mode = "스냅샷"
         self.compare_axis = "버스끼리"
         self.overlay = set()          # 겹쳐 볼 시나리오 (Book 안 자리 번호) — 비면 전부
@@ -1122,11 +1130,22 @@ class Proto(QMainWindow):
             note.setMaximumHeight(58)
             nv = QHBoxLayout(note)
             nv.setContentsMargins(16, 10, 16, 10)
-            t = QLabel("숫자 모드 — 그래프를 접어 표를 넓게 씁니다  (약 5~7배 빠름)")
+            # ⚠️ 예전 문구는 "약 5~7배 빠름" 이라고 말했는데 **사실이 아니다** —
+            #    실측 0.86~1.49배다(`실측_R4_버스수대시간.csv`). 표가 그만큼 넓어져
+            #    줄을 더 그리기 때문이다. 안 빨라지는 것을 빨라진다고 말하지 않는다.
+            if self.numbers_auto and self.sol is not None:
+                n_bus = int(self.sol.AC.shape[0]) + \
+                    int(self.sol.DC.shape[0] if self.sol.DC.size else 0)
+                msg = (f"버스가 {n_bus:,}개라 그래프를 접어 두었습니다 — "
+                       f"점이 겹쳐 읽기 어렵습니다. 값은 [엑셀로 만들기] 로 보세요.")
+            else:
+                msg = "숫자 모드 — 그래프를 접어 표를 넓게 씁니다"
+            t = QLabel(msg)
             t.setStyleSheet(f"color:{c['muted']};font-size:14px;")
             nv.addWidget(t)
             nv.addStretch()
             b = QPushButton("그래프 펼치기")
+            b.setToolTip("큰 계통에서는 점이 겹쳐 덩어리로 보입니다. 그래도 보시려면 누르세요.")
             b.clicked.connect(lambda: self.set_numbers(False))
             nv.addWidget(b)
             v.addWidget(note)
@@ -2779,6 +2798,7 @@ class Proto(QMainWindow):
 
     def set_numbers(self, v):
         self.numbers = v
+        self.numbers_auto = False        # 사용자가 직접 골랐다 — 자동이 아니다
         self.rebuild()
 
     def toggle_theme(self):
@@ -2836,6 +2856,13 @@ class Proto(QMainWindow):
             self.changes = []
             self.book = SC.Book()
             self.book.add(loaded, [], solution=sol, name="원본")
+            # 🚨 큰 계통은 **그래프를 접은 채로 연다** (2026-08-06 사용자 확정).
+            #    버스가 수천이면 점이 겹쳐 빨간 덩어리가 되어 읽을 수가 없다.
+            #    보고 싶으면 [그래프 펼치기] 를 누르면 된다.
+            #    조건을 바꿔 다시 풀 때는 손대지 않는다 — 사용자가 펼쳐 놓았으면 그대로 둔다.
+            n_bus = int(sol.AC.shape[0]) + int(sol.DC.shape[0] if sol.DC.size else 0)
+            self.numbers_auto = n_bus > BIG_BUSES
+            self.numbers = self.numbers_auto
         self.sol = sol
         self.t = 0
         self.bus_row = 0
