@@ -119,7 +119,9 @@ def matpower_to_case(m_path: str | Path) -> ACDCCase:
     AC_gen[:, 6] = gen[:, 2] * 1e6           # Q_gen [Var]
     AC_gen[:, 7] = gen[:, 5]                 # Vg [pu]
     AC_gen[:, 8] = gen[:, 7]                 # Status
-    AC_gen[:, 9] = gen[:, 6] * 1e6           # Local Sbase [VA]
+    # 🚨 이 칸은 MVA 다 (엔진: AC_gen_local_S / (S_base/1e6)).
+    #    2026-08-06 전까지 * 1e6 을 곱해 VA 로 썼다 — droop 계수가 100만 배 어긋난다.
+    AC_gen[:, 9] = gen[:, 6]                 # Local Sbase [MVA]
     AC_gen[:, 10] = 1e-6                      # |V| deadband
     AC_gen[:, 11] = gen[:, 3] * 1e6          # Qmax
     AC_gen[:, 12] = gen[:, 4] * 1e6          # Qmin
@@ -354,7 +356,7 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
         AC_gen[:, 6] = gen[:, 2] * 1e6
         AC_gen[:, 7] = gen[:, 5]
         AC_gen[:, 8] = gen[:, 7]
-        AC_gen[:, 9] = gen[:, 6] * 1e6
+        AC_gen[:, 9] = gen[:, 6]             # Local Sbase [MVA] — 여기만 MVA
         AC_gen[:, 10] = 1e-6
         AC_gen[:, 11] = gen[:, 3] * 1e6
         AC_gen[:, 12] = gen[:, 4] * 1e6
