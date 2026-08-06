@@ -78,13 +78,11 @@ def without_engine() -> None:
         np.nan_to_num(np.asarray(S.apply(case, []).tables["AC_Line_dat"].values, dtype=float)),
         np.nan_to_num(before)), "바꾼 것을 빼면 원본과 같다")
 
-    # 4. 엔진이 안 읽는 것은 막는다
-    for table in S.CANNOT:
-        try:
-            S.toggle(case, table, 0, on=False)
-            ok(False, f"{table} 끄기를 막는다")
-        except S.NotSupported as exc:
-            ok(True, f"{table} 끄기를 막는다", str(exc)[:46])
+    # 4. 지금은 다섯 가지가 전부 먹힌다 (2026-08-06 재컴파일 6·7차)
+    ok(S.CANNOT == {}, "못 끄는 것이 없다")
+    ok(set(S.SWITCHES) == {"AC_Line_dat", "DC_Line_dat", "AC_gen_dat",
+                           "DC_gen_dat", "IC_dat", "DCDC_Conv_dat"},
+       "켤 수 있는 것 여섯 가지", " · ".join(s.name for s in S.SWITCHES.values()))
 
     # 5. 부하 일괄 증감 — 첫 열(버스 번호)은 안 건드린다
     big = S.apply(case, [S.scale_load(1.5)])

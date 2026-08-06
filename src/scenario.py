@@ -56,13 +56,17 @@ SWITCHES: dict[str, Switch] = {
     "AC_gen_dat": Switch(
         "AC_gen_dat", 8, 0.0, 1.0, (0,), ("버스",), "AC 발전기"),
     #   v14/functions/preprocess_AC_gen_ACDC.m:17-18 — "꺼진 발전기는 PV/Slack 분류에서 제외"
+    "DC_gen_dat": Switch(
+        "DC_gen_dat", 6, 0.0, 1.0, (0,), ("버스",), "DC 발전기"),
+    #   v14/functions/preprocess_DC_gen_ACDC.m:18-25 — 2026-08-06 에 **고쳐서 다시 컴파일했다(7차).**
+    #   그전에는 7열을 아예 안 읽어서, 껐는데 답이 한 비트도 안 달라졌다.
     "IC_dat": Switch(
         "IC_dat", 15, 0.0, 1.0, (0, 1), ("AC 버스", "DC 버스"), "IC", two_sided=True),
-    #   v14/functions/preprocess_IC_sub4.m:40-42 — 2026-08-06 에 **여기를 고쳐 다시 컴파일했다.**
+    #   v14/functions/preprocess_IC_sub4.m:40-42 — 2026-08-06 에 **고쳐서 다시 컴파일했다(6차).**
     #   그전에는 IC_status 를 읽어 IC_status_on 만 만들고 거르지 않아서, 엑셀에서 IC 를 꺼도
     #   계통에서 안 빠졌다(71bus 는 3대를 다 꺼도 답이 그대로였다). 이제 선로·발전기와 같이
     #   **꺼진 줄을 표에서 지운다.**
-    #   ⚠️ 고칠 파일을 찾을 때 `preprocess_IC.m` 이 아니라 **`preprocess_IC_sub4.m`** 이다 —
+    #   ⚠️ 고칠 파일은 `preprocess_IC.m` 이 아니라 **`preprocess_IC_sub4.m`** 이다 —
     #      실제로 불리는 것은 `runpfACDC.m:83` 의 sub4 판이다(한 번 헛짚었다).
     "DCDC_Conv_dat": Switch(
         "DCDC_Conv_dat", 9, 0.0, None, (0, 1), ("MVDC 버스", "LVDC 버스"), "DC/DC",
@@ -73,11 +77,9 @@ SWITCHES: dict[str, Switch] = {
 }
 
 # 🚨 엑셀에 칸은 있는데 **믿을 수 없는 것.** 끄는 시늉만 하거나, 계통에 따라 되기도 하고 안 되기도 한다.
-CANNOT = {
-    "DC_gen_dat":
-        "DC 발전기 — 엑셀 7열 Status 를 껐는데 **답이 한 비트도 안 달라졌다**"
-        "(71bus·CIGRE 에서 확인). 계산이 그 칸을 안 본다.",
-}
+# 지금은 비어 있다 — 2026-08-06 에 IC 와 DC 발전기를 엔진에서 고쳐 다섯 가지가 전부 먹힌다.
+# 못 하는 것이 다시 생기면 여기에 **왜 못 하는지**와 함께 넣는다(막기만 하면 사용자가 이유를 모른다).
+CANNOT: dict[str, str] = {}
 
 # 일괄 증감이 건드리는 표 (첫 열은 버스 번호라 건드리지 않는다)
 LOAD_TABLES = ("AC_PLoad_dat", "AC_QLoad_dat", "DC_PLoad_dat")
