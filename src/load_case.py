@@ -21,6 +21,8 @@ from typing import Any
 
 import pandas as pd
 
+import case_guard
+
 
 # runpfACDC_py.m 인자 순서와 동일 (= load_ACDC_data 출력 순서)
 TABLE_ORDER = (
@@ -152,7 +154,12 @@ def load_case(path: str | Path) -> ACDCCase:
         .raw         → PSS/E raw       (unigrid_convert.psse_to_case, AC-only)
 
     변환 파서는 순환 import를 피하려고 필요할 때 지연 import한다.
+
+    🚨 **읽기 전에 위험한 형태를 먼저 거른다**(`case_guard`, 2026-08-06 여기로 옮김).
+       그전에는 `app.py` 만 걸렀는데, 그러면 시험·스크립트로 읽을 때는 안 걸려서
+       **막으려던 계통이 조용히 들어온다.** 파일을 읽는 문이 여기 하나뿐이므로 여기서 건다.
     """
+    case_guard.check_case_file(path)
     ext = Path(path).expanduser().suffix.lower()
     if ext in (".xlsx", ".xls"):
         return load_acdc_case(path)

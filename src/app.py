@@ -113,10 +113,6 @@ GRID_TABLES = [
     ("AC_Bus_dat", "AC 버스"), ("DC_Bus_dat", "DC 버스"),
 ]
 
-# 읽기 전에 위험한 형태를 거른다 (2026-08-03). 공개 패키지는 안 건드리고 여기서만 막는다.
-import case_guard
-
-
 RECENT_FILE = _HERE_RECENT = Path(__file__).resolve().parent / ".recent.json"
 
 
@@ -167,8 +163,8 @@ class SolveThread(QThread):
         try:
             warm = ENGINE.solved_before()   # 첫 계산이면 준비 시간이 섞인다
             t0 = time.perf_counter()
-            case = self.case if self.case is not None else \
-                case_guard.load_case_checked(load_case, self.path)
+            # 위험한 형태 거르기는 `load_case` 안으로 들어갔다 (2026-08-06)
+            case = self.case if self.case is not None else load_case(self.path)
             self.loaded_case = case
             sol = ENGINE.solve(case)
             sol.seconds = time.perf_counter() - t0   # 엑셀 읽는 시간까지 포함

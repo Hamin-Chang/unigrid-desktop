@@ -18,8 +18,11 @@
     발전기 한계 덮어쓰기(1). **두 가지만 흉내 내면 나머지가 조용히 틀리므로 흉내 내지 않고 막는다.**
 
 어디에 사는가
-    공개 패키지(`acdc_powerflow`)는 건드리지 않는다. 이 앱에서만 거르므로
-    `load_case` 를 부르는 대신 여기의 `load_case_checked` 를 부른다.
+    공개 패키지(`acdc_powerflow`)는 건드리지 않는다. 이 앱에서만 거른다.
+    **2026-08-06부터 `load_case()` 가 맨 먼저 `check_case_file()` 을 부른다** —
+    그전에는 `app.py` 만 걸러서, 시험·스크립트로 읽으면 막으려던 계통이 그냥 들어왔다.
+    파일을 읽는 문이 `load_case` 하나뿐이므로 거기 한 곳에서 건다.
+    (옛 `load_case_checked` 감싸개는 할 일이 없어져 뺐다.)
 """
 
 from __future__ import annotations
@@ -66,13 +69,3 @@ def check_case_file(path: str | Path) -> None:
         "  2) 단위를 바로잡아 만든 UniGrid 엑셀(.xlsx)을 여세요.\n"
         "MATPOWER 8.0 번들에서는 배전 계통 케이스 24개가 여기에 해당합니다."
     )
-
-
-def load_case_checked(load_case, path: str | Path):
-    """`check_case_file` 을 거친 뒤 원래 `load_case` 로 읽는다.
-
-    `load_case` 를 인자로 받는 이유: 이 파일이 공개 패키지 경로를 몰라도 되게 하려고.
-    부르는 쪽(app.py)이 이미 그것을 들고 있다.
-    """
-    check_case_file(path)
-    return load_case(path)
