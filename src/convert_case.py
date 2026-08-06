@@ -45,11 +45,26 @@ def _rows(ws) -> list[list]:
 
 
 def _width(ws) -> int:
-    hdr = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-    cols = [c for c in hdr]
-    while cols and (cols[-1] is None or cols[-1] == ""):
-        cols.pop()
-    return len(cols)
+    """표의 폭. **머리글이 비어 있어도 값이 있으면 그 열까지가 폭이다.**
+
+    🚨 예전에는 머리글이 빈 끝 열을 그냥 잘랐다. 그런데 `ACDC_71bus_L2_ic15.xlsx` 는
+       IC 표의 21·22열(`V_base [kV]`·`I_max [kA]` = 전류 한계)에 **머리글을 안 적고 값만**
+       넣어 뒀다. 잘라 버리자 22열이 20열이 되어 **엔진이 전류 한계를 통째로 무시**했고,
+       손실이 315,403 → 389,129 (23%) 어긋났다. 폭이 곧 뜻이므로(아래 주석) 값을 본다.
+       (2026-08-06 v14 56개 전수 변환에서 발견)
+    """
+    hdr = list(next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ()))
+    n_head = len(hdr)
+    while n_head and (hdr[n_head - 1] is None or hdr[n_head - 1] == ""):
+        n_head -= 1
+
+    n_data = 0                                   # 값이 든 마지막 열
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        for j in range(len(r) - 1, n_data - 1, -1):
+            if r[j] is not None and r[j] != "":
+                n_data = j + 1
+                break
+    return max(n_head, n_data)
 
 
 def _num(v):

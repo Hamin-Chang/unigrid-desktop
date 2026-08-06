@@ -131,7 +131,11 @@ def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
         if at is None:
             if col.required and col.default is None:
                 missing.append(col.header)
-            elif col.default is not None:
+            elif col.default is not None and col.v1_col <= width:
+                # 🚨 기본값 때문에 표를 **넓히지 않는다.** 폭이 곧 뜻이라(위 주석),
+                #    없던 열을 채워 넣으면 v1 에서 꺼져 있던 기능이 켜진다.
+                #    `case14_matpower` 의 AC 발전기 표는 10열인데 `|V| deadband` 는
+                #    11번째라, 넓히려다 표 밖으로 나가 터졌다(2026-08-06).
                 out[:, col.v1_col - 1] = col.default
             continue
         vals = np.array([_num(r[at]) if at < len(r) else np.nan for r in body])

@@ -213,7 +213,9 @@ SHEETS: list[Sheet] = [
         _c("LossC rec", "", 19), _c("LossC inv", "", 20),
         _c("V_base", "kV", 21, required=False),
         _c("I_max", "kA", 22, required=False, note="없으면 전류 한계를 안 건다"),
-    ], v1_widths=(20, 21)),
+    # 22 는 엔진이 실제로 읽는 모양이다 — `preprocess_IC_sub4.m:273` 이
+    # `size(IC_dat,2) >= 22` 일 때 22열을 전류 한계로 쓴다. `ACDC_71bus_L2_ic15` 가 그것이다.
+    ], v1_widths=(20, 21, 22)),
 
     Sheet("MVDC LVDC Converter Data", optional_sheet=True, cols=[
         _c("From (MVDC)", "", 1), _c("To (LVDC)", "", 2),

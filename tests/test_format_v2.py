@@ -55,6 +55,20 @@ def compare(name: str, a: np.ndarray, b: np.ndarray) -> list[str]:
     cols = min(a.shape[1], b.shape[1])
 
     drop = DROPPED.get(name, set())
+
+    # 🚨 **끝에서 잘려 나간 열을 본다.** 겹치는 데까지만 견주면 잘린 열은 아예 안 보인다 —
+    #    그런데 엔진은 `size(표,2) >= N` 으로 기능을 가리므로 **한 열이 곧 한 기능**이다.
+    #    (`ACDC_71bus_L2_ic15`: IC 21·22열(전류 한계)이 머리글이 비어 잘려 나가
+    #     22열이 20열이 되었고 손실이 23% 어긋났다. 이 검사는 그때 통과해 버렸다.)
+    for j in range(b.shape[1], a.shape[1]):
+        if (j + 1) in drop:
+            continue                                    # 일부러 버린 열
+        col = a[:rows, j]
+        if not np.all(np.isnan(col)):
+            bad.append(f"{name}: {j+1}열이 통째로 없어졌다 "
+                       f"(v1 {a.shape[1]}열 → v2 {b.shape[1]}열, 값 예: {col[0]:g}) "
+                       f"— 폭이 곧 뜻이라 엔진이 그 기능을 통째로 무시한다")
+
     for j in range(cols):
         if (j + 1) in drop:
             continue
