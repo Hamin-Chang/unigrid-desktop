@@ -56,6 +56,14 @@ SWITCHES: dict[str, Switch] = {
     "AC_gen_dat": Switch(
         "AC_gen_dat", 8, 0.0, 1.0, (0,), ("버스",), "AC 발전기"),
     #   v14/functions/preprocess_AC_gen_ACDC.m:17-18 — "꺼진 발전기는 PV/Slack 분류에서 제외"
+    "IC_dat": Switch(
+        "IC_dat", 15, 0.0, 1.0, (0, 1), ("AC 버스", "DC 버스"), "IC", two_sided=True),
+    #   v14/functions/preprocess_IC_sub4.m:40-42 — 2026-08-06 에 **여기를 고쳐 다시 컴파일했다.**
+    #   그전에는 IC_status 를 읽어 IC_status_on 만 만들고 거르지 않아서, 엑셀에서 IC 를 꺼도
+    #   계통에서 안 빠졌다(71bus 는 3대를 다 꺼도 답이 그대로였다). 이제 선로·발전기와 같이
+    #   **꺼진 줄을 표에서 지운다.**
+    #   ⚠️ 고칠 파일을 찾을 때 `preprocess_IC.m` 이 아니라 **`preprocess_IC_sub4.m`** 이다 —
+    #      실제로 불리는 것은 `runpfACDC.m:83` 의 sub4 판이다(한 번 헛짚었다).
     "DCDC_Conv_dat": Switch(
         "DCDC_Conv_dat", 9, 0.0, None, (0, 1), ("MVDC 버스", "LVDC 버스"), "DC/DC",
         two_sided=True),
@@ -69,13 +77,6 @@ CANNOT = {
     "DC_gen_dat":
         "DC 발전기 — 엑셀 7열 Status 를 껐는데 **답이 한 비트도 안 달라졌다**"
         "(71bus·CIGRE 에서 확인). 계산이 그 칸을 안 본다.",
-    "IC_dat":
-        "IC — 계통에 따라 되기도 하고 안 되기도 한다. **71bus 는 3대를 다 꺼도 답이 그대로**였고 "
-        "CIGRE 도 그대로였는데, case24 에서는 못 풀게 바뀌었다. "
-        "운전모드 분류에는 먹히지만 그 변환기를 계통에서 떼지는 않는 것으로 보인다 "
-        "(v14/functions/preprocess_IC.m:87-88 은 IC_status_on 을 만들기만 하고 "
-        "그것으로 거르지 않는다). **반쯤 먹히는 것이 가장 위험하다** — "
-        "그럴듯한데 틀린 답이 나온다. 엔진을 고쳐 다시 컴파일하기 전까지 막는다.",
 }
 
 # 일괄 증감이 건드리는 표 (첫 열은 버스 번호라 건드리지 않는다)
@@ -319,7 +320,14 @@ def n_islands(case: Any, changes: Sequence[Change] = ()) -> int:
 def splits(case: Any, changes: Sequence[Change]) -> str | None:
     """이 조건이 계통을 쪼개나. 쪼개면 사람이 읽을 설명, 아니면 None.
 
-    ⚠️ 이것은 **발산이 아니라 원래 해가 없는 모양**이다. 그래서 계산 전에 따로 말해야 한다.
+    ⭐ **막지 않는다. 경고만 한다** (2026-08-06 사용자 확정).
+       처음에는 계산 전에 막기로 했는데, 실제로 재 보니 **71bus 는 AC 37개·DC 32개가
+       전부 계통을 쪼갠다**(방사형 배전 계통이라 당연하다). 막으면 그 계통에서는
+       켜고 끌 수 있는 것이 하나도 없어진다. 게다가 엔진은 쪼개진 상태도 풀어 준다.
+       ⇒ 부르는 쪽은 이 말을 **띄우기만 하고 계산은 그대로 진행**한다.
+
+    ⚠️ 쪼개짐은 **발산과 다르다** — 발산은 "못 찾은 것"이고 이것은 "원래 그런 모양"이다.
+       떨어져 나간 쪽에 전원이 없으면 그 답은 뜻이 없으므로, 결과를 볼 때 감안해야 한다.
     """
     was = n_islands(case)
     now = n_islands(case, changes)

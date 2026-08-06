@@ -105,12 +105,8 @@ def without_engine() -> None:
         S.splits(c71, [S.toggle(c71, "AC_Line_dat", k, on=False)]) is not None
         for k in range(np.asarray(c71.tables["AC_Line_dat"].values).shape[0]))
     ok(n_split == 37, "71bus 는 AC 선로 37개가 전부 쪼갠다", f"{n_split}개")
-    # 🚨 IC 끄기는 막혀 있다 — 엔진에 반쯤만 먹혀서 그럴듯한데 틀린 답이 나온다(2026-08-06 실측)
-    try:
-        S.toggle(c71, "IC_dat", 0, on=False)
-        ok(False, "IC 끄기를 막는다")
-    except S.NotSupported:
-        ok(True, "IC 끄기를 막는다", "엔진에 반쯤만 먹힌다")
+    ic0 = S.toggle(c71, "IC_dat", 0, on=False)
+    ok(S.splits(c71, [ic0]) is None, "71bus 는 IC 하나를 꺼도 안 쪼갠다", ic0.label)
 
     # 7. DC/DC 는 Status 열이 없다 — 껐다 켜면 원래 운전모드로 돌아와야 한다
     cig = load_case(str(CIGRE))
@@ -184,19 +180,27 @@ def with_engine() -> None:
     #    (AC 선로는 37개가 전부 계통을 쪼개고, IC 끄기는 막혀 있다 ⇒ 이 계통에서 되는 유일한 길)
     c71 = load_case(str(CASE71))
     b71 = app_engine.solve(c71)
+    # 🚨 2026-08-06 에 엔진을 고쳐 다시 컴파일한 곳 — 그전에는 3대를 다 꺼도 답이 그대로였다.
+    ic = S.toggle(c71, "IC_dat", 0, on=False)
+    s71 = app_engine.solve(S.apply(c71, [ic]))
+    f0, f1 = fingerprint(b71), fingerprint(s71)
+    l0 = float(np.nansum(np.asarray(b71.loss, dtype=float)[0, :3]))
+    l1 = float(np.nansum(np.asarray(s71.loss, dtype=float)[0, :3]))
+    ok(f0.shape == f1.shape and not np.allclose(f0, f1),
+       "71bus 는 IC 하나를 끄면 답이 달라진다", f"손실 {l0:.4g} → {l1:.4g}")
+
+    # 쪼개짐은 **막지 않고 경고만** 한다 (2026-08-06 사용자 확정).
+    #    71bus 는 AC 37개·DC 32개가 전부 쪼개므로, 막으면 이 계통에서 아무것도 못 한다.
     n_dc = np.asarray(c71.tables["DC_Line_dat"].values).shape[0]
     free = [k for k in range(n_dc)
             if S.splits(c71, [S.toggle(c71, "DC_Line_dat", k, on=False)]) is None]
-    # 🚨 확인된 사실 — 71bus 는 AC 도 DC 도 **모든 선로가 계통을 쪼갠다**(방사형).
-    #    IC 끄기까지 막혀 있으므로 이 계통에서는 지금 켜고 끌 수 있는 것이 **하나도 없다.**
-    #    쪼개지는 조건을 막을지 경고만 할지는 아직 안 정했다(👉 사용자 판단).
     ok(free == [], "71bus 는 DC 선로도 전부 계통을 쪼갠다",
        f"DC 선로 {n_dc}개 중 안 쪼개는 것 {len(free)}개")
     dcl = S.toggle(c71, "DC_Line_dat", 0, on=False)
-    s71 = app_engine.solve(S.apply(c71, [dcl]))
-    f0, f1 = fingerprint(b71), fingerprint(s71)
-    ok(f0.shape == f1.shape and not np.allclose(f0, f1),
-       "그래도 엔진은 풀어 준다 — 막을지 경고만 할지는 미정", dcl.label)
+    ok(S.splits(c71, [dcl]) is not None, "쪼개진다고 말해 준다 (막지는 않는다)")
+    sd = app_engine.solve(S.apply(c71, [dcl]))   # 막지 않으므로 계산은 그대로 된다
+    ok(not np.allclose(fingerprint(b71), fingerprint(sd)),
+       "쪼개져도 계산은 진행된다", dcl.label)
 
     app_engine.shutdown()
 
