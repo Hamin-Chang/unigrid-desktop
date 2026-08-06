@@ -40,6 +40,45 @@ try:
 except Exception:                      # 그래도 앱은 뜨게 (무엇이 없는지는 불러올 때 알린다)
     load_case = None
 
+import scenario as SC          # 계통 조건 바꾸기 (PDR §7 2단계)
+
+
+def _grid_headers():
+    """계통 데이터 탭에 쓸 열 이름 — `format_v2` 의 v2 머리글을 엔진 자리에 맞춰 편다.
+
+    이렇게 하면 서식 정의가 **한 곳**(format_v2)에만 있고, 화면은 그것을 빌려 쓴다.
+    """
+    try:
+        import format_v2 as F
+        import read_v2
+    except Exception:
+        return {}
+    out = {}
+    for sheet in F.SHEETS:
+        key = read_v2.TABLE_OF_SHEET.get(sheet.name)
+        if key is None:
+            continue
+        cols = [c for c in sheet.cols if c.v1_col]
+        if not cols:
+            continue
+        wide = max(c.v1_col for c in cols)
+        names = [""] * wide
+        for c in cols:
+            names[c.v1_col - 1] = c.header
+        out[key] = names
+    return out
+
+
+GRID_HEADERS = _grid_headers()
+
+# 계통 데이터 탭에 보여 줄 표 (차례대로). 켜고 끌 수 있는 것이 앞에 온다.
+GRID_TABLES = [
+    ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
+    ("DC_Line_dat", "DC 선로"), ("DC_gen_dat", "DC 발전기"),
+    ("IC_dat", "IC"), ("DCDC_Conv_dat", "DC/DC"),
+    ("AC_Bus_dat", "AC 버스"), ("DC_Bus_dat", "DC 버스"),
+]
+
 # 읽기 전에 위험한 형태를 거른다 (2026-08-03). 공개 패키지는 안 건드리고 여기서만 막는다.
 import case_guard
 
@@ -84,15 +123,20 @@ class SolveThread(QThread):
     # 남의 컴퓨터에서 가장 먼저 만나는 화면이라 따로 받는다 (PDR §4.1 · R2).
     engine_missing = Signal(str)
 
-    def __init__(self, path):
+    def __init__(self, path, case=None):
         super().__init__()
         self.path = path
+        self.case = case          # 있으면 이것을 푼다 (조건을 바꿔 다시 풀 때)
+        self.loaded_case = None   # 파일에서 읽은 원본 — 창이 받아 들고 있는다
 
     def run(self):
         try:
             warm = ENGINE.solved_before()   # 첫 계산이면 준비 시간이 섞인다
             t0 = time.perf_counter()
-            sol = ENGINE.solve(case_guard.load_case_checked(load_case, self.path))
+            case = self.case if self.case is not None else \
+                case_guard.load_case_checked(load_case, self.path)
+            self.loaded_case = case
+            sol = ENGINE.solve(case)
             sol.seconds = time.perf_counter() - t0   # 엑셀 읽는 시간까지 포함
             sol.warm_start = warm
             self.done.emit(sol)
@@ -765,6 +809,13 @@ class Proto(QMainWindow):
         self.show_vsc = False
         self.show_violations = False  # 계통도 '위반 보기' 켜짐 여부
         self.graph_tab = 0            # 보고 있던 그래프 탭 (재생성 때 되돌리려고)
+        # ── 계통 조건 (PDR §7 2단계) ──
+        # 원본 케이스는 읽고 나면 바뀌지 않는다. 그 위에 "바꾼 것" 목록만 얹는다.
+        self.base_case = None         # 파일에서 읽은 원본 (scenario.apply 의 바탕)
+        self.applied = []             # **지금 화면의 결과**를 만든 조건 (이미 계산된 것)
+        self.changes = []             # 그 위에 얹었지만 **아직 계산 안 한** 것
+        self.book = SC.Book()         # 담아 둔 시나리오
+        self.grid_key = "AC_Line_dat" # 계통 데이터 탭에서 보고 있는 표
         self.visible = {k: {n for n, d in v if d} for k, v in TABLE_SPECS.items()}
         self.split_sizes = None
         self.setWindowTitle("UNIGRID")
@@ -1061,6 +1112,10 @@ class Proto(QMainWindow):
             v.addWidget(self.compare_area(), 1)
             return w
 
+        bar = self.change_bar()          # 바꾼 것이 있을 때만 나온다
+        if bar is not None:
+            v.addWidget(bar)
+
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
         split.setHandleWidth(10)
@@ -1202,6 +1257,9 @@ class Proto(QMainWindow):
         n = violation_count(self.viol())
         tt.addTab(self.check_page(), f"점검 ({n})" if n else "점검")
         tt.addTab(self.conv_page(), "수렴")
+        n_ch = len(self.changes)
+        tt.addTab(self.grid_page(),
+                  f"계통 데이터 ({n_ch})" if n_ch else "계통 데이터")
         tv.addWidget(tt)
         split.addWidget(tw)
 
@@ -1556,6 +1614,188 @@ class Proto(QMainWindow):
         return out
 
     # ── 점검 탭 ──
+    # ══════════════════════════ 계통 조건 (PDR §7 2단계) ══════════════════════════
+    # 바꾸는 동안은 **계산하지 않는다.** 다 바꾸고 [이 조건으로 계산] 을 누를 때 한 번 푼다
+    # (2026-08-06 사용자 확정). 버튼 한 번 = 조류계산 한 번 = 시나리오 한 줄.
+
+    def change_bar(self):
+        """무엇을 바꿨는지 + [이 조건으로 계산] · [되돌리기]. 바꾼 게 없으면 안 만든다."""
+        if not self.changes:
+            return None
+        c = self.c
+        bar = QFrame()
+        bar.setObjectName("card")
+        bar.setStyleSheet(
+            f"#card {{ background:{c['surface']};border:1px solid {c['warn']};"
+            f"border-radius:10px; }}")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(15, 9, 11, 9)
+        h.setSpacing(11)
+
+        tag = QLabel(f"바꾼 것 {len(self.changes)}건")
+        tag.setStyleSheet(
+            f"color:{c['warn']};font-size:12px;font-weight:600;padding:2px 9px;"
+            f"border:1px solid {c['warn']};border-radius:9px;")
+        h.addWidget(tag)
+
+        what = QLabel(SC.describe(self.changes))
+        what.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
+        h.addWidget(what)
+
+        base = "원본" if not self.applied else SC.describe(self.applied)
+        wait = QLabel(f"아직 계산 안 함 — 지금 화면은 「{base}」 결과입니다")
+        wait.setStyleSheet(f"color:{c['warn']};font-size:12px;")
+        h.addWidget(wait)
+
+        # 쪼개짐은 **막지 않고 알려만 준다** (2026-08-06 확정 — 71bus 는 모든 선로가 쪼갠다)
+        if self.base_case is not None:
+            msg = SC.splits(self.base_case, self.changes)
+            if msg:
+                warn = QLabel("계통이 쪼개집니다")
+                warn.setStyleSheet(
+                    f"color:{c['warn']};font-size:12px;font-weight:600;"
+                    f"background:{c['bg']};border-radius:8px;padding:3px 9px;")
+                warn.setToolTip(msg + "\n\n막지는 않습니다. 떨어져 나간 쪽에 전원이 없으면 "
+                                      "그 답은 뜻이 없으니 결과를 볼 때 감안하세요.")
+                h.addWidget(warn)
+        h.addStretch(1)
+
+        run = QPushButton("▶  이 조건으로 계산")
+        run.setObjectName("primary")
+        run.setCursor(Qt.PointingHandCursor)
+        run.clicked.connect(self.run_changes)
+        h.addWidget(run)
+
+        undo = QPushButton("↩ 되돌리기")
+        undo.setCursor(Qt.PointingHandCursor)
+        undo.clicked.connect(self.undo_changes)
+        h.addWidget(undo)
+        return bar
+
+    def grid_page(self):
+        """계통 데이터 탭 — 엑셀 값을 그대로 보여 주고, 여기서 켜고 끈다."""
+        c = self.c
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(14, 11, 14, 12)
+        v.setSpacing(9)
+
+        if self.base_case is None:
+            note = QLabel("케이스를 열면 여기에 계통 데이터가 나옵니다.")
+            note.setStyleSheet(f"color:{c['muted']};font-size:14px;")
+            v.addWidget(note)
+            v.addStretch(1)
+            return w
+
+        # 어느 표를 볼까 — 그 계통에 실제로 있는 것만 (설비가 없으면 칸도 안 만든다)
+        picks = []
+        for key, label in GRID_TABLES:
+            arr = SC._values(self.base_case, key)
+            if arr.size and arr.ndim == 2 and not np.all(np.isnan(arr)):
+                picks.append((key, label, arr.shape[0]))
+        if not picks:
+            v.addWidget(QLabel("보여 줄 표가 없습니다."))
+            return w
+        if self.grid_key not in [k for k, _, _ in picks]:
+            self.grid_key = picks[0][0]
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for key, label, n in picks:
+            b = QPushButton(f"{label} {n}")
+            b.setObjectName("seg_on" if key == self.grid_key else "seg_off")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _, k=key: self.set_grid_table(k))
+            row.addWidget(b)
+        row.addStretch(1)
+        hint = QLabel("켜고 끄기는 바로 계산하지 않습니다 — 다 바꾼 뒤 위의 [이 조건으로 계산]")
+        hint.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        row.addWidget(hint)
+        v.addLayout(row)
+
+        v.addWidget(self.grid_table_widget(), 1)
+        return w
+
+    def grid_table_widget(self):
+        """지금 고른 표 하나를 그린다. 켤 수 있는 표면 첫 칸이 스위치."""
+        c = self.c
+        key = self.grid_key
+        sw = SC.SWITCHES.get(key)
+        heads = GRID_HEADERS.get(key, [])
+        eff = self.applied + self.changes      # 화면에 보이는 조건 = 푼 것 + 얹은 것
+        arr = SC._values(SC.apply(self.base_case, eff), key)
+        ncol = min(arr.shape[1], len(heads)) if heads else arr.shape[1]
+        cols = (["상태"] if sw else []) + \
+               [heads[i] if i < len(heads) else f"{i + 1}열" for i in range(ncol)]
+
+        tb = QTableWidget(arr.shape[0], len(cols))
+        tb.setHorizontalHeaderLabels(cols)
+        tb.verticalHeader().setVisible(False)
+        tb.verticalHeader().setDefaultSectionSize(30)
+        tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tb.setAlternatingRowColors(True)
+
+        touched = {ch.row for ch in self.changes
+                   if isinstance(ch, SC.Cell) and ch.table == key}
+        for r in range(arr.shape[0]):
+            off = 0
+            if sw:
+                on = SC.is_on(self.base_case, key, r, eff)
+                b = QPushButton("켜짐" if on else "꺼짐")
+                b.setObjectName("seg_on" if on else "seg_off")
+                b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _, rr=r: self.flip_row(rr))
+                tb.setCellWidget(r, 0, b)
+                off = 1
+            for j in range(ncol):
+                val = arr[r, j]
+                txt = "" if np.isnan(val) else (
+                    f"{val:.0f}" if float(val).is_integer() and abs(val) < 1e9
+                    else f"{val:,.4f}".rstrip("0").rstrip("."))
+                it = QTableWidgetItem(txt)
+                if j > 0:
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if r in touched:
+                    it.setForeground(QColor(c["warn"]))
+                tb.setItem(r, j + off, it)
+        return tb
+
+    def set_grid_table(self, key):
+        self.grid_key = key
+        self.rebuild()
+
+    def flip_row(self, row):
+        """그 줄을 켜거나 끈다. **계산은 안 한다** — 목록에만 얹는다."""
+        key = self.grid_key
+        eff = self.applied + self.changes
+        now = SC.is_on(self.base_case, key, row, eff)
+        # 같은 줄에 대한 옛 기록은 지운다 (껐다 켜면 아무것도 안 바꾼 것이 되게)
+        self.changes = [ch for ch in self.changes
+                        if not (isinstance(ch, SC.Cell) and ch.table == key
+                                and ch.row == row)]
+        try:
+            ch = SC.toggle(self.base_case, key, row, on=not now)
+        except SC.NotSupported as exc:
+            QMessageBox.information(self, "못 바꿉니다", str(exc))
+            return
+        # **이미 푼 조건**과 같아지면 얹을 것이 없다 (껐다 켜면 아무것도 안 바꾼 것)
+        if SC.is_on(self.base_case, key, row, self.applied) != (not now):
+            self.changes.append(ch)
+        self.rebuild()
+
+    def undo_changes(self):
+        """아직 안 푼 것만 물린다. 이미 계산해서 보고 있는 조건은 그대로 둔다."""
+        self.changes = []
+        self.rebuild()
+
+    def run_changes(self):
+        """[이 조건으로 계산] — 여기서만 푼다."""
+        if not self.changes or self.base_case is None:
+            return
+        self._pending = self.applied + self.changes   # 풀고 나서 시나리오로 담으려고
+        self._start_solve(getattr(self, "_last_path", self.base_case.case_name),
+                          case=SC.apply(self.base_case, self._pending))
+
     def check_page(self):
         c = self.c
         w = QWidget()
@@ -2095,7 +2335,7 @@ class Proto(QMainWindow):
 
         self._start_solve(path)
 
-    def _start_solve(self, path):
+    def _start_solve(self, path, case=None):
         self._last_path = path
         self.prog = QProgressDialog("조류계산 중입니다...", None, 0, 0, self)
         self.prog.setWindowTitle("UNIGRID")
@@ -2104,7 +2344,7 @@ class Proto(QMainWindow):
         self.prog.setCancelButton(None)
         self.prog.show()
 
-        self.thread = SolveThread(path)
+        self.thread = SolveThread(path, case)
         self.thread.done.connect(self._solved)
         self.thread.failed.connect(self._solve_failed)
         self.thread.engine_missing.connect(self._engine_missing)
@@ -2113,6 +2353,21 @@ class Proto(QMainWindow):
     def _solved(self, sol):
         if getattr(self, "prog", None) is not None:
             self.prog.close()
+        # 조건을 안 바꾸고 푼 것이면 이 케이스가 **원본**이다 (바꿔서 푼 것은 원본이 아니다).
+        loaded = getattr(getattr(self, "thread", None), "loaded_case", None)
+        pending = getattr(self, "_pending", None)
+        if pending:
+            # [이 조건으로 계산] 으로 푼 것 — 시나리오 한 줄로 담고 바꾼 목록을 비운다
+            self.book.add(self.base_case, pending, solution=sol)
+            self.applied = list(pending)      # 이제 이것이 화면의 조건이다
+            self.changes = []
+            self._pending = None
+        elif loaded is not None and not self.changes:
+            self.base_case = loaded
+            self.applied = []
+            self.changes = []
+            self.book = SC.Book()
+            self.book.add(loaded, [], solution=sol, name="원본")
         self.sol = sol
         self.t = 0
         self.bus_row = 0
@@ -2128,6 +2383,21 @@ class Proto(QMainWindow):
     def _solve_failed(self, msg):
         if getattr(self, "prog", None) is not None:
             self.prog.close()
+        pending = getattr(self, "_pending", None)
+        if pending:
+            # 조건을 바꿔 풀다가 안 풀린 것 — **시나리오는 살려 둔다.**
+            # 무엇을 바꿨는지가 목록에 남아야 다음 판단을 할 수 있다(PDR §4.3).
+            # 화면은 그대로 두므로 직전 결과가 지워지지 않는다.
+            self.book.add(self.base_case, pending, error=msg)
+            self.changes = []          # applied 는 그대로 — 화면은 직전 결과 그대로다
+            self._pending = None
+            self.rebuild()
+            QMessageBox.warning(
+                self, "안 풀렸습니다",
+                f"{SC.describe(pending)}\n\n이 조건으로는 답을 찾지 못했습니다. "
+                f"시나리오 목록에 '안 풀림' 으로 남겨 두었고, 화면은 그대로 둡니다."
+                f"\n\n{msg[:600]}")
+            return
         QMessageBox.critical(self, "계산 실패", msg[:1500])
 
     def _engine_missing(self, msg):
