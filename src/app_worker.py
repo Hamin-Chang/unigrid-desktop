@@ -1,7 +1,7 @@
-"""app_worker.py — macOS에서 mwpython으로 도는 UNIGRID 계산 일꾼.
+"""app_worker.py — macOS에서 mwpython으로 도는 UNIGRID 계산 프로세스.
 
 맥에서는 MATLAB 컴파일 패키지를 일반 python으로 import할 수 없고 mwpython으로만
-가능하다. 그래서 app_engine.py 가 이 일꾼을 별도 프로세스로 띄운다.
+가능하다. 그래서 app_engine.py 가 이것을 별도 프로세스로 띄운다.
 
 **계속 살아 있는 방식(server 모드)**: MATLAB Runtime 기동에만 2.7초가 들기 때문에
 계산할 때마다 프로세스를 새로 띄우면 그 시간을 매번 버린다. 한 번 띄워 두고
@@ -148,11 +148,16 @@ def serve() -> None:
                 continue
             if job.get("quit"):
                 break
+            # 일감 번호를 그대로 돌려준다 — 부르는 쪽이 **자기 답인지** 가릴 수 있게.
+            # 왜 필요한가: 계산이 안 풀리면 MATLAB 이 경고·스택을 수백 줄 찍는데,
+            # 그 사이에서 답 줄을 못 찾고 넘어가면 **다음 계산이 이 답을 집어 간다**
+            # (실제로 2026-08-06 에 그랬다 — 안 풀려야 할 조건이 "잘 풀렸다"로 나왔다).
+            job_id = job.get("id")
             try:
                 solve_one(app, job["in"], job["out"])
-                print(json.dumps({"ok": True}), flush=True)
+                print(json.dumps({"ok": True, "id": job_id}), flush=True)
             except Exception as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}), flush=True)
+                print(json.dumps({"ok": False, "id": job_id, "error": str(exc)}), flush=True)
     finally:
         app.terminate()
 

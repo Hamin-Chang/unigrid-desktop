@@ -2173,7 +2173,7 @@ class Proto(QMainWindow):
             self, "자리를 기억했습니다",
             f"{p}\n\n다음부터는 묻지 않습니다."
             + (f"\n\n{warn}" if warn else ""))
-        # 방금 고른 자리로 다시 풀어 본다 (일꾼은 옛 자리로 떠 있을 수 있으니 정리하고)
+        # 방금 고른 자리로 다시 풀어 본다 (계산 프로세스가 옛 자리로 떠 있을 수 있으니 정리하고)
         last = getattr(self, "_last_path", None)
         if last:
             ENGINE.shutdown()

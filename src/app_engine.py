@@ -222,13 +222,13 @@ def _as_rows(v: Any) -> list:
 
 
 def _run_via_mwpython(case: Any, mwpython: str | Path | None) -> dict[str, Any]:
-    """계속 살아 있는 일꾼에게 일감을 넘긴다 (Runtime 기동 2.7초를 한 번만 낸다)."""
+    """계속 살아 있는 계산 프로세스에 일감을 넘긴다 (Runtime 기동 2.7초를 한 번만 낸다)."""
     worker = _Worker.get(mwpython)
     return worker.solve(_case_payload(case))
 
 
 class _Worker:
-    """mwpython 일꾼 프로세스 하나를 띄워두고 재사용한다.
+    """mwpython 계산 프로세스 하나를 띄워두고 재사용한다.
 
     주의: MATLAB이 '[ACDC NR] 수렴: 2회 반복' 같은 메시지를 같은 통로로 찍는다.
     그래서 응답을 읽을 때 JSON 줄이 나올 때까지 건너뛴다.
@@ -236,13 +236,28 @@ class _Worker:
 
     _KEYS = ("ok", "ready", "error")
 
-    def _read_reply(self, timeout_lines: int = 200) -> dict:
-        for _ in range(timeout_lines):
+    # 한 계산에서 나올 수 있는 MATLAB 메시지의 넉넉한 상한.
+    # 🚨 **여기를 작게 잡으면 답을 못 찾고 넘어간다.** 예전에 200이었는데,
+    #    계산이 안 풀리면 MATLAB 이 특이 행렬 경고와 스택을 **878줄** 찍는다.
+    #    그때 답 줄이 통로에 남고 **다음 계산이 그 답을 집어 가서**,
+    #    안 풀려야 할 조건이 "잘 풀렸다"로 나왔다(2026-08-06 실제로 확인).
+    #    지금은 상한이 아니라 **일감 번호**로 자기 답을 가린다. 이 값은 폭주 방지용일 뿐이다.
+    _MAX_LINES = 200_000
+
+    def _read_reply(self, want_id: int | None = None) -> dict:
+        """내 일감의 답이 나올 때까지 읽는다.
+
+        want_id 가 있으면 **번호가 맞는 답만** 받는다. 번호가 다른 답(= 앞 계산이
+        남기고 간 것)은 버린다. 못 찾고 상한까지 가면 통로가 어긋난 것이므로
+        **프로세스를 정리해서** 다음 계산이 깨끗한 상태에서 시작하게 한다.
+        """
+        stale = 0
+        for _ in range(self._MAX_LINES):
             line = self.proc.stdout.readline()
             if not line:
                 err = self.proc.stderr.read() if self.proc.stderr else ""
                 _Worker._inst = None
-                raise RuntimeError(f"계산 일꾼이 응답하지 않습니다.\n{err[-1500:]}")
+                raise RuntimeError(f"계산 엔진이 응답하지 않습니다.\n{err[-1500:]}")
             line = line.strip()
             if not line.startswith("{"):
                 continue                      # MATLAB이 찍은 메시지 — 건너뜀
@@ -250,9 +265,29 @@ class _Worker:
                 ans = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if any(k in ans for k in self._KEYS):
-                return ans
-        raise RuntimeError("계산 일꾼의 응답을 찾지 못했습니다.")
+            if not any(k in ans for k in self._KEYS):
+                continue
+            if want_id is not None and ans.get("id") != want_id:
+                stale += 1                    # 앞 계산이 남기고 간 답 — 버린다
+                continue
+            return ans
+        self._drop("계산 엔진이 너무 많은 메시지를 쏟아내 결과를 찾지 못했습니다.")
+        raise RuntimeError(
+            "계산 엔진에서 결과를 받지 못했습니다.\n"
+            f"(메시지 {self._MAX_LINES}줄을 읽고도 못 찾았습니다"
+            + (f" · 버린 옛 답 {stale}개" if stale else "") + ")")
+
+    def _drop(self, why: str = "") -> None:
+        """이 프로세스를 버린다 — 다음 계산은 새로 띄운 것에서 시작한다.
+
+        통로가 한 번 어긋나면 그 뒤 답은 전부 한 칸씩 밀린다. 되살리려 하지 말고 버린다.
+        """
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
+        if _Worker._inst is self:
+            _Worker._inst = None
 
     _inst: "_Worker | None" = None
 
@@ -268,8 +303,9 @@ class _Worker:
         # 준비 신호를 기다린다 (Runtime 기동)
         ans = self._read_reply()
         if not ans.get("ready"):
-            raise RuntimeError(f"계산 일꾼을 띄우지 못했습니다: {ans}")
+            raise RuntimeError(f"계산 엔진을 띄우지 못했습니다: {ans}")
         self.dir = tempfile.mkdtemp(prefix="unigrid_")
+        self.job = 0                          # 일감 번호 — 답이 자기 것인지 가리는 데 쓴다
 
     @classmethod
     def get(cls, mwpython: str | Path | None = None) -> "_Worker":
@@ -289,18 +325,30 @@ class _Worker:
         cls._inst = None
 
     def solve(self, payload: dict[str, Any]) -> dict[str, Any]:
-        inp = Path(self.dir) / "case.json"
-        out = Path(self.dir) / "result.json"
-        if out.exists():
-            out.unlink()
+        self.job += 1
+        job_id = self.job
+        # 일감마다 다른 파일에 쓴다. 앞 계산의 결과 파일이 남아 있어도 그것을 읽을 일이 없다.
+        inp = Path(self.dir) / f"case_{job_id}.json"
+        out = Path(self.dir) / f"result_{job_id}.json"
         inp.write_text(json.dumps(payload), encoding="utf-8")
         self.proc.stdin.write(
-            json.dumps({"in": str(inp), "out": str(out)}) + "\n")
+            json.dumps({"in": str(inp), "out": str(out), "id": job_id}) + "\n")
         self.proc.stdin.flush()
-        ans = self._read_reply()
+        ans = self._read_reply(want_id=job_id)
         if not ans.get("ok"):
+            # 안 풀린 것뿐이다 — 프로세스는 멀쩡하니 그대로 두고 다음 계산을 받는다.
             raise RuntimeError(f"조류계산 실패\n{ans.get('error', '')[:1500]}")
-        return json.loads(out.read_text(encoding="utf-8"))
+        if not out.exists():
+            self._drop()
+            raise RuntimeError("계산은 끝났다는데 결과 파일이 없습니다.")
+        try:
+            return json.loads(out.read_text(encoding="utf-8"))
+        finally:
+            for f in (inp, out):              # 오래 켜 두어도 쌓이지 않게
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
 
 def _run_in_process(case: Any) -> dict[str, Any]:
@@ -333,7 +381,7 @@ def _arr(raw: dict, key: str) -> np.ndarray:
         return np.asarray(v, dtype=float)
     except (TypeError, ValueError):
         # 숫자로 못 바꾸는 값이 오면 앱을 죽이지 말고 그 표만 비운다.
-        # (원래 원인은 일꾼 쪽에서 고쳤지만, 다른 경로로 또 들어와도 창은 떠야 한다)
+        # (원래 원인은 계산 프로세스 쪽에서 고쳤지만, 다른 경로로 또 들어와도 창은 떠야 한다)
         print(f"[결과] '{key}' 를 숫자로 바꾸지 못해 비웁니다: {str(v)[:120]}")
         return np.zeros((0, 0))
 
@@ -441,7 +489,7 @@ def _build(raw: dict[str, Any], seconds: float) -> Solution:
 
 
 def warmup(mwpython: str | Path | None = None) -> bool:
-    """계산 일꾼을 미리 띄워둔다 (시작 화면에서 부르면 첫 계산이 빨라진다)."""
+    """계산 엔진을 미리 띄워둔다 (시작 화면에서 부르면 첫 계산이 빨라진다)."""
     if platform.system() == "Windows":
         return True
     _Worker.get(mwpython)
@@ -454,7 +502,7 @@ def is_ready() -> bool:
 
 
 def shutdown() -> None:
-    """앱을 닫을 때 일꾼 프로세스를 정리한다."""
+    """앱을 닫을 때 계산 프로세스를 정리한다."""
     if platform.system() != "Windows":
         _Worker.shutdown()
 
@@ -467,7 +515,7 @@ if __name__ == "__main__":
     path = sys.argv[1] if len(sys.argv) > 1 else "ACDC_CIGRE_MVACMVDCLVDC_24h.xlsx"
     case_obj = load_case(path)
     sol = solve(case_obj)
-    sol2 = solve(case_obj)   # 두 번째 — 일꾼 재사용
+    sol2 = solve(case_obj)   # 두 번째 — 계산 프로세스 재사용
     print(f"case      : {sol.case_name}  ({sol.mode_name})")
     print(f"시간대    : {sol.n_time}")
     print(f"AC        : {sol.AC.shape}   열={sol.cols('AC')[:4]}...")
