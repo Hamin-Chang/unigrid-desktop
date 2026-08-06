@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
     QComboBox, QSpinBox, QDialog, QCheckBox, QLineEdit, QButtonGroup,
     QHeaderView, QScrollArea, QSizePolicy, QSplitter, QFileDialog,
-    QProgressDialog, QMessageBox,
+    QProgressDialog, QMessageBox, QInputDialog,
 )
 
 import json
@@ -434,6 +434,15 @@ def hline_soft(c):
 
 
 # ─────────────────────────────────────────── 조각
+class _ClickLabel(QLabel):
+    """두 번 누르면 알려 주는 라벨 (시나리오 이름 고치기용)."""
+
+    double_clicked = Signal(object)
+
+    def mouseDoubleClickEvent(self, ev):
+        self.double_clicked.emit(self)
+
+
 class Card(QFrame):
     def __init__(self, c):
         super().__init__()
@@ -1115,6 +1124,9 @@ class Proto(QMainWindow):
         bar = self.change_bar()          # 바꾼 것이 있을 때만 나온다
         if bar is not None:
             v.addWidget(bar)
+        sb = self.scenario_bar()         # 담아 둔 것이 있을 때만 나온다
+        if sb is not None:
+            v.addWidget(sb)
 
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
@@ -1795,6 +1807,141 @@ class Proto(QMainWindow):
         self._pending = self.applied + self.changes   # 풀고 나서 시나리오로 담으려고
         self._start_solve(getattr(self, "_last_path", self.base_case.case_name),
                           case=SC.apply(self.base_case, self._pending))
+
+    def scenario_bar(self):
+        """담아 둔 시나리오 목록. 원본뿐이면 안 만든다(줄 하나짜리 목록은 군더더기다).
+
+        결과를 이미 들고 있으므로 **다시 계산하지 않고** 오갈 수 있다.
+        칸이 줄마다 어긋나지 않게 **격자**로 놓는다.
+        """
+        if len(self.book.items) < 2:
+            return None
+        c = self.c
+        card = QFrame()
+        card.setObjectName("card")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(14, 9, 12, 10)
+        v.setSpacing(6)
+
+        head = QHBoxLayout()
+        cap = QLabel(f"시나리오 {len(self.book.items)}")
+        cap.setStyleSheet(f"color:{c['muted']};font-size:12px;font-weight:600;")
+        head.addWidget(cap)
+        head.addStretch(1)
+        tip = QLabel("이름을 두 번 누르면 고칠 수 있습니다")
+        tip.setStyleSheet(f"color:{c['muted']};font-size:11px;")
+        head.addWidget(tip)
+        v.addLayout(head)
+
+        g = QGridLayout()
+        g.setHorizontalSpacing(12)
+        g.setVerticalSpacing(3)
+        for j, (name, w) in enumerate(
+                [("", 16), ("이름", 0), ("바꾼 것", 52), ("결과", 66),
+                 ("전압 최저", 82), ("원본 대비", 74), ("", 210)]):
+            if name:
+                q = QLabel(name)
+                q.setStyleSheet(f"color:{c['muted']};font-size:11px;")
+                g.addWidget(q, 0, j)
+            if w:
+                g.setColumnMinimumWidth(j, w)
+        g.setColumnStretch(1, 1)
+
+        base = self.book.base()
+        for i, s in enumerate(self.book.items, start=1):
+            self._scenario_row(g, i, s, base)
+        v.addLayout(g)
+        return card
+
+    def _scenario_row(self, g, i, s, base):
+        c = self.c
+        here = list(s.changes) == list(self.applied)     # 지금 화면이 이것인가
+
+        dot = QLabel("●" if here else "○")
+        dot.setStyleSheet(f"color:{c['accent'] if here else c['border']};font-size:12px;")
+        g.addWidget(dot, i, 0)
+
+        left = QHBoxLayout()
+        left.setSpacing(7)
+        name = _ClickLabel(s.name)
+        name.setStyleSheet(
+            f"color:{c['accent'] if here else c['text']};font-size:13px;"
+            f"font-weight:{'700' if here else '500'};")
+        name.setToolTip(SC.describe(s.changes))
+        name.double_clicked.connect(lambda _s=s: self.rename_scenario(_s))
+        left.addWidget(name)
+        if here:
+            tag = QLabel("지금 보는 것")
+            tag.setStyleSheet(
+                f"color:{c['accent']};background:{c['accent_soft']};font-size:11px;"
+                f"border-radius:8px;padding:1px 8px;")
+            left.addWidget(tag)
+        left.addStretch(1)
+        g.addLayout(left, i, 1)
+
+        def cell(col, text, color=None, bold=False, right=False, tip=""):
+            q = QLabel(text)
+            q.setStyleSheet(f"color:{color or c['muted']};font-size:12px;"
+                            f"font-weight:{'600' if bold else '400'};")
+            if right:
+                q.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if tip:
+                q.setToolTip(tip)
+            g.addWidget(q, i, col)
+
+        cell(2, "—" if s.base else f"{len(s.changes)}건")
+        cell(3, s.summary, c["warn"] if s.error else c["muted"], bold=bool(s.error))
+        vmin = s.vmin()
+        cell(4, "—" if np.isnan(vmin) else f"{vmin:.4f} pu", c["text"], right=True)
+        d = s.against(base) if (base is not None and not s.base) else float("nan")
+        cell(5, "—" if np.isnan(d) else f"{d:+.4f}",
+             c["warn"] if (not np.isnan(d) and d < -1e-6) else c["muted"],
+             right=True, tip="원본 대비 전압 최저 변화")
+
+        act = QHBoxLayout()
+        act.setSpacing(6)
+        act.addStretch(1)
+        if not here:
+            b = QPushButton("결과 보기" if s.solved else "조건만 불러오기")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _, _s=s: self.show_scenario(_s))
+            act.addWidget(b)
+        if not s.base:
+            x = QPushButton("지우기")
+            x.setCursor(Qt.PointingHandCursor)
+            x.setToolTip("이 시나리오를 목록에서 지웁니다 (계통은 안 건드립니다)")
+            x.clicked.connect(lambda _, _s=s: self.drop_scenario(_s))
+            act.addWidget(x)
+        g.addLayout(act, i, 6)
+
+    def show_scenario(self, s):
+        """그 시나리오로 화면을 옮긴다. 결과를 들고 있으면 **다시 안 푼다.**"""
+        self.applied = list(s.changes)
+        self.changes = []
+        if s.solved:
+            self.sol = s.solution
+            self.t = min(self.t, max(int(s.solution.n_time) - 1, 0))
+        else:
+            # 안 풀린 시나리오 — 조건만 깔아 준다. 화면 결과는 건드리지 않는다.
+            QMessageBox.information(
+                self, "안 풀린 시나리오",
+                f"「{s.name}」 은 답을 못 찾은 조건입니다.\n조건만 깔아 두었으니 "
+                f"여기서 더 바꿔 다시 계산해 보세요.\n\n화면의 결과는 그대로 둡니다.")
+        self.rebuild()
+
+    def rename_scenario(self, s):
+        name, ok = QInputDialog.getText(self, "이름 바꾸기", "시나리오 이름", text=s.name)
+        if ok and name.strip():
+            self.book.rename(s, name.strip())
+            self.rebuild()
+
+    def drop_scenario(self, s):
+        if list(s.changes) == list(self.applied):
+            back = self.book.base()
+            if back is not None and back.solved:
+                self.show_scenario(back)          # 보고 있던 것을 지우면 원본으로
+        self.book.remove(s)
+        self.rebuild()
 
     def check_page(self):
         c = self.c
