@@ -315,6 +315,11 @@ def dynamic_table(sol, bus_row):
     return f"{which} {bus_no} 시간별", ["Time[h]"] + keep, out
 
 
+def _tab_base(text: str) -> str:
+    """탭 이름에서 건수를 뗀다 — "점검 (3)" · "계통 데이터 (2)" 는 같은 탭이다."""
+    return text.split(" (")[0].strip()
+
+
 def real_tables(sol, mode, t, show_vsc):
     """(탭이름, 열이름들, 값행렬) 목록 — 실제 결과에서."""
     out = []
@@ -853,6 +858,9 @@ class Proto(QMainWindow):
         self.show_vsc = False
         self.show_violations = False  # 계통도 '위반 보기' 켜짐 여부
         self.graph_tab = 0            # 보고 있던 그래프 탭 (재생성 때 되돌리려고)
+        # 아래쪽 표 탭도 같이 기억한다. **번호가 아니라 이름**으로 — 모드·VSC 표시에 따라
+        # 탭 개수가 달라지고, 이름에도 건수가 붙는다("점검 (3)"·"계통 데이터 (2)").
+        self.table_tab = "AC 결과"
         # ── 계통 조건 (PDR §7 2단계) ──
         # 원본 케이스는 읽고 나면 바뀌지 않는다. 그 위에 "바꾼 것" 목록만 얹는다.
         self.base_case = None         # 파일에서 읽은 원본 (scenario.apply 의 바탕)
@@ -1337,6 +1345,12 @@ class Proto(QMainWindow):
         n_ch = len(self.changes)
         tt.addTab(self.grid_page(),
                   f"계통 데이터 ({n_ch})" if n_ch else "계통 데이터")
+
+        # 보고 있던 탭으로 되돌린다 — 조건을 하나 바꿀 때마다 화면을 다시 그리므로,
+        # 이걸 안 하면 매번 첫 탭(AC 결과)으로 튄다.
+        self._restore_tab(tt)
+        tt.currentChanged.connect(
+            lambda i, w=tt: setattr(self, "table_tab", _tab_base(w.tabText(i))))
         tv.addWidget(tt)
         split.addWidget(tw)
 
@@ -2741,6 +2755,16 @@ class Proto(QMainWindow):
         h.addStretch()
         return bar
 
+    def _restore_tab(self, tt):
+        """다시 그린 뒤 보고 있던 표 탭으로 되돌린다. 그 탭이 사라졌으면 첫 탭."""
+        want = getattr(self, "table_tab", None)
+        if not want:
+            return
+        for i in range(tt.count()):
+            if _tab_base(tt.tabText(i)) == want:
+                tt.setCurrentIndex(i)
+                return
+
     def go_check(self):
         """상태바의 위반 건수 → 점검 탭으로."""
         if self.mode == "비교":       # 비교 모드엔 표가 없으니 스냅샷으로 돌아간다
@@ -2752,6 +2776,7 @@ class Proto(QMainWindow):
         for i in range(tt.count()):
             if tt.tabText(i).startswith("점검"):
                 tt.setCurrentIndex(i)
+                self.table_tab = "점검"      # 다시 그려도 여기 머문다
                 return
 
     # ── 동작 ──
