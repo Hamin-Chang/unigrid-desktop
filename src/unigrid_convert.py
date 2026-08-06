@@ -197,10 +197,21 @@ def _pnum(tok: str) -> float:
 
 
 def _parse_line(ln: str) -> list[float]:
-    """PSS/E 한 줄을 숫자 리스트로. 따옴표 문자열은 0으로, '/' 뒤 주석은 제거."""
-    ln = re.sub(r"'[^']*'", "0", ln)
+    """PSS/E 한 줄을 숫자 리스트로. 따옴표 문자열은 0으로, '/' 뒤 주석은 제거.
+
+    🚨 **칸을 나누는 것이 쉼표만이 아니다** (2026-08-06 확인). PSS/E 는 쉼표와 공백을
+       둘 다 허용하고, 옛 판 파일은 공백만 쓰기도 한다:
+
+         rev 33 :  `    1,'1     ', 115.0000,1,   1,   1,   1,1.02700,   6.5179`
+         rev 29 :  `    1 'Bus 1   '  16.5000 3    0.000    0.000   1   1 1.04000`
+
+       예전에는 쉼표로만 잘라서, 공백 파일은 **한 줄이 통째로 칸 하나**가 되었다.
+       그래서 `t_psse_case2.raw` 가 버스는 읽히는데 **선로·발전기가 0개**로 나왔고
+       엔진이 빈 표에서 터졌다. 따옴표 안의 공백은 먼저 없애므로 안전하다.
+    """
+    ln = re.sub(r"'[^']*'", "0", ln)             # 따옴표 문자열(공백 포함)을 먼저 지운다
     ln = re.sub(r"/.*$", "", ln)
-    return [_pnum(t) for t in ln.split(",")]
+    return [_pnum(t) for t in re.split(r"[,\s]+", ln.strip()) if t != ""]
 
 
 def _g(v: list[float], idx1: int) -> float:
@@ -222,12 +233,23 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
     lines = [ln.strip() for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()]
 
     # ---- 헤더: baseMVA, freq ----
-    hdr_part = re.match(r"^([^/]+)", lines[0])
-    if not hdr_part:
-        raise ValueError("PSS/E 헤더를 파싱할 수 없습니다.")
-    hv = [_pnum(t) for t in hdr_part.group(1).strip().split(",")]
+    # 🚨 첫 줄의 칸 수가 **판(rev)마다 다르다** (2026-08-06 확인):
+    #     rev 29 : `0, 100.00`                     2칸 — 주파수 칸이 아예 없다
+    #     rev 30 : `0, 100.00, 30`                 3칸 — 역시 없다
+    #     rev 33+: `0, 100.00, 33, 0, 0, 60.00`    6칸 — 6번째가 주파수(BASFRQ)
+    #    예전에는 6번째를 그냥 집어서 옛 판 파일이 **터졌다**
+    #    (`IndexError: list index out of range`). 없으면 60 Hz 로 둔다.
+    hdr_part = re.match(r"^([^/]+)", lines[0]) if lines else None
+    hv = [_pnum(t) for t in hdr_part.group(1).strip().split(",")] if hdr_part else []
+    if len(hv) < 2 or not np.isfinite(hv[1]) or hv[1] <= 0:
+        raise ValueError(
+            f"'{path.name}' 은(는) PSS/E 파일로 읽히지 않습니다.\n"
+            f"  첫 줄: {lines[0][:70] if lines else '(빈 파일)'}\n\n"
+            "PSS/E `.raw` 는 첫 줄이 `0, 100.00, 33, …` 처럼 시작하고 "
+            "두 번째 칸이 기준 용량(MVA)입니다.\n"
+            "다른 형식이라면 그 형식으로 열어 보세요 (.xlsx · .m).")
     baseMVA = hv[1]
-    freq = hv[5]
+    freq = hv[5] if len(hv) >= 6 and np.isfinite(hv[5]) and hv[5] > 0 else 60.0
 
     # ---- 섹션 분리 (4번째 줄부터, BUS로 시작) ----
     sections: dict[str, list[str]] = {}
