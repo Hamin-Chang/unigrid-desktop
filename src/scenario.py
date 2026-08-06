@@ -384,10 +384,8 @@ def auto_name(case: Any, changes: Sequence[Change]) -> str:
         return "원본"
     if len(changes) == 1:
         return changes[0].label
-    offs = [c for c in changes if isinstance(c, Cell)]
-    if offs and len(offs) == len(changes):
-        return f"{offs[0].label} 외 {len(offs) - 1}건"
-    return f"바꾼 것 {len(changes)}건"
+    # 곱하기가 섞여 있어도 첫 줄 이름을 쓴다 — "바꾼 것 2건" 은 무엇인지 안 보인다.
+    return f"{changes[0].label} 외 {len(changes) - 1}건"
 
 
 @dataclass

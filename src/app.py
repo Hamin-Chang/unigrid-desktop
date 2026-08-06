@@ -16,14 +16,14 @@ import random
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
     QComboBox, QSpinBox, QDialog, QCheckBox, QLineEdit, QButtonGroup,
     QHeaderView, QScrollArea, QSizePolicy, QSplitter, QFileDialog,
-    QProgressDialog, QMessageBox, QInputDialog,
+    QProgressDialog, QMessageBox, QInputDialog, QSlider,
 )
 
 import json
@@ -860,6 +860,12 @@ class Proto(QMainWindow):
         self.changes = []             # 그 위에 얹었지만 **아직 계산 안 한** 것
         self.book = SC.Book()         # 담아 둔 시나리오
         self.grid_key = "AC_Line_dat" # 계통 데이터 탭에서 보고 있는 표
+        # 부하 일괄 증감 슬라이더 — 끌고 있는 동안 화면을 다시 그리면 손잡이가 사라진다.
+        # 그래서 놓았을 때(sliderReleased) 또는 잠깐 멈췄을 때만 반영한다.
+        self._load_pending = 1.0
+        self._load_timer = QTimer(self)
+        self._load_timer.setSingleShot(True)
+        self._load_timer.timeout.connect(lambda: self.scale_loads(self._load_pending))
         self.visible = {k: {n for n, d in v if d} for k, v in TABLE_SPECS.items()}
         self.split_sizes = None
         self.setWindowTitle("UNIGRID")
@@ -1743,6 +1749,104 @@ class Proto(QMainWindow):
         h.addWidget(undo)
         return bar
 
+    # ── ② 부하 일괄 증감 ──────────────────────────────────────────────
+    # 칸을 하나씩 고치는 대신 **부하 전체에 한 수를 곱한다**. 부하 여유(margin)를 보는
+    # 가장 흔한 방법이라 슬라이더 하나로 둔다. 발전은 넣지 않았다 — 슬랙이 차액을 다 받아
+    # 무엇 때문에 답이 달라졌는지 흐려진다.
+
+    def load_factor(self, changes=None):
+        """지금 걸려 있는 배수 (원본 대비). 곱하기가 여러 개면 다 곱한 값이다."""
+        f = 1.0
+        for ch in (self.applied + self.changes if changes is None else changes):
+            if isinstance(ch, SC.Scale):
+                f *= float(ch.factor)
+        return f
+
+    def load_total(self, changes):
+        """지금 보고 있는 시각의 총 부하 [MW] — P 만 센다 (Q 는 따로 안 보여 준다)."""
+        case = SC.apply(self.base_case, changes) if changes else self.base_case
+        total = 0.0
+        for key in ("AC_PLoad_dat", "DC_PLoad_dat"):
+            arr = SC._values(case, key)
+            if arr.size == 0 or arr.shape[1] < 2:
+                continue
+            col = min(self.t + 1, arr.shape[1] - 1)      # 0열은 버스 번호
+            total += float(np.nansum(arr[:, col]))
+        return total / 1e6
+
+    def has_load(self):
+        return self.base_case is not None and any(
+            SC._values(self.base_case, k).size for k in SC.LOAD_TABLES)
+
+    def load_bar(self):
+        """부하 전체 ×배수 슬라이더. 여기서도 **바로 계산하지 않는다.**"""
+        if not self.has_load():
+            return None
+        c = self.c
+        now = self.load_factor()
+        bar = QFrame()
+        bar.setObjectName("card")
+        bar.setStyleSheet(f"#card {{ background:{c['surface']};"
+                          f"border:1px solid {c['border']};border-radius:10px; }}")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(15, 7, 11, 7)
+        h.setSpacing(11)
+
+        tag = QLabel("부하 전체")
+        tag.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
+        h.addWidget(tag)
+
+        sl = QSlider(Qt.Horizontal)
+        sl.setRange(50, 200)
+        sl.setValue(int(round(now * 100)))
+        sl.setFixedWidth(240)
+        sl.setTickPosition(QSlider.TicksBelow)
+        sl.setTickInterval(25)
+        sl.setToolTip("모든 부하에 같은 수를 곱합니다 (24시각 케이스면 모든 시각에 함께).")
+        h.addWidget(sl)
+
+        val = QLabel(f"×{now:.2f}")
+        val.setFixedWidth(52)
+        val.setStyleSheet(f"color:{c['accent']};font-size:14px;font-weight:700;")
+        h.addWidget(val)
+
+        base_mw = self.load_total([])
+        now_mw = self.load_total(self.applied + self.changes)
+        tot = QLabel(f"총 부하 {base_mw:,.1f} → {now_mw:,.1f} MW"
+                     if abs(now - 1.0) > 1e-9 else f"총 부하 {base_mw:,.1f} MW")
+        tot.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        h.addWidget(tot)
+        h.addStretch(1)
+
+        back = QPushButton("원래대로 (×1)")
+        back.setCursor(Qt.PointingHandCursor)
+        back.setEnabled(abs(now - 1.0) > 1e-9)
+        back.clicked.connect(lambda: self.scale_loads(1.0))
+        h.addWidget(back)
+
+        def moved(v):
+            val.setText(f"×{v / 100:.2f}")
+            self._load_pending = v / 100
+            if not sl.isSliderDown():            # 화살표키·홈 클릭 — 잠깐 뒤에 반영
+                self._load_timer.start(250)
+
+        sl.valueChanged.connect(moved)
+        sl.sliderReleased.connect(lambda: self.scale_loads(sl.value() / 100))
+        return bar
+
+    def scale_loads(self, want):
+        """부하를 원본의 want 배로 만든다. 이미 푼 조건에 걸린 배수는 빼고 얹는다."""
+        self._load_timer.stop()
+        if self.base_case is None:
+            return
+        done = self.load_factor(self.applied)          # 이미 계산해 놓은 몫
+        self.changes = [ch for ch in self.changes if not isinstance(ch, SC.Scale)]
+        need = float(want) / done
+        if abs(need - 1.0) > 1e-9:
+            self.changes.append(SC.Scale(tables=SC.LOAD_TABLES, factor=need,
+                                         label=f"부하 전체 ×{want:g}"))
+        self.rebuild()
+
     def grid_page(self):
         """계통 데이터 탭 — 엑셀 값을 그대로 보여 주고, 여기서 켜고 끈다."""
         c = self.c
@@ -1783,6 +1887,10 @@ class Proto(QMainWindow):
         hint.setStyleSheet(f"color:{c['muted']};font-size:12px;")
         row.addWidget(hint)
         v.addLayout(row)
+
+        load = self.load_bar()                 # ② 부하 일괄 증감
+        if load is not None:
+            v.addWidget(load)
 
         v.addWidget(self.grid_table_widget(), 1)
         return w
@@ -1912,6 +2020,9 @@ class Proto(QMainWindow):
         if not self.changes or self.base_case is None:
             return
         self._pending = self.applied + self.changes   # 풀고 나서 시나리오로 담으려고
+        # 이름은 **이번에 새로 얹은 것**으로 짓는다. 전체 목록으로 지으면 맨 앞의
+        # 오래된 조건("부하 전체 ×1.3")이 계속 이름을 차지한다.
+        self._pending_new = list(self.changes)
         self._start_solve(getattr(self, "_last_path", self.base_case.case_name),
                           case=SC.apply(self.base_case, self._pending))
 
@@ -2710,7 +2821,8 @@ class Proto(QMainWindow):
         pending = getattr(self, "_pending", None)
         if pending:
             # [이 조건으로 계산] 으로 푼 것 — 시나리오 한 줄로 담고 바꾼 목록을 비운다
-            self.book.add(self.base_case, pending, solution=sol)
+            self.book.add(self.base_case, pending, solution=sol,
+                          name=self._new_name(pending))
             self.applied = list(pending)      # 이제 이것이 화면의 조건이다
             self.changes = []
             self._pending = None
@@ -2732,6 +2844,12 @@ class Proto(QMainWindow):
             self.show_vsc = False
         self.rebuild()
 
+    def _new_name(self, pending):
+        """시나리오 이름 — 이번에 새로 얹은 것으로 짓고, 없으면 전체로."""
+        fresh = getattr(self, "_pending_new", None)
+        self._pending_new = None
+        return SC.auto_name(self.base_case, fresh if fresh else pending)
+
     def _solve_failed(self, msg):
         if getattr(self, "prog", None) is not None:
             self.prog.close()
@@ -2740,7 +2858,8 @@ class Proto(QMainWindow):
             # 조건을 바꿔 풀다가 안 풀린 것 — **시나리오는 살려 둔다.**
             # 무엇을 바꿨는지가 목록에 남아야 다음 판단을 할 수 있다(PDR §4.3).
             # 화면은 그대로 두므로 직전 결과가 지워지지 않는다.
-            self.book.add(self.base_case, pending, error=msg)
+            self.book.add(self.base_case, pending, error=msg,
+                          name=self._new_name(pending))
             self.changes = []          # applied 는 그대로 — 화면은 직전 결과 그대로다
             self._pending = None
             self.rebuild()
