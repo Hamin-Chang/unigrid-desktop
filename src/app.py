@@ -1932,7 +1932,10 @@ class Proto(QMainWindow):
         tb.setHorizontalHeaderLabels(cols)
         tb.verticalHeader().setVisible(False)
         tb.verticalHeader().setDefaultSectionSize(30)
-        tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 🚨 열이 많으면 늘려 맞추기(Stretch)가 머리글을 잘라 버린다 — IC 는 20열이라
+        #    "Rating Power [MW]" 가 "ng Po" 로 보였다. 그럴 땐 글자에 맞추고 옆으로 넘긴다.
+        tb.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch if len(cols) <= 9 else QHeaderView.ResizeToContents)
         tb.setAlternatingRowColors(True)
 
         touched = {(ch.row, ch.col) for ch in self.changes

@@ -189,16 +189,30 @@ def describe_row(case: Any, table: str, row: int) -> str:
 
     양쪽이 **다른 계열**이면(IC 는 AC↔DC) 어느 쪽이 어느 쪽인지 밝힌다 —
     "IC 107–1" 만 보면 107이 AC 버스인지 DC 버스인지 알 수 없다.
+
+    🚨 **같은 자리에 여러 대가 붙는 계통이 있다.** 71bus 는 AC 38 ↔ DC 39 사이에
+       IC 가 3대 병렬이라 버스 번호만으로는 셋이 똑같아진다 ⇒ 몇 번째인지 붙인다.
     """
     sw = SWITCHES.get(table)
     if sw is None:
         return f"{table} {row + 1}번째 줄"
     mark = row_mark(case, table, row)
-    if not mark:
-        return f"{sw.name} {row + 1}번째 줄"
+    if not mark or any(not np.isfinite(v) for _, v in mark):
+        return f"{sw.name} {row + 1}번째 줄"       # 값이 비어 있는 줄
     if sw.two_sided:                                  # 양 끝이 다른 계열 — 어느 쪽인지 밝힌다
-        return f"{sw.name} ({' ↔ '.join(f'{n} {int(v)}' for n, v in mark)})"
-    return f"{sw.name} {'–'.join(str(int(v)) for _, v in mark)}"
+        name = f"{sw.name} ({' ↔ '.join(f'{n} {int(v)}' for n, v in mark)})"
+    else:
+        name = f"{sw.name} {'–'.join(str(int(v)) for _, v in mark)}"
+    same = _same_mark_rows(case, table, mark)
+    if len(same) > 1:
+        name += f" {same.index(row) + 1}번"
+    return name
+
+
+def _same_mark_rows(case: Any, table: str, mark) -> list[int]:
+    """지문이 똑같은 줄들 (병렬로 여러 대 붙은 자리)."""
+    arr = _values(case, table)
+    return [i for i in range(arr.shape[0]) if row_mark(case, table, i) == mark]
 
 
 def is_on(case: Any, table: str, row: int, changes: Sequence[Change] = ()) -> bool:
