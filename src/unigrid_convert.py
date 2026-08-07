@@ -607,9 +607,13 @@ def _psse_build_3w(tr3w_list, bus_all, baseMVA):
         else:
             tap_side, tap_ratio = 0, 0.0
 
+        # 🚨 2026-08-07: PSS/E 의 ANG 는 그 권선이 **앞선다**는 뜻이고, 우리 표의 위상 칸은
+        #    **뒤진다**는 뜻이다(pandapower `shift_mv_degree` 와 같음). 부호를 뒤집어 넣는다.
+        #    안 뒤집어 `psse_3w_sample` 버스 3010 의 위상이 MATPOWER 와 59도 어긋났었다
+        #    (그 변압기는 `D1y0y0`·ANG3=30도).
         ang = [ANG1, ANG2, ANG3]
-        shift_mv = ang[idxMV] - ang[idxHV]
-        shift_lv = ang[idxLV] - ang[idxHV]
+        shift_mv = -(ang[idxMV] - ang[idxHV])
+        shift_lv = -(ang[idxLV] - ang[idxHV])
 
         SnHV = [Sn1, Sn2, Sn3][idxHV]
         if SnHV <= 0:
