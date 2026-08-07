@@ -311,8 +311,13 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
     ld = []
     for ln in sec("LOAD"):
         v = _parse_line(ln)
-        if is_active(_g(v, 1)):
-            ld.append([_g(v, 1), _g(v, 6), _g(v, 7)])
+        if is_active(_g(v, 1)) and _g(v, 3) == 1:      # STATUS == 1
+            # PSS/E 부하는 세 갈래다 — 상수전력(PL·QL) · 정전류(IP·IQ) · 정임피던스(YP·YQ).
+            # 🚨 2026-08-07 전에는 **PL·QL 만 가져왔다.** `psse_3w_sample` 은 부하 389 MW 중
+            #    96 MW(25%)가 그렇게 사라졌다.
+            ld.append([_g(v, 1), _g(v, 6), _g(v, 7),      # PL, QL
+                       _g(v, 8), _g(v, 9),                # IP, IQ
+                       _g(v, 10), _g(v, 11)])             # YP, YQ
 
     # ---- Fixed shunt: [bus, GL, BL] + Switched shunt(BINIT) ----
     sh = []
@@ -350,6 +355,13 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
         if is_active(i) and is_active(j):
             br.append([i, j, _g(v, 4), _g(v, 5), _g(v, 6),
                        _g(v, 7), _g(v, 8), _g(v, 9), _g(v, 14)])
+            # 🚨 2026-08-07: **선로 끝 션트(GI·BI·GJ·BJ)를 안 읽고 있었다.**
+            #    pu 라서 baseMVA 를 곱해 양끝 버스의 Gs·Bs 로 넣는다.
+            #    `psse_3w_sample` 버스 151 이 (2.3, −50.1) MVA 만큼 통째로 빠져 있었다.
+            if _g(v, 14) == 1:                     # ST == 1 인 선로만
+                for b, gi, bi in ((i, _g(v, 10), _g(v, 11)), (j, _g(v, 12), _g(v, 13))):
+                    if gi or bi:
+                        sh.append([b, gi * baseMVA, bi * baseMVA])
     br = np.array(br, dtype="float64").reshape(-1, 9)
 
     # ---- Transformer (2권선 + 3권선) ----
@@ -376,13 +388,37 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
     AC_Bus[:, 16] = bus[:, 5]         # Area
 
     # ---- AC P/Q Load ----
+    # 엔진 식:  P = P0 · ( Z_p·(V/V0)² + I_p·(V/V0) + P_p )
+    # PSS/E  :  P = PL + IP·V + YP·V²   ·   Q = QL + IQ·V − YQ·V²
+    #   ⇒ P0 = PL + IP·V0 + YP·V0²  로 두면 계수가 딱 떨어지고 합이 1 이 된다.
+    #     P_p = PL/P0 · I_p = IP·V0/P0 · Z_p = YP·V0²/P0     (Q 는 YQ 부호가 반대)
     AC_PLoad = np.column_stack([bus_ids, np.zeros(nbus)])
     AC_QLoad = np.column_stack([bus_ids, np.zeros(nbus)])
+    zip_p = np.zeros((nbus, 3))                    # PL, IP, YP 합
+    zip_q = np.zeros((nbus, 3))                    # QL, IQ, YQ 합
     for row in ld:
         rr = np.where(bus_ids == row[0])[0]
-        if rr.size:
-            AC_PLoad[rr[0], 1] += row[1] * 1e6
-            AC_QLoad[rr[0], 1] += row[2] * 1e6
+        if not rr.size:
+            continue
+        i = rr[0]
+        zip_p[i] += [row[1], row[3], row[5]]
+        zip_q[i] += [row[2], row[4], row[6]]
+    for i in range(nbus):
+        V0 = AC_Bus[i, 11] if AC_Bus[i, 11] > 0 else 1.0
+        PL, IP, YP = zip_p[i]
+        QL, IQ, YQ = zip_q[i]
+        P0 = PL + IP * V0 + YP * V0 ** 2
+        Q0 = QL + IQ * V0 - YQ * V0 ** 2
+        AC_PLoad[i, 1] = P0 * 1e6
+        AC_QLoad[i, 1] = Q0 * 1e6
+        if abs(P0) > 1e-12:
+            AC_Bus[i, 3] = YP * V0 ** 2 / P0        # Z_p
+            AC_Bus[i, 4] = IP * V0 / P0             # I_p
+            AC_Bus[i, 5] = PL / P0                  # P_p
+        if abs(Q0) > 1e-12:
+            AC_Bus[i, 6] = -YQ * V0 ** 2 / Q0       # Z_q
+            AC_Bus[i, 7] = IQ * V0 / Q0             # I_q
+            AC_Bus[i, 8] = QL / Q0                  # P_q
 
     # ---- AC Gen Data (ngen x 15) ----
     AC_gen = np.zeros((ngen, 15))
@@ -480,10 +516,21 @@ def _psse_transformers(raw_tr, baseMVA, active_ids):
             if not (_g(v1, 1) in active_ids and _g(v1, 2) in active_ids):
                 ii += 4
                 continue
-            if SB12 != 0 and abs(SB12 - baseMVA) > 1e-6:
-                R_s, X_s = R12 * (baseMVA / SB12), X12 * (baseMVA / SB12)
-            else:
+            # 🚨 2026-08-07: CZ 를 보지 않고 **SBASE12 로 무조건 되잡고** 있었다.
+            #   CZ = 1 이면 임피던스가 **이미 시스템 base pu** 라 되잡으면 안 된다.
+            #   `t_psse_case2` 의 변압기 셋이 전부 CZ=1·SBASE 250/200/150 이라
+            #   리액턴스가 2.5·2.0·1.5배 작아졌고, 그게 MATPOWER 와 상시 어긋나던
+            #   원인이었다(전압 2.3e-3 pu · 위상 1.3도). 3권선 쪽은 원래부터 갈라 썼다.
+            CZ = round(_g(v1, 6))
+            sb = SB12 if SB12 > 0 else baseMVA
+            if CZ == 1:                       # 시스템 base pu — 그대로
                 R_s, X_s = R12, X12
+            elif CZ == 3:                     # R 은 와트 단위 동손, X 는 |Z| (권선 base pu)
+                r_pu = R12 / (sb * 1e6)
+                x_pu = max(X12 ** 2 - r_pu ** 2, 0.0) ** 0.5
+                R_s, X_s = r_pu * (baseMVA / sb), x_pu * (baseMVA / sb)
+            else:                             # CZ = 2 — 권선 base pu
+                R_s, X_s = R12 * (baseMVA / sb), X12 * (baseMVA / sb)
             tap = WINDV1
             if CW == 2:
                 tap = WINDV1 / NOMV1 if NOMV1 > 0 else WINDV1
