@@ -455,13 +455,8 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
     return _assemble_ac_case(path.name, ac_tables)
 
 
-# 엔진이 아직 못 받아 넘긴 STAT=4 3권선 (버스 세 쌍). 읽은 쪽이 알려 주려고 남긴다.
-_skipped_stat4: list[tuple] = []
-
-
 def _psse_transformers(raw_tr, baseMVA, active_ids):
     """TRANSFORMER 섹션 → (tr_list[nx11] 2권선, tr3w_list[nx30] 3권선 raw)."""
-    _skipped_stat4.clear()
     tr_list, tr3w_list = [], []
     ii = 0
     n = len(raw_tr)
@@ -514,16 +509,10 @@ def _psse_transformers(raw_tr, baseMVA, active_ids):
             if need is None:                      # 0 = 통째로 빠짐 (그 밖의 값도 조용히 넘긴다)
                 ii += 5
                 continue
-            if stat == 4:
-                # ⏸ **엔진이 아직 STAT=4 를 못 받는다** (2026-08-06).
-                #    `preprocess_3W_transformer_v2.m:119` 가 **권선 1의 버스를 필수로** 찾는데,
-                #    PSS/E STAT=4 는 바로 그 권선 1이 빠진다는 뜻이라 거기서 죽는다
-                #    (`decode_threeW_status` 도 STAT=4 를 "권선 2·3 빠짐 + 비활성" 으로 본다 — 반대다).
-                #    엔진을 고쳐 재컴파일하기 전까지는 넘긴다. **넘기면 그 두 버스가 서로 끊긴다** —
-                #    `psse_3w_sample` 에서 MATPOWER 대비 전압이 최대 0.197 pu 어긋나는 원인이다.
-                _skipped_stat4.append((_g(v1, 1), _g(v1, 2), _g(v1, 3)))
-                ii += 5
-                continue
+            # ✅ 2026-08-07 8차 재컴파일로 엔진이 STAT=4 를 받는다
+            #    (`decode_threeW_status` case 4 → branch_on=[false true true], is_active=1).
+            #    권선 1의 버스는 계통에 없어도 된다 — 엔진의 `missing_active` 는 **켜진 권선의
+            #    버스만** 요구한다.
             req = [_g(v1, k) for k in need]
             if not all(b in active_ids for b in req):
                 ii += 5

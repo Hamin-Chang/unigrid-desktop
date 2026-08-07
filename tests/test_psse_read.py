@@ -194,5 +194,56 @@ if (MP / "t_psse_case2.raw").is_file() and (MP / "t_psse_case2.m").is_file():
         ok(rel <= lim, f"{k} 가 정답본과 맞는다", f"최대 상대차 {rel:.3g}")
     # 남은 차이는 전압 한계 기본값(0.94/1.06 vs 0.9/1.1)이라 물리가 아니다
 
+# ── 8. 3권선 STAT — 어느 권선이 빠졌나 (2026-08-07, 엔진 8차 재컴파일) ──
+print("\n8) 3권선 STAT 0~4")
+GRIDS = Path("/Users/hamin/Desktop/GML/01_핵심_연구프로젝트/ACDC/03_전기연자문_2026_3/"
+             "04_python_conversion/02_GitHub_unigrid/acdc_powerflow/grids")
+sample = GRIDS / "psse_3w_sample.raw"
+if sample.is_file():
+    # 이 파일은 STAT 1·2·3·4 를 하나씩 담고 있다 (이름이 3WNDSTAT1~4).
+    t3 = np.asarray(load_case(str(sample)).tables["AC_3wtrans_dat"], float)
+    ok(t3.shape[0] == 4, "3권선 4개가 다 들어온다 (STAT=4 도)", f"{t3.shape[0]}개")
+    stats = sorted(int(v) for v in t3[:, 4])
+    ok(stats == [1, 2, 3, 4], "STAT 값이 그대로 실린다", f"{stats}")
+    # 🚨 STAT=4 는 **권선 1이 빠진** 것이다. 권선 1의 버스(209)는 고립이라 계통에
+    #    없지만, 권선 2·3(217·218)은 살아 있어야 한다 — 옛 판은 변압기를 통째로
+    #    버려 이 두 버스가 서로 끊겼다.
+    row4 = t3[t3[:, 4] == 4][0]
+    ok(int(row4[2]) == 217 and int(row4[3]) == 218,
+       "STAT=4 의 살아 있는 권선 두 버스가 실린다", f"{int(row4[2])}·{int(row4[3])}")
+else:
+    print("  ⏭  psse_3w_sample.raw 이 없어 건너뛴다")
+
+# STAT=0 은 정상적으로 "통째로 빠짐" 이다 — 예외를 던져 파일 전체를 막으면 안 된다.
+ZERO = """0,  100.00, 33, 0, 0, 60.00
+c1
+c2
+    1,'B1', 345.0,3,   1,   1,   1,1.04000,   0.0000
+    2,'B2', 345.0,1,   1,   1,   1,1.00000,   0.0000
+    3,'B3', 138.0,1,   1,   1,   1,1.00000,   0.0000
+    4,'B4',  13.8,1,   1,   1,   1,1.00000,   0.0000
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+    1,    2,'1 ',0.01000,0.10000,0.02000, 200.0, 200.0, 200.0,0,0,0,0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+    2,    3,    4,'1 ',1,1,1, 0.0, 0.0,2,'OFF3W       ',0,   1,1.0
+0.01,0.10,100.0,0.01,0.10,100.0,0.01,0.10,100.0
+1.0, 345.0, 0.0, 100.0, 100.0, 100.0,0,    0, 1.1, 0.9, 1.1, 0.9, 33, 0, 0.0, 0.0
+1.0, 138.0, 0.0, 100.0, 100.0, 100.0,0,    0, 1.1, 0.9, 1.1, 0.9, 33, 0, 0.0, 0.0
+1.0,  13.8, 0.0, 100.0, 100.0, 100.0,0,    0, 1.1, 0.9, 1.1, 0.9, 33, 0, 0.0, 0.0
+0 / END OF TRANSFORMER DATA, BEGIN AREA DATA
+0 / END OF AREA DATA
+"""
+p8 = write(ZERO)
+try:
+    c8 = UC.psse_to_case(p8)
+    n8 = np.asarray(c8.tables["AC_Bus_dat"], float).shape[0]
+    ok(n8 == 4, "STAT=0 인 3권선이 있어도 파일이 읽힌다", f"버스 {n8}개")
+except Exception as exc:
+    ok(False, "STAT=0 인 3권선이 있어도 파일이 읽힌다", str(exc)[:80])
+p8.unlink()
+
 print(f"\n{'✅ 전부 통과' if bad == 0 else f'🚨 {bad}건 틀림'}")
 sys.exit(1 if bad else 0)
