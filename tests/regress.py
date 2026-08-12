@@ -1,8 +1,9 @@
 """regress.py — 회귀를 한 명령으로 (PDR §6 ①층 · §7 0단계).
 
 무엇을 하나
-    cases/ 의 케이스를 전부 풀어서 **지문**(전압·조류·부하율·손실·발전기 한계·수렴 정보)을
-    tests/baseline/ 에 저장해 둔 값과 견준다. 하나라도 다르면 **무엇이 얼마나** 달라졌는지 찍는다.
+    cases/ 의 케이스를 전부 풀어서 **지문**(전압·조류·부하율·손실·발전기 한계·수렴 정보
+    + **PV·QV 곡선**)을 tests/baseline/ 에 저장해 둔 값과 견준다.
+    하나라도 다르면 **무엇이 얼마나** 달라졌는지 찍는다.
 
 왜 필요한가
     지금까지는 엔진을 다시 만들 때마다 시험 스크립트를 새로 짰고, 그러다
@@ -82,9 +83,34 @@ def case_files(only: str | None) -> list[Path]:
     return files
 
 
+def curve_print(app_engine, case) -> dict[str, np.ndarray]:
+    """곡선을 그릴 수 있는 계통이면 **곡선까지** 지문에 넣는다 (§7 4단계 F1f).
+
+    🚨 왜 따로 넣나 — 조류계산 지문만으로는 **곡선이 틀어져도 회귀가 통과한다.**
+       곡선은 `runCPF_app` 이라는 다른 진입점이라 `solve()` 가 내는 값과 겹치는 곳이 없다.
+       A1(탭·위상 자동 조정)이 솔버를 건드리므로 그 전에 못 박아 둔다.
+
+    못 그리는 계통은 **표시만** 남긴다 — 막던 것이 풀리거나 새로 막히면 `compare()` 가
+    "기준에 없던 것이 생김 / 있던 것이 사라짐" 으로 잡는다(까닭 글귀는 지문에 넣지 않는다.
+    글귀만 다듬어도 회귀가 깨지면 대장을 자꾸 다시 잡게 된다).
+    """
+    if app_engine.curve_refusal(case):
+        return {"curve_refused": np.array([1.0])}
+    c = app_engine.curve(case)
+    return {
+        "curve_lam": np.asarray(c.lam, dtype=float),
+        "curve_v": np.asarray(c.v, dtype=float),
+        # 코 끝점 — 화면 요약이 읽는 값 그대로
+        "curve_scalars": np.array([c.lam_crit, c.nose_MW, float(c.nose)], dtype=float),
+    }
+
+
 def run_case(app_engine, load_case, path: Path):
-    sol = app_engine.solve(load_case(str(path)))
-    return fingerprint(sol)
+    # 조류계산과 곡선이 **같은 case 를 쓴다** — 앱도 계통 조건을 둘이 공유한다(F1d 확정).
+    case = load_case(str(path))
+    f = fingerprint(app_engine.solve(case))
+    f.update(curve_print(app_engine, case))
+    return f
 
 
 def compare(old: dict, new: dict) -> list[str]:

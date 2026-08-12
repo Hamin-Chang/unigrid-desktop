@@ -153,7 +153,7 @@ def matpower_to_case(m_path: str | Path) -> ACDCCase:
         "AC_Bus_dat": _mat(AC_Bus),
         "AC_Line_dat": _mat(AC_Line),
         "AC_gen_dat": _mat(AC_gen),
-        "AC_3wtrans_dat": _empty_table(30),   # MATPOWER엔 3권선 없음
+        "AC_3wtrans_dat": _empty_table(33),   # MATPOWER엔 3권선 없음
         "AC_PLoad_dat": _mat(AC_PLoad),
         "AC_QLoad_dat": _mat(AC_QLoad),
     }
@@ -484,7 +484,7 @@ def psse_to_case(raw_path: str | Path) -> ACDCCase:
         "AC_Bus_dat": _mat(AC_Bus),
         "AC_Line_dat": _mat(AC_Line),
         "AC_gen_dat": _mat(AC_gen),
-        "AC_3wtrans_dat": _mat(AC_3w) if AC_3w.shape[0] else _empty_table(30),
+        "AC_3wtrans_dat": _mat(AC_3w) if AC_3w.shape[0] else _empty_table(33),
         "AC_PLoad_dat": _mat(AC_PLoad),
         "AC_QLoad_dat": _mat(AC_QLoad),
     }
@@ -580,9 +580,9 @@ def _psse_transformers(raw_tr, baseMVA, active_ids):
 
 
 def _psse_build_3w(tr3w_list, bus_all, baseMVA):
-    """tr3w_list(raw) → AC_3wtrans_dat(n x 30) (mlapp 3권선 변환식 포팅)."""
+    """tr3w_list(raw) → AC_3wtrans_dat(n x 33) (mlapp 3권선 변환식 포팅)."""
     n3w = tr3w_list.shape[0]
-    out = np.zeros((n3w, 30))
+    out = np.zeros((n3w, 33))
     for k in range(n3w):
         r = tr3w_list[k]
         bus1, bus2, bus3, stat, cw, cz, cm, mag1, mag2 = r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]
@@ -647,6 +647,10 @@ def _psse_build_3w(tr3w_list, bus_all, baseMVA):
                     tap_vals[jj] = wv[jj] / denom if denom > 0 else wv[jj]
                 else:
                     tap_vals[jj] = wv[jj]
+        # 24·25 열(tap side·tap ratio)은 탭이 가장 크게 벗어난 권선 하나만 담는다.
+        # 🚨 2026-08-10: PSS/E 는 권선마다 WINDV 를 따로 준다 — `psse_3w_sample` 의
+        #    3002-3001-3011 이 1.01010/1.05000/1.01000 이라 두 개가 버려졌다.
+        #    이제 31~33 열에 셋을 그대로 담고, 24·25 열은 옛 엔진용으로 남긴다.
         tap_dev = [abs(t - 1) for t in tap_vals]
         if any(d > 1e-9 for d in tap_dev):
             tside = int(np.argmax(tap_dev))
@@ -681,8 +685,301 @@ def _psse_build_3w(tr3w_list, bus_all, baseMVA):
         out[k, :] = [k + 1, bus1, bus2, bus3, statr, Vn1, Vn2, Vn3, Sn1, Sn2, Sn3,
                      Z12.real, Z23.real, Z31.real, Z12.imag, Z23.imag, Z31.imag,
                      0, 0, 0, 0, 0, 0, tap_side, tap_ratio, shift_mv, shift_lv,
-                     pfe_kW, io_pct, winding_map]
+                     pfe_kW, io_pct, winding_map,
+                     tap_vals[0], tap_vals[1], tap_vals[2]]
     return out
+
+
+# =====================================================================
+#  MatACDC  (.m 두 개: MATPOWER AC + MatACDC DC)  →  ACDCCase (AC/DC 혼합)
+# =====================================================================
+#
+# 원본: `acdcapp_0404.mlapp` 의 `MatACDCACDCButtonPushed`(1477~1925행 = 449줄).
+# 엑셀 쓰기 20여 회는 통째로 빠진다 — 여기서는 `ACDCCase` 를 바로 만든다.
+#
+# 🚨 원본 button 과 **일부러 다르게** 한 곳 셋 (2026-08-10, 근거를 원문에서 확인):
+#   ① IC 손실 4개의 `* 10` 을 **안 한다.** MatACDC 정의는 LossA [MW]·LossB [kV]·
+#      LossCrec/inv [Ohm](`MatACDC1.0/idx_convdc.m:42-45`)이고 우리 엔진도 그 단위를
+#      그대로 읽는다(`functions/preprocess_IC_sub4.m:227-230`). 검증된
+#      `ACDC_case24_MatACDC.xlsx` 도 1.103 그대로다 — `*10` 이면 손실이 10배가 된다.
+#   ② **DC 부하를 살린다.** 원본은 `busdc(:,4)`(PDC)를 안 읽고 DC P Consume 을 0 으로 썼다.
+#   ③ IC 21열 `V_base [kV]` 를 **채운다**(`convdc(:,12)` = BASEKVC). 원본 코드엔 없는데
+#      실제 케이스 파일에는 손으로 넣어 뒀다. 엔진은 20·21·22열을 다 받는다.
+#
+# ⚠️ AC 절반은 `matpower_to_case` 와 규칙이 갈린다(발전기 Type 배정 · DB 기본값 ·
+#    rateA=0 처리 · Area 열 · baseKV=0 대체값). **여기서는 button 규칙을 따른다** —
+#    논문에 쓰는 MatACDC 케이스들이 그 규칙으로 만들어졌다.
+def matacdc_to_case(ac_path: str | Path, dc_path: str | Path) -> ACDCCase:
+    """MATPOWER AC `.m` + MatACDC DC `.m` → UNIGRID AC/DC 혼합 case (Mode=0)."""
+    ac_p, dc_p = Path(ac_path).expanduser().resolve(), Path(dc_path).expanduser().resolve()
+    for p in (ac_p, dc_p):
+        if not p.is_file():
+            raise FileNotFoundError(f"파일을 찾을 수 없습니다: {p}")
+
+    ac_txt, dc_txt = _read_m(ac_p), _read_m(dc_p)
+
+    # ⚠️ MatACDC 의 DC 케이스는 `mpc.` 를 안 붙이고 `busdc = [...]` 로 쓴다.
+    #    AC 쪽도 파일마다 갈려서, 접두사를 **선택**으로 두고 찾는다(button 과 같은 방식).
+    baseMVA = _m_scalar(ac_txt, "baseMVA")
+    bus = _m_matrix(ac_txt, "bus")
+    gen = _m_matrix(ac_txt, "gen")
+    branch = _m_matrix(ac_txt, "branch")
+
+    baseMVAdc = _m_scalar(dc_txt, "baseMVAdc", baseMVA)
+    pol = _m_scalar(dc_txt, "pol", 1.0)          # 극수 (1 단극 / 2 쌍극)
+    busdc = _m_matrix(dc_txt, "busdc")
+    convdc = _m_matrix(dc_txt, "convdc")
+    branchdc = _m_matrix(dc_txt, "branchdc")
+
+    nbus, nline = bus.shape[0], branch.shape[0]
+    bus_ids = bus[:, 0]
+
+    # ---- Base (1x7) : [Sbase, freq, f_0, freq_min, freq_max, 제어모드, deadband] ----
+    Base = np.array([[baseMVA, 60.0, 1.0, 0.975, 1.02, 0.0, 3.6e-2]])
+
+    # ---- AC Bus Data (nbus x 17) ----
+    AC_Bus = np.full((nbus, 17), np.nan)
+    AC_Bus[:, 0] = bus[:, 0]
+    AC_Bus[:, 1] = bus[:, 4]              # Gs [MW]
+    AC_Bus[:, 2] = bus[:, 5]              # Bs [MVar]
+    AC_Bus[:, 3:11] = [0, 0, 1, 0, 0, 1, 0, 0]     # ZIP + 주파수 의존 (상수전력)
+    AC_Bus[:, 11] = bus[:, 7]             # V0 [pu]
+    AC_Bus[:, 12] = bus[:, 8]             # Va [deg]
+    AC_Bus[:, 13] = bus[:, 9] * 1e3       # V_base [V]
+    AC_Bus[:, 14] = bus[:, 12]            # V_min [pu]
+    AC_Bus[:, 15] = bus[:, 11]            # V_max [pu]
+    AC_Bus[:, 16] = bus[:, 10]            # Area — ⚠️ button 은 ZONE(11열)을 넣는다(안 쓰는 칸)
+
+    # ---- AC Line Data (nline x 13) ----
+    pos = {int(b): i for i, b in enumerate(bus_ids)}
+    if any(int(b) not in pos for b in branch[:, 0]) or \
+       any(int(b) not in pos for b in branch[:, 1]):
+        raise ValueError("AC Line: branch 의 from/to 버스가 bus 표에 없습니다.")
+    fi = np.array([pos[int(b)] for b in branch[:, 0]])
+    ti = np.array([pos[int(b)] for b in branch[:, 1]])
+    baseV = np.minimum(bus[fi, 9], bus[ti, 9]) * 1e3
+    Zbase = baseV ** 2 / (baseMVA * 1e6)
+
+    AC_Line = np.full((nline, 13), np.nan)
+    AC_Line[:, 0] = np.arange(1, nline + 1)
+    AC_Line[:, 1] = branch[:, 0]
+    AC_Line[:, 2] = branch[:, 1]
+    AC_Line[:, 3] = branch[:, 2] * Zbase          # R [ohm]
+    AC_Line[:, 4] = branch[:, 3] * Zbase          # X [ohm]
+    AC_Line[:, 5] = branch[:, 4] / Zbase          # B [S]
+    AC_Line[:, 6] = branch[:, 8]                  # tap
+    AC_Line[:, 7] = branch[:, 9]                  # shift [deg]
+    AC_Line[:, 8:11] = branch[:, 5:8]             # rateA/B/C
+    AC_Line[:, 11] = (branch[:, 8] != 0).astype(float)
+    AC_Line[:, 12] = branch[:, 10]                # status
+
+    # ---- AC Gen Data (n x 15) — inf 버스는 slack 더미 발전기를 만든다 ----
+    AC_gen = _matacdc_gen(bus, gen, baseMVA, pos)
+
+    # ---- DC Bus Data (n x 6) ----
+    ndc = busdc.shape[0]
+    DC_Bus = np.full((ndc, 6), np.nan)
+    DC_Bus[:, 0] = busdc[:, 0]            # DC 버스 번호
+    DC_Bus[:, 1] = 0.0                    # Nominal Current
+    DC_Bus[:, 2] = busdc[:, 4]            # V0 [pu]
+    DC_Bus[:, 3] = busdc[:, 5] * 1e3      # V_base [V]
+    DC_Bus[:, 4] = busdc[:, 7]            # VM min
+    DC_Bus[:, 5] = busdc[:, 6]            # VM max
+
+    # ---- DC Line Data (n x 8) ----
+    posdc = {int(b): i for i, b in enumerate(busdc[:, 0])}
+    ndcl = branchdc.shape[0]
+    if any(int(b) not in posdc for b in branchdc[:, 0]) or \
+       any(int(b) not in posdc for b in branchdc[:, 1]):
+        raise ValueError("DC Line: branchdc 의 from/to 버스가 busdc 표에 없습니다.")
+    dfi = np.array([posdc[int(b)] for b in branchdc[:, 0]])
+    dti = np.array([posdc[int(b)] for b in branchdc[:, 1]])
+    baseVdc = np.minimum(busdc[dfi, 5], busdc[dti, 5]) * 1e3
+    Zbase_dc = baseVdc ** 2 / (baseMVAdc * 1e6)
+
+    DC_Line = np.full((ndcl, 8), np.nan)
+    DC_Line[:, 0] = np.arange(1, ndcl + 1)
+    DC_Line[:, 1] = branchdc[:, 0]
+    DC_Line[:, 2] = branchdc[:, 1]
+    # 🚨 극수(`pol`)를 저항으로 흡수한다. MatACDC 는 DC 전력을 `Pdc = pol * V .* (Ybusdc*V)`
+    #    로 계산하지만(`MatACDC1.0/dcnetworkpf.m:58`) 우리 엔진에는 극수 칸이 없다.
+    #    R 을 pol 로 나누면 어드미턴스가 pol 배가 되어 **같은 식**이 된다.
+    #    원본 button 은 `pol` 을 읽고도 쓰지 않는다 — 쌍극(pol=2) 계통에서 DC 손실이 2배가 된다.
+    DC_Line[:, 3] = branchdc[:, 2] * Zbase_dc / pol       # R [ohm]
+    DC_Line[:, 4:8] = branchdc[:, 5:9]            # rateA/B/C · status
+
+    # ---- ACDC IC Data (n x 21) ----
+    IC = _matacdc_ic(busdc, convdc, posdc, baseMVA, baseMVAdc)
+
+    # ---- 부하 3종 ----
+    AC_PLoad = np.column_stack([bus_ids, bus[:, 2] * 1e6])       # Pd [W]
+    AC_QLoad = np.column_stack([bus_ids, bus[:, 3] * 1e6])       # Qd [Var]
+    # 🚨 button 은 여기를 0 으로 뒀다. `busdc(:,4)` = PDC 가 DC 부하다.
+    DC_PLoad = np.column_stack([busdc[:, 0], busdc[:, 3] * 1e6])
+
+    tables = {
+        "Base_dat": _mat(Base),
+        "AC_Bus_dat": _mat(AC_Bus),
+        "AC_Line_dat": _mat(AC_Line),
+        "AC_gen_dat": _mat(AC_gen),
+        "AC_3wtrans_dat": _empty_table(33),      # MatACDC 에 3권선 없음
+        "DC_Bus_dat": _mat(DC_Bus),
+        "DC_Line_dat": _mat(DC_Line),
+        "DC_gen_dat": _empty_table(9),           # button 도 머리글만 썼다
+        "IC_dat": _mat(IC),
+        "DCDC_Conv_dat": _empty_table(10),       # MVDC/LVDC 는 MatACDC 에 없다
+        "AC_PLoad_dat": _mat(AC_PLoad),
+        "AC_QLoad_dat": _mat(AC_QLoad),
+        "DC_PLoad_dat": _mat(DC_PLoad),
+    }
+    return ACDCCase(case_name=f"{ac_p.stem} + {dc_p.stem}", mode=0.0, tables=tables)
+
+
+def _read_m(path: Path) -> str:
+    """`.m` 을 읽고 `%` 주석을 걷는다 (button 과 같은 방식)."""
+    txt = path.read_text(encoding="utf-8", errors="replace")
+    return re.sub(r"%[^\n]*", "", txt)
+
+
+def _m_scalar(text: str, name: str, default: float | None = None) -> float:
+    """`mpc.` 접두사가 있어도 없어도 찾는다. 없고 기본값도 없으면 오류."""
+    m = re.search(r"(?<![A-Za-z0-9_])(?:mpc\.)?" + re.escape(name) + r"\s*=\s*([\d.eE+\-]+)", text)
+    if m:
+        return float(m.group(1))
+    if default is not None:
+        return default
+    raise ValueError(f"`.m` 파일에서 {name} 를 찾을 수 없습니다.")
+
+
+def _m_matrix(text: str, name: str) -> np.ndarray:
+    """`mpc.` 접두사가 있어도 없어도 찾는다."""
+    m = re.search(r"(?<![A-Za-z0-9_])(?:mpc\.)?" + re.escape(name) + r"\s*=\s*\[(.*?)\]\s*;",
+                  text, re.DOTALL)
+    if m is None:
+        raise ValueError(f"`.m` 파일에서 {name} 행렬을 찾을 수 없습니다.")
+    rows = []
+    for chunk in re.split(r"[;\n]", m.group(1)):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [p for p in re.split(r"[,\s]+", chunk) if p]
+        rows.append([float(p) for p in parts])
+    if not rows:
+        raise ValueError(f"{name} 행렬이 비어 있습니다.")
+    width = max(len(r) for r in rows)
+    for r in rows:
+        r.extend([0.0] * (width - len(r)))
+    return np.array(rows, dtype="float64")
+
+
+def _matacdc_gen(bus, gen, baseMVA, pos) -> np.ndarray:
+    """AC Gen Data. MATPOWER 의 `inf` 버스형을 slack 으로 보고 더미 발전기를 만든다.
+
+    ⚠️ `matpower_to_case` 와 규칙이 다르다 — 여기서는 2열(Type)이 **늘 2** 이고
+       3열(BusTypeMapped)이 버스형(PQ=1 → 0, inf → 3)이다. button 이 그렇게 쓴다.
+    """
+    BUS_TYPE, VM = 1, 7                       # bus 표 (0부터)
+    PG, QG, QMAX, QMIN, VG, MBASE, ST, PMAX, PMIN = 1, 2, 3, 4, 5, 6, 7, 8, 9
+
+    rows = []
+    if gen.shape[0]:
+        for g in gen:
+            b = int(g[0])
+            if b not in pos:
+                raise ValueError(f"AC Gen: 발전기 버스 {b} 가 bus 표에 없습니다.")
+            bt = bus[pos[b], BUS_TYPE]
+            mapped = 0.0 if bt == 1 else (3.0 if np.isinf(bt) else bt)
+            rows.append([g[0], 2.0, mapped, 0.0, 0.0,
+                         g[PG] * 1e6, g[QG] * 1e6, g[VG], g[ST], g[MBASE], 0.01,
+                         g[QMAX] * 1e6, g[QMIN] * 1e6, g[PMAX] * 1e6, g[PMIN] * 1e6])
+
+    # `inf` 버스인데 발전기가 없는 곳에 slack 더미를 세운다
+    inf_ids = [int(b[0]) for b in bus if np.isinf(b[BUS_TYPE])]
+    have = {int(g[0]) for g in gen} if gen.shape[0] else set()
+    for b in inf_ids:
+        if b in have:
+            continue
+        rows.append([float(b), 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, bus[pos[b], VM], 1.0,
+                     baseMVA, 0.01, baseMVA * 1e6, -baseMVA * 1e6,
+                     baseMVA * 1e6, -baseMVA * 1e6])
+
+    return np.array(rows, dtype="float64").reshape(-1, 15)
+
+
+def _matacdc_ic(busdc, convdc, posdc, baseMVA, baseMVAdc):
+    """ACDC IC Data (21열). MatACDC `convdc` → UNIGRID 변환기 표."""
+    n = convdc.shape[0]
+    if any(int(b) not in posdc for b in convdc[:, 0]):
+        raise ValueError("IC: convdc 의 DC 버스가 busdc 표에 없습니다.")
+    bi = np.array([posdc[int(b)] for b in convdc[:, 0]])
+
+    def _map(x):
+        # MatACDC 제어모드 → UNIGRID 모드 번호
+        return np.where(x == 2, 2.0, np.where(x == 1, 0.0, np.where(x == 3, 1.0, x)))
+
+    # droop 은 열이 있고 값이 0 이 아닐 때만 (`convdc` 는 droop 없으면 20열)
+    has_droop = convdc.shape[1] >= 21 and np.any(convdc[:, 20] != 0)
+
+    IC = np.zeros((n, 21))
+    IC[:, 0] = busdc[bi, 1]              # 붙은 AC 버스
+    IC[:, 1] = convdc[:, 0]              # DC 버스
+    IC[:, 2] = _map(convdc[:, 2])        # AC 제어모드
+    IC[:, 3] = _map(convdc[:, 1])        # DC 제어모드
+    IC[:, 4] = 0.0                       # 주파수 droop 계수
+    IC[:, 5] = 0.0                       # DC 전압 droop 계수
+    IC[:, 6] = 0.0                       # 무효전력 droop 계수
+    IC[:, 8] = convdc[:, 4] * (-1e6)     # Q_s [var]
+    IC[:, 9] = 100.0                     # rateA [MVA] — button 이 100 고정
+
+    if has_droop:
+        # 🚨 원본 button 의 droop 식은 틀렸다 (2026-08-10).
+        #   MatACDC 는 `Pdc = -Pdcset - (1/droop)*(Vdc - Vdcset)` 로 **Vdcset 을 중심으로**
+        #   기울기 1/droop 을 건다(`MatACDC1.0/dcnetworkpf.m:57-58, 67`).
+        #   우리 엔진은 `P = k*V_norm + P_0`, `V_norm = (V - 중점)/(반폭)`,
+        #   `k = (100/F0)*(rateA/S_base)` 다(`preprocess_IC_sub4.m:112`,
+        #   `solve_ACDC_newton_aug_v7.m:452,471`). 두 식을 같게 놓으면
+        #        F0 = 200 * rateA * droop / (폭 * baseMVAdc)
+        #   인데, button 은 `0.5*폭/(droop*baseMVA)*100` 으로 **droop 에 반비례**한다.
+        #   그리고 button 은 `Vdcset` 을 아예 안 옮긴다 — 중점과 다르면 그만큼 어긋난다.
+        #   ⇒ 기울기는 위 식으로, 중점과 Vdcset 의 차이는 **운전점 P_0 에 접어 넣는다.**
+        droop = convdc[:, 20]
+        Vdcset = convdc[:, 22] if convdc.shape[1] >= 23 else np.ones(n)
+        dVdcset = convdc[:, 23] if convdc.shape[1] >= 24 else np.zeros(n)
+        Vdcmax, Vdcmin = busdc[bi, 6], busdc[bi, 7]
+        span = Vdcmax - Vdcmin
+        mid = 0.5 * (Vdcmax + Vdcmin)
+
+        # MatACDC 기울기 = `1/(droop*baseMVA)` [pu P / pu V]
+        #   (`runacdcpf.m:290` 가 `PVdroop = droop*baseMVA` 로 만들고
+        #    `dcnetworkpf.m:67` 이 `1./PVdroop .* (Vdc - Vdcset)` 를 더한다)
+        # 우리 기울기 = `(100/F0)*(rateA/S_base) / (0.5*폭)`
+        #   ⇒ F0 = 200 * rateA * droop / 폭   (rateA·S_base 가 같은 MVA 기준일 때)
+        # 이 식은 손으로 만든 `ACDC_matacdc_case5.xlsx` 의 값(500/700/500)과 맞는다.
+        rateA = IC[:, 9]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            IC[:, 5] = np.where(droop != 0, 200.0 * rateA * droop / span, 0.0)
+        IC[:, 4] = 1e10                  # 주파수 droop 은 안 걸리게 큰 값
+
+        # 운전점: 우리 droop 은 **전압 한계의 중점**을 기준으로 걸리는데 MatACDC 는
+        # `Vdcset` 을 기준으로 건다 ⇒ 그 차이만큼을 P_0 에 미리 접어 넣는다 [MW].
+        with np.errstate(divide="ignore", invalid="ignore"):
+            shift = np.where(droop != 0,
+                             (mid - Vdcset) / (droop * baseMVA) * baseMVA, 0.0)
+        IC[:, 7] = (convdc[:, 21] + shift) * (-1e6)
+
+        if np.any(np.abs(dVdcset) > 1e-12):
+            raise ValueError(
+                "이 DC 케이스는 droop 불감대(`dVdcset`)를 쓰는데 UNIGRID 변환기가 아직 "
+                "그것을 옮기지 못합니다. 값이 0 인 케이스만 변환할 수 있습니다.")
+    else:
+        IC[:, 7] = convdc[:, 3] * (-1e6)         # P_g [W]
+
+    IC[:, 10:15] = convdc[:, 6:11]       # rtf, xtf, bf, rc, xc
+    IC[:, 15] = convdc[:, 15]            # status
+    # 🚨 button 의 `* 10` 을 안 한다 (파일 머리 주석 ① 참고)
+    IC[:, 16:20] = convdc[:, 16:20]      # LossA [MW], LossB [kV], LossCrec/inv [Ohm]
+    IC[:, 20] = convdc[:, 11]            # V_base [kV] — button 엔 없다(주석 ③)
+    return IC
 
 
 if __name__ == "__main__":

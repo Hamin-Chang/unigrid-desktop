@@ -117,6 +117,37 @@ def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
                if c.v1_col is not None and _find(head, c) is not None]
     width = max(present) if present else max((c.v1_col or 0) for c in sheet.cols)
 
+    # 2026-08-11: 서식은 **선택 열까지 늘 만들어 둔다**(사람이 값을 채워 넣을 자리가 있어야
+    # 하므로). 그래서 "머리글은 있는데 값이 하나도 없는" 끝쪽 선택 열이 생기는데, 그대로
+    # 폭에 세면 위 주석대로 **없던 기능이 켜진다.** ⇒ 끝에서부터 훑어 잘라낸다.
+    #   · 끝쪽만 자른다 — 중간 열을 빼면 뒤 열의 자리가 밀린다.
+    #     (중간이 비어 있는 것은 안전하다. 엔진이 NaN 을 Inf=한계 없음 으로 읽는다:
+    #      `preprocess_AC_gen.m` 의 `qmax_gen(~isfinite(qmax_gen)) = Inf`)
+    #   · 필수 열과 기본값이 있는 열은 안 자른다(그 열은 값이 없어도 뜻이 있다).
+    #   · 🚨 **아무 폭으로나 줄이면 안 된다.** 짝을 이루는 열(Qmax·Qmin / Pmax·Pmin)은 뒤쪽만
+    #     비었다고 잘라 내면 앞쪽까지 죽는다 — `ACDC_71bus_L2_qmax08` 이 그렇다(Qmax 는 있고
+    #     Qmin 이 비었는데, 13→12 로 줄이면 엔진이 13열 미만이라 보고 **Qmax 를 통째로 무시**한다).
+    #     ⇒ `sheet.v1_widths` = 엔진이 아는 폭 목록. **거기 있는 값으로만** 줄인다.
+    if body and sheet.v1_widths:
+        by_v1 = {c.v1_col: c for c in sheet.cols if c.v1_col is not None}
+        allowed = set(sheet.v1_widths)
+        w, best = width, width
+        while w > 0:
+            col = by_v1.get(w)
+            if col is None or col.required or col.default is not None:
+                break
+            at = _find(head, col)
+            if at is None:
+                break                       # 머리글이 없으면 애초에 폭에 안 들어간다
+            has_value = any(
+                at < len(r) and not np.isnan(_num(r[at])) for r in body)
+            if has_value:
+                break
+            w -= 1
+            if w in allowed:                # 엔진이 아는 폭에 닿을 때만 확정한다
+                best = w
+        width = best
+
     if not body:
         # 🚨 값이 없는 시트를 빈 배열로 주면 안 된다. 컴파일된 전처리기 일부가
         #    `any(isnan(...))` 로 "데이터 없음"을 가리므로 **1줄짜리 NaN 행**이어야 한다
@@ -127,6 +158,8 @@ def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
     for col in sheet.cols:
         if col.v1_col is None:
             continue                                  # v2 에서만 있는 열(예: DC/DC Status)
+        if col.v1_col > width:
+            continue                                  # 위에서 폭에서 뺀 빈 선택 열
         at = _find(head, col)
         if at is None:
             if col.required and col.default is None:

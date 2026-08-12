@@ -89,6 +89,27 @@ def _matrix(values: list) -> Any:
     return matlab.double(values)
 
 
+def _row(values: Any) -> Any:
+    """버스 번호 목록을 MATLAB 한 줄짜리로. 비었으면 빈 배열(= 전부)."""
+    if not values:
+        return matlab.double([])
+    return matlab.double([[float(v) for v in values]])
+
+
+def _opts(opts: Any) -> Any:
+    """곡선 옵션(struct). 비었으면 빈 배열을 준다 — `runCPF_app` 이 struct() 로 받는다.
+
+    ⚠️ MATLAB 쪽으로 python dict 를 그대로 넘길 수 있는지는 런타임 판에 달렸다.
+       못 넘기면 **옵션 없이** 도는 쪽이 낫지, 계산 자체가 막히면 안 된다.
+    """
+    if not opts:
+        return matlab.double([])
+    try:
+        return {str(k): float(v) for k, v in opts.items()}
+    except Exception:
+        return matlab.double([])
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _jsonable(v) for k, v in value.items()}
@@ -122,13 +143,53 @@ def _jsonable(value: Any) -> Any:
         return text
 
 
-def solve_one(app: Any, in_path: str, out_path: str) -> None:
+# GS 가 쓰는 표는 AC 쪽 일곱 개뿐이다(DC·IC 는 안 본다). 순서는 `runpfGS_app.m` 의 인자와 같다.
+GS_TABLE_ORDER = (
+    "Base_dat", "AC_Bus_dat", "AC_Line_dat", "AC_gen_dat",
+    "AC_3wtrans_dat", "AC_PLoad_dat", "AC_QLoad_dat",
+)
+
+
+def solve_one(app: Any, in_path: str, out_path: str, method: str = "nr") -> None:
+    """`method` = "nr" 이면 Newton(runpf_unigrid_app), "gs" 면 Gauss-Seidel(runpfGS_app),
+    **"cpf" 면 PV·QV 곡선**(runCPF_app).
+
+    GS 는 AC 단독(Mode=1)만 풀고 DC·IC 표를 아예 안 받는다 — 2026-08-11 §7 4단계 B2.
+    곡선도 같은 일곱 표만 받는다 — 2026-08-12 §7 4단계 F1.
+    """
     case = json.loads(Path(in_path).read_text(encoding="utf-8"))
     tables = case["tables"]
-    args = [_matrix(tables[name]) for name in TABLE_ORDER]
-    result = app.runpf_unigrid_app(
-        case["case_name"], float(case["mode"]), *args, nargout=1
-    )
+
+    if method == "cpf":
+        # 곡선은 표 일곱 개에 **부하를 늘릴 버스 · 곡선을 그릴 버스 · 옵션**이 더 붙는다.
+        args = [_matrix(tables[name]) for name in GS_TABLE_ORDER]
+        cpf = case.get("cpf") or {}
+        result = app.runCPF_app(
+            case["case_name"], float(case["mode"]), *args,
+            _row(cpf.get("load_buses")), _row(cpf.get("curve_buses")),
+            _opts(cpf.get("opts")),
+            nargout=1,
+        )
+    elif method == "gs":
+        # 🚨 `runpfGS_app.m` 은 부하 표의 **2열(첫 시각)만** 읽는다. 여러 시각짜리 표가
+        #    그대로 들어오면 **나머지 시각을 조용히 버린다** — 시각을 나눠 부르는 것은
+        #    `app_engine._gs_solve_all_times` 의 몫이고, 여기는 그게 빠졌을 때 잡는 자리다.
+        #    (2026-08-12, §7.6 G7. droop 을 조용히 흘려보내던 것과 같은 종류의 사고를 막는다.)
+        for name in ("AC_PLoad_dat", "AC_QLoad_dat"):
+            tab = tables.get(name) or []
+            if tab and len(tab[0]) > 2:
+                raise ValueError(
+                    f"Gauss-Seidel 은 한 시각씩만 받습니다 ({name} 에 시각이 "
+                    f"{len(tab[0]) - 1}개 들어 있습니다). 시각을 나눠 부르십시오.")
+        args = [_matrix(tables[name]) for name in GS_TABLE_ORDER]
+        result = app.runpfGS_app(
+            case["case_name"], float(case["mode"]), *args, nargout=1
+        )
+    else:
+        args = [_matrix(tables[name]) for name in TABLE_ORDER]
+        result = app.runpf_unigrid_app(
+            case["case_name"], float(case["mode"]), *args, nargout=1
+        )
     Path(out_path).write_text(json.dumps(_jsonable(result)), encoding="utf-8")
 
 
@@ -154,7 +215,7 @@ def serve() -> None:
             # (실제로 2026-08-06 에 그랬다 — 안 풀려야 할 조건이 "잘 풀렸다"로 나왔다).
             job_id = job.get("id")
             try:
-                solve_one(app, job["in"], job["out"])
+                solve_one(app, job["in"], job["out"], job.get("method", "nr"))
                 print(json.dumps({"ok": True, "id": job_id}), flush=True)
             except Exception as exc:
                 print(json.dumps({"ok": False, "id": job_id, "error": str(exc)}), flush=True)

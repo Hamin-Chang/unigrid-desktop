@@ -5,8 +5,11 @@
 scratch/
 # 화면 캡처
 shots/
+# 눈 확인 스크립트는 자기 옆(tests/)에 그림을 떨군다 — 다시 돌리면 나오므로 안 올린다
+tests/*.png
 # 엔진 .ctf 옛 판 (크고, 이력은 여기서 관리하지 않는다)
 _backup/
+engine/*_backup_*/
 
 # ── 파이썬 ──
 __pycache__/

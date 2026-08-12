@@ -151,7 +151,13 @@ SHEETS: list[Sheet] = [
         _c("pfe", "kW", 28, note="일부러 남긴 예외 — 철손은 kW 로 부르는 것이 관례"),
         _c("i0", "%", 29),
         _c("winding map", "", 30),
-    ], v1_widths=(30,)),
+        # 2026-08-10 신설 — 권선마다 탭비를 따로 담는다. 24·25 열은 한 권선만 담아서
+        # PSS/E 처럼 권선마다 WINDV 를 주는 파일에서 나머지 둘을 버렸다.
+        # 비워 두면(또는 0) 그 권선은 탭 없음(=1). 세 칸이 다 비면 24·25 열을 쓴다.
+        _c("tap ratio W1", "", 31, required=False),
+        _c("tap ratio W2", "", 32, required=False),
+        _c("tap ratio W3", "", 33, required=False),
+    ], v1_widths=(30, 33)),
 
     Sheet("AC P Consume Data", time_series=True, cols=[
         _c("Bus / 시각", "MW", 1),

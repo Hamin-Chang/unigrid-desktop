@@ -164,10 +164,11 @@ class SolveThread(QThread):
     # 남의 컴퓨터에서 가장 먼저 만나는 화면이라 따로 받는다 (PDR §4.1 · R2).
     engine_missing = Signal(str)
 
-    def __init__(self, path, case=None):
+    def __init__(self, path, case=None, method="nr"):
         super().__init__()
         self.path = path
         self.case = case          # 있으면 이것을 푼다 (조건을 바꿔 다시 풀 때)
+        self.method = method      # "nr" Newton-Raphson · "gs" Gauss-Seidel (2026-08-12)
         self.loaded_case = None   # 파일에서 읽은 원본 — 창이 받아 들고 있는다
 
     def run(self):
@@ -177,14 +178,37 @@ class SolveThread(QThread):
             # 위험한 형태 거르기는 `load_case` 안으로 들어갔다 (2026-08-06)
             case = self.case if self.case is not None else load_case(self.path)
             self.loaded_case = case
-            sol = ENGINE.solve(case)
+            sol = ENGINE.solve(case, method=self.method)
             sol.seconds = time.perf_counter() - t0   # 엑셀 읽는 시간까지 포함
             sol.warm_start = warm
+            sol.method = self.method                 # 어느 해법으로 푼 결과인지 (2026-08-12)
             self.done.emit(sol)
         except engine_path.EngineNotFound as exc:
             self.engine_missing.emit(str(exc))     # 안내문을 그대로 들고 있다
         except Exception as exc:
             self.failed.emit(str(exc))
+
+class CurveThread(QThread):
+    """PV·QV 곡선을 화면과 별도로 돌린다 (14버스도 6초, 큰 계통은 몇 분)."""
+    done = Signal(object)
+    failed = Signal(str)
+    engine_missing = Signal(str)
+
+    def __init__(self, case, load_buses, curve_buses):
+        super().__init__()
+        self.case = case
+        self.load_buses = load_buses
+        self.curve_buses = curve_buses
+
+    def run(self):
+        try:
+            cur = ENGINE.curve(self.case, self.load_buses, self.curve_buses)
+            self.done.emit(cur)
+        except engine_path.EngineNotFound as exc:
+            self.engine_missing.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
 
 # ─────────────────────────────────────────── 색
 LIGHT = dict(
@@ -199,6 +223,8 @@ DARK = dict(
 )
 
 MODES = ["스냅샷", "다이나믹", "비교"]
+# 최상위 갈래 — 조류계산과 곡선은 **서로 기대지 않는다** (F1d · 2026-08-12)
+TASKS = ["조류계산", "PV·QV 곡선"]
 
 GRAPHS = {
     "스냅샷": [
@@ -422,12 +448,13 @@ class ConvertDialog(QDialog):
         s2 = QLabel("어떤 형식에서 만들까요?")
         s2.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:600;")
         v.addWidget(s2)
-        for name, desc in [("MATPOWER  (.m)", "AC 계통"),
-                           ("PSS/E  (.raw)", "AC 계통 · 3권선 포함"),
-                           ("MatACDC", "AC/DC 혼합 계통")]:
+        for name, desc, patt in [
+                ("MATPOWER  (.m)", "AC 계통", "MATPOWER 케이스 (*.m)"),
+                ("PSS/E  (.raw)", "AC 계통 · 3권선 포함", "PSS/E 계통 (*.raw *.RAW)"),
+                ("MatACDC", "AC/DC 혼합 계통", "")]:
             b = QPushButton(f"{name}\n{desc}")
             b.setMinimumHeight(64)
-            b.clicked.connect(lambda _, n=name: self._pick(n))
+            b.clicked.connect(lambda _, n=name, p=patt: self._pick(n, p))
             v.addWidget(b)
         note = QLabel("고르면 파일 선택 창 → 변환 → 저장 위치를 묻습니다")
         note.setStyleSheet(f"color:{c['muted']};font-size:13px;")
@@ -439,19 +466,71 @@ class ConvertDialog(QDialog):
         row.addWidget(cancel)
         v.addLayout(row)
 
-    def _pick(self, name):
-        d = QDialog(self)
-        d.setWindowTitle("아직 만들지 않았습니다")
-        d.setStyleSheet(self.styleSheet())
-        v = QVBoxLayout(d)
-        v.setContentsMargins(22, 20, 22, 20)
-        lb = QLabel(f"여기서 '{name}' 파일 선택 창이 열립니다.\n"
-                    "(이 기능은 아직 만들지 않았습니다 — PDR §7 3단계)")
-        v.addWidget(lb)
-        ok = QPushButton("확인")
-        ok.clicked.connect(d.accept)
-        v.addWidget(ok)
-        d.exec()
+    def _pick(self, name, patt):
+        """고른 형식의 파일을 골라 → 읽어서 → v2 엑셀로 저장한다 (PDR §7 3단계 X1 (b))."""
+        if not patt:
+            # MatACDC 는 `.m` 을 **두 개** 받는다 (AC 계통 + DC 계통).
+            # 🚨 순서가 중요하다 — 두 파일 다 확장자가 `.m` 이라 바꿔 고르면
+            #    "busdc 를 찾을 수 없습니다" 같은 엉뚱한 말만 나온다. 먼저 알려 준다.
+            if QMessageBox.question(
+                    self, "파일을 두 개 고릅니다",
+                    "MatACDC 계통은 파일이 둘로 나뉘어 있습니다.\n\n"
+                    "    첫 번째 — AC 계통 (MATPOWER, bus·gen·branch)\n"
+                    "    두 번째 — DC 계통 (MatACDC, busdc·convdc·branchdc)\n\n"
+                    "이 순서로 고르셔야 합니다. 둘 다 확장자가 .m 이라\n"
+                    "바꿔 고르면 읽지 못합니다.\n\n계속할까요?",
+                    QMessageBox.Ok | QMessageBox.Cancel) != QMessageBox.Ok:
+                return
+            ac, _ = QFileDialog.getOpenFileName(
+                self, "1/2 — 먼저 AC 계통 파일 (MATPOWER .m)", "", "MATPOWER 케이스 (*.m)")
+            if not ac:
+                return
+            dc, _ = QFileDialog.getOpenFileName(
+                self, "2/2 — 이제 DC 계통 파일 (MatACDC .m)", str(Path(ac).parent),
+                "MatACDC 케이스 (*.m)")
+            if not dc:
+                return
+            src = Path(ac)
+            try:
+                import unigrid_convert
+                case = unigrid_convert.matacdc_to_case(ac, dc)
+            except Exception as exc:
+                QMessageBox.warning(self, "읽지 못했습니다",
+                                    f"MatACDC 케이스를 읽지 못했습니다.\n\n{exc}")
+                return
+        else:
+            src, _ = QFileDialog.getOpenFileName(self, f"{name} 파일 고르기", "", patt)
+            if not src:
+                return
+            src = Path(src)
+            try:
+                case = load_case(str(src))
+            except Exception as exc:
+                QMessageBox.warning(self, "읽지 못했습니다",
+                                    f"{src.name} 을 읽지 못했습니다.\n\n{exc}")
+                return
+
+        out, _ = QFileDialog.getSaveFileName(
+            self, "UNIGRID 엑셀로 저장", str(src.with_name(f"{src.stem}_unigrid.xlsx")),
+            "UNIGRID 케이스 (*.xlsx)")
+        if not out:
+            return
+
+        try:
+            import write_v2
+            saved = write_v2.write_case(case, out)
+        except Exception as exc:
+            QMessageBox.warning(self, "저장하지 못했습니다", str(exc))
+            return
+
+        n_ac = len(case.tables.get("AC_Bus_dat", []))
+        n_dc = len(case.tables.get("DC_Bus_dat", []))
+        QMessageBox.information(
+            self, "만들었습니다",
+            f"{saved.name}\n\nAC 버스 {n_ac}개" + (f" · DC 버스 {n_dc}개" if n_dc else "") +
+            "\n\n이 파일을 그대로 불러와 계산할 수 있습니다.\n"
+            "DC 버스·변환기·24시간 부하는 엑셀에서 직접 채워 넣으세요.")
+        self.accept()
 
 
 class ImportDialog(QDialog):
@@ -733,6 +812,16 @@ class Proto(QMainWindow):
         self.dropzone = None
         self.drop_label = None
         self.dark = False
+        # ── 무엇을 할까 (PDR §7 4단계 F1d · 2026-08-12 사용자 확정 "조류계산이랑 아예 분리")
+        #    곡선은 조류계산 결과(`self.sol`)에 **기대지 않는다.** 조류계산을 한 번도
+        #    안 돌려도 곡선만 돌릴 수 있다. 공유하는 것은 케이스와 계통 조건뿐이다.
+        self.task = "조류계산"        # "조류계산" · "PV·QV 곡선"
+        self.cur = None               # 곡선 결과 (app_engine.Curve)
+        self.curve_load = ""          # 부하를 늘릴 버스 (비면 부하가 있는 버스 전부)
+        self.curve_pick = ""          # 곡선을 그릴 버스 (비면 늘린 버스와 같게)
+        self.curve_x = "MW"           # 가로축 — "MW" 합계 부하 · "lambda" 배수
+        self.curve_busy = False
+        self.curve_err = ""
         self.numbers = False
         self.numbers_auto = False     # 큰 계통이라 **자동으로** 접힌 것인가
         self.mode = "스냅샷"
@@ -932,6 +1021,42 @@ class Proto(QMainWindow):
         v.addWidget(self.case_card())
         v.addSpacing(12)
 
+        # ── 무엇을 할까 — 케이스 다음으로 큰 갈림이라 맨 위에 둔다 (F1d)
+        tl = QLabel("무엇을 할까")
+        tl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        v.addWidget(tl)
+        tseg = QFrame()
+        tseg.setObjectName("segwrap")
+        tseg.setStyleSheet(
+            f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
+            f"border-radius:8px; }}")
+        th = QVBoxLayout(tseg)
+        th.setContentsMargins(3, 3, 3, 3)
+        th.setSpacing(3)
+        why = self.curve_why()
+        for name in TASKS:
+            b = QPushButton(name)
+            b.setObjectName("seg_on" if self.task == name else "seg_off")
+            b.setCursor(Qt.PointingHandCursor)
+            if name == "PV·QV 곡선" and why:
+                b.setEnabled(False)
+                b.setToolTip(why)
+            else:
+                b.clicked.connect(lambda _, x=name: self.set_task(x))
+            th.addWidget(b)
+        v.addWidget(tseg)
+        if why and self.task != "PV·QV 곡선":
+            wn = QLabel(why)
+            wn.setWordWrap(True)
+            wn.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            v.addWidget(wn)
+        v.addSpacing(12)
+
+        if self.task == "PV·QV 곡선":
+            self.curve_controls(v)
+            v.addStretch()
+            return sb
+
         # 모드 3분할 — 가장 큰 선택이라 이름표를 붙인다
         ml = QLabel("보기")
         ml.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
@@ -1077,6 +1202,13 @@ class Proto(QMainWindow):
         v = QVBoxLayout(w)
         v.setContentsMargins(16, 14, 16, 12)
         v.setSpacing(11)
+
+        if self.task == "PV·QV 곡선":
+            bar = self.change_bar()      # 계통 조건은 조류계산과 **같이 쓴다**
+            if bar is not None:
+                v.addWidget(bar)
+            v.addWidget(self.curve_page(), 1)
+            return w
 
         if self.mode == "비교":
             # 겹쳐 보기 체크칸이 이 목록에 있다 — 비교 모드에서 오히려 더 필요하다
@@ -1636,9 +1768,16 @@ class Proto(QMainWindow):
         what.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
         h.addWidget(what)
 
-        base = "원본" if not self.applied else SC.describe(self.applied)
-        wait = QLabel(f"아직 계산 안 함 — 지금 화면은 「{base}」 결과입니다")
-        wait.setStyleSheet(f"color:{c['warn']};font-size:12px;")
+        if self.task == "PV·QV 곡선":
+            # 곡선은 **이 조건을 이미 쓴다**(`curve_case` 가 changes 까지 얹는다).
+            # 조류계산 쪽 문구("아직 계산 안 함")를 그대로 두면 곡선이 옛 조건으로 그려진
+            # 줄 알게 된다 — 실제로는 여유가 이미 달라져 있다.
+            wait = QLabel("곡선은 이 조건으로 그립니다")
+            wait.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        else:
+            base = "원본" if not self.applied else SC.describe(self.applied)
+            wait = QLabel(f"아직 계산 안 함 — 지금 화면은 「{base}」 결과입니다")
+            wait.setStyleSheet(f"color:{c['warn']};font-size:12px;")
         h.addWidget(wait)
 
         # 쪼개짐은 **막지 않고 알려만 준다** (2026-08-06 확정 — 71bus 는 모든 선로가 쪼갠다)
@@ -1654,11 +1793,14 @@ class Proto(QMainWindow):
                 h.addWidget(warn)
         h.addStretch(1)
 
-        run = QPushButton("▶  이 조건으로 계산")
-        run.setObjectName("primary")
-        run.setCursor(Qt.PointingHandCursor)
-        run.clicked.connect(self.run_changes)
-        h.addWidget(run)
+        if self.task != "PV·QV 곡선":
+            # 곡선 화면에는 안 붙인다 — 여기서 누르면 **조류계산**이 돈다.
+            # 곡선은 왼쪽 [곡선 그리기] 가 자기 실행이다.
+            run = QPushButton("▶  이 조건으로 계산")
+            run.setObjectName("primary")
+            run.setCursor(Qt.PointingHandCursor)
+            run.clicked.connect(self.run_changes)
+            h.addWidget(run)
 
         undo = QPushButton("↩ 되돌리기")
         undo.setCursor(Qt.PointingHandCursor)
@@ -2311,11 +2453,32 @@ class Proto(QMainWindow):
             wicon = QLabel("⚠")
             wicon.setStyleSheet(f"color:{c['warn']};font-size:16px;font-weight:700;")
             wv.addWidget(wicon)
-            wtxt = QLabel("한계 적용 시 수렴 실패 — " + qmsg)
+            # 엔진이 보낸 문구를 **그대로** 쓴다. 앞에 "한계 적용 시 수렴 실패 —" 를
+            # 붙이던 것은 문구 안에 이미 그 말이 들어 있어 겹쳤다 (2026-08-12).
+            wtxt = QLabel(qmsg)
             wtxt.setWordWrap(True)
             wtxt.setStyleSheet(f"color:{c['warn']};font-size:13px;font-weight:700;")
             wv.addWidget(wtxt, 1)
             outer.addWidget(warn)
+
+        # ── 한계로 묶인 발전기가 있으면 알린다 (2026-08-12, §7.6 G8)
+        #    ⚠️ 이건 **경고가 아니라 참고**다. 한계로 묶는 것 자체는 정상 동작이라
+        #    빨간 경고로 띄우면 정상 계통마다 떠서 경고가 무뎌진다.
+        #    다만 **흡수 쪽(Qmin)에 걸리면 전압이 올라가는데** 처음 보면 놀랄 일이라 밝힌다.
+        note = self._qlim_note()
+        if note:
+            info = QFrame()
+            info.setObjectName("card")
+            iv = QHBoxLayout(info)
+            iv.setContentsMargins(14, 9, 14, 9)
+            icon = QLabel("ⓘ")
+            icon.setStyleSheet(f"color:{c['muted']};font-size:15px;font-weight:700;")
+            iv.addWidget(icon)
+            itxt = QLabel(note)
+            itxt.setWordWrap(True)
+            itxt.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            iv.addWidget(itxt, 1)
+            outer.addWidget(info)
 
         for title, (cols, rows) in self.viol().items():
             box = QFrame()
@@ -2358,6 +2521,98 @@ class Proto(QMainWindow):
 
         outer.addStretch()
         return w
+
+    def _qlim_note(self):
+        """무효출력 한계 때문에 알릴 것이 있으면 그 문구, 없으면 빈 글자.
+
+        **아래 "발전기 한계" 표가 세는 것과 같은 것을 센다** — 표는 `satQ ~= 0` 인 줄만
+        보여주므로 여기서도 그 열을 본다. 두 해법이 같은 표를 내므로 안내도 같아진다.
+        ⚠️ 예전에는 엔진이 따로 보내 준 값을 썼는데, 그 값을 Gauss-Seidel 만 보내는 바람에
+           **안내가 한쪽에만 뜨고 표와 숫자가 어긋났다**(2026-08-12 사용자 지적).
+
+        내용은 표가 말하지 못하는 것만 담는다 — **흡수 쪽(Qmin)에 걸리면 전압이 올라간다**.
+        발전기가 빨아들이던 무효전력을 더 못 빨아들이기 때문인데, 보통은 한계를 걸면
+        전압이 내려간다고 생각하므로 처음 보면 놀랄 만한 일이다.
+        """
+        sol = self.sol
+        tbl = getattr(sol, "gen_limit", None) if sol is not None else None
+        if tbl is None or len(tbl) == 0:
+            return ""
+        try:
+            sat_q = [int(r[9]) for r in tbl]
+        except (IndexError, TypeError, ValueError):
+            return ""
+        dn = sum(1 for s in sat_q if s < 0)
+        if not any(sat_q):
+            return ""
+
+        s = ""
+        if dn:
+            s = (f"무효전력을 빨아들이던 발전기 {dn}대가 흡수 한계에 걸렸습니다. "
+                 "더 못 빨아들이므로 그 부근 전압이 오히려 올라갑니다.")
+        if getattr(sol, "method", "nr") == "gs":
+            s += (" " if s else "") + (
+                "한계를 건 계통은 답이 여럿일 수 있어 Newton 방식과 다른 답이 나올 수 있습니다 "
+                "— 결과가 이상해 보이면 Newton 으로도 풀어 견줘 보십시오.")
+        return s.strip()
+
+    # ── 해법 고르기 (2026-08-12, §7.6 G8) ──
+    def _solver_picker(self):
+        """Newton / Gauss-Seidel 을 고르는 자리. 못 쓰는 계통이면 흐리게 하고 까닭을 보여준다.
+
+        왜 못 쓰는지 판정은 `app_engine.gs_refusal(case)`(여기서는 `ENGINE`) 이 한다 — 엔진도 같은 것을 검사해
+        오류를 내지만(`runpfGS_app.m`), 여기서 **미리** 막아 사용자가 눌러 보고 실패를 겪지 않게 한다.
+        """
+        c = self.c
+        box = QVBoxLayout()
+        box.setSpacing(2)
+        lab = QLabel("해법")
+        lab.setStyleSheet(f"color:{c['muted']};font-size:11px;")
+        box.addWidget(lab)
+
+        pick = QComboBox()
+        pick.addItem("Newton-Raphson", "nr")
+        pick.addItem("Gauss-Seidel", "gs")
+        pick.setCurrentIndex(1 if getattr(self, "solver", "nr") == "gs" else 0)
+
+        why = None
+        case = getattr(self, "_case_for_solver", None)
+        if case is not None:
+            try:
+                why = ENGINE.gs_refusal(case)
+            except Exception:
+                why = None
+        if why:
+            # 고를 수 없게 흐리게 하고, 마우스를 올리면 까닭이 뜨게 한다
+            model = pick.model()
+            item = model.item(1)
+            if item is not None:
+                item.setEnabled(False)
+            pick.setItemData(1, why, Qt.ToolTipRole)
+            pick.setToolTip(why)
+            if pick.currentIndex() == 1:
+                pick.setCurrentIndex(0)
+
+        pick.currentIndexChanged.connect(self._solver_changed)
+        self._solver_pick = pick
+        box.addWidget(pick)
+        return box
+
+    def _solver_changed(self, _idx):
+        """해법을 바꾸면 **같은 계통을 그 해법으로 다시 푼다.**"""
+        pick = getattr(self, "_solver_pick", None)
+        if pick is None:
+            return
+        method = pick.currentData() or "nr"
+        if method == getattr(self, "solver", "nr"):
+            return
+        path = getattr(self, "_last_path", None)
+        if not path:
+            self.solver = method
+            return
+        # 조건을 바꿔 푼 상태면 그 케이스를 그대로 쓴다 (원본으로 되돌리지 않는다)
+        case = getattr(self, "_case_for_solver", None)
+        self._start_solve(path, case, method)
 
     # ── 수렴 탭 ──
     def conv_page(self):
@@ -2407,6 +2662,7 @@ class Proto(QMainWindow):
         hv.addLayout(kv("수렴 기준", f"{conv['threshold']:g}"))
         hv.addLayout(kv("최종 불평형", f"{CONV['mis'][-1]:.2e}"))
         hv.addStretch()
+        hv.addLayout(self._solver_picker())
         outer.addWidget(head)
 
         # 불평형이 줄어드는 과정
@@ -2718,6 +2974,27 @@ class Proto(QMainWindow):
             box.addWidget(b)
             return box
 
+        # 곡선 화면에서는 **곡선 것**을 말한다. 조류계산의 위반·반복 횟수를 그대로 두면
+        # 지금 보고 있는 그림과 상관없는 숫자가 아래에 남는다 (F1d 는 둘을 갈랐다).
+        if self.task == "PV·QV 곡선":
+            cur = self.cur
+            dot = QLabel("●")
+            good = cur is not None
+            dot.setStyleSheet(
+                f"color:{c['ok'] if good else c['muted']};font-size:13px;")
+            h.addWidget(dot)
+            if cur is None:
+                h.addLayout(item("PV·QV 곡선", "아직 안 그림"))
+            else:
+                h.addLayout(item("버틸 수 있는 부하", f"{cur.nose_MW:,.1f} MW"))
+                h.addLayout(item("남은 여유", f"{cur.lam_crit * 100:.1f} %"))
+                h.addLayout(item("걸음", f"{cur.lam.size:,}회"))
+                h.addLayout(item("한계에 걸린 발전기", f"{cur.switched.size}대",
+                                 c["warn"] if cur.switched.size else None))
+                h.addLayout(item("계산 시간", f"{cur.seconds:.2f} s"))
+            h.addStretch(1)
+            return bar
+
         sol = self.sol
         n = violation_count(self.viol())
         # 점 하나로 전체 상태를 알린다 — 수렴 실패든 위반이든 있으면 주황
@@ -2786,6 +3063,206 @@ class Proto(QMainWindow):
         self.compare_axis = a
         self.rebuild()
 
+    # ── PV·QV 곡선 (F1d) ──────────────────────────────────────────────
+    def curve_case(self):
+        """곡선을 그릴 케이스 — **지금 화면의 조건이 전부 얹힌 것**.
+
+        조류계산을 돌렸는지와 무관하다(아직 계산 안 한 `changes` 까지 얹는다).
+        곡선은 자기 실행이므로 "이 조건으로 계산" 을 먼저 누를 필요가 없다.
+        """
+        if self.base_case is None:
+            return None
+        want = self.applied + self.changes
+        return SC.apply(self.base_case, want) if want else self.base_case
+
+    def curve_why(self):
+        """곡선을 못 그리면 그 까닭. 그릴 수 있으면 None."""
+        case = self.curve_case()
+        if case is None:
+            return "계통 파일을 먼저 여십시오."
+        try:
+            return ENGINE.curve_refusal(case)
+        except Exception as exc:                     # noqa: BLE001
+            return f"확인할 수 없습니다 ({exc})."
+
+    def _bus_list(self, text):
+        out = []
+        for part in (text or "").replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(int(float(part)))
+            except ValueError:
+                continue
+        return out
+
+    def curve_controls(self, v):
+        c = self.c
+        lb = QLabel("부하를 늘릴 버스")
+        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        v.addWidget(lb)
+        le = QLineEdit(self.curve_load)
+        le.setPlaceholderText("비우면 부하가 있는 버스 전부")
+        le.textChanged.connect(lambda t: setattr(self, "curve_load", t))
+        v.addWidget(le)
+        n = QLabel("여기에 적은 버스의 부하만 함께 늘립니다")
+        n.setWordWrap(True)
+        n.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        v.addWidget(n)
+        v.addSpacing(10)
+
+        lb2 = QLabel("곡선을 그릴 버스")
+        lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        v.addWidget(lb2)
+        le2 = QLineEdit(self.curve_pick)
+        le2.setPlaceholderText("비우면 늘린 버스와 같게 (최대 8개)")
+        le2.textChanged.connect(self.set_curve_pick)
+        v.addWidget(le2)
+        v.addSpacing(10)
+
+        lb3 = QLabel("가로축")
+        lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        v.addWidget(lb3)
+        seg = QFrame()
+        seg.setObjectName("segwrap")
+        seg.setStyleSheet(
+            f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
+            f"border-radius:8px; }}")
+        sh = QHBoxLayout(seg)
+        sh.setContentsMargins(3, 3, 3, 3)
+        sh.setSpacing(3)
+        for key, name in (("MW", "합계 부하"), ("lambda", "배수 λ")):
+            b = QPushButton(name)
+            b.setObjectName("seg_on" if self.curve_x == key else "seg_off")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _, x=key: self.set_curve_x(x))
+            sh.addWidget(b)
+        v.addWidget(seg)
+        v.addSpacing(14)
+
+        run = QPushButton("곡선 그리기" if not self.curve_busy else "그리는 중…")
+        run.setObjectName("primary")
+        run.setEnabled(not self.curve_busy)
+        run.clicked.connect(self.run_curve)
+        v.addWidget(run)
+        n2 = QLabel("버스가 많으면 몇 분 걸립니다")
+        n2.setWordWrap(True)
+        n2.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        v.addWidget(n2)
+
+    def set_curve_pick(self, t):
+        self.curve_pick = t
+        if self.cur is not None:
+            self.rebuild()          # 이미 그린 곡선이면 다시 계산하지 않고 골라 보기만
+
+    def set_curve_x(self, x):
+        self.curve_x = x
+        self.rebuild()
+
+    def set_task(self, t):
+        self.task = t
+        self.rebuild()
+
+    def run_curve(self):
+        case = self.curve_case()
+        if case is None or self.curve_busy:
+            return
+        self.curve_busy = True
+        self.curve_err = ""
+        self.rebuild()
+        self._cthread = CurveThread(case, self._bus_list(self.curve_load),
+                                    self._bus_list(self.curve_pick))
+        self._cthread.done.connect(self._curve_done)
+        self._cthread.failed.connect(self._curve_failed)
+        self._cthread.engine_missing.connect(self._curve_failed)
+        self._cthread.start()
+
+    def _curve_done(self, cur):
+        self.curve_busy = False
+        self.cur = cur
+        self.curve_err = ""
+        self.rebuild()
+
+    def _curve_failed(self, msg):
+        self.curve_busy = False
+        self.curve_err = msg
+        self.rebuild()
+
+    def curve_page(self):
+        c = self.c
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(11)
+
+        why = self.curve_why()
+        if why:
+            v.addWidget(charts.NoData("곡선을 그릴 수 없습니다", why, c))
+            return w
+        if self.curve_err:
+            v.addWidget(charts.NoData("곡선 실패", self.curve_err, c))
+            return w
+        if self.curve_busy:
+            v.addWidget(charts.NoData(
+                "곡선을 그리는 중입니다…",
+                "부하를 조금씩 올리며 더는 안 풀리는 곳까지 갑니다.", c))
+            return w
+        if self.cur is None:
+            v.addWidget(charts.NoData(
+                "왼쪽에서 [곡선 그리기] 를 누르십시오",
+                "부하를 늘려 가며 전압이 무너지는 지점(코 끝점)을 찾습니다.", c))
+            return w
+
+        v.addWidget(self.curve_summary())
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(10)
+        pick = self._bus_list(self.curve_pick)
+        split.addWidget(charts.curve_chart(c, self.cur, pick, self.curve_x))
+        split.addWidget(charts.curve_q_chart(c, self.cur, self.curve_x))
+        split.setSizes([600, 380])
+        v.addWidget(split, 1)
+        return w
+
+    def curve_summary(self):
+        """코 끝점 한 줄 요약 — 곡선에서 사람이 실제로 가져가는 숫자."""
+        c = self.c
+        cur = self.cur
+        card = Card(c)          # Card 는 이미 세로 layout 을 갖고 있다 — 그 안에 넣는다
+        h = QHBoxLayout()
+        h.setContentsMargins(2, 0, 2, 0)
+        h.setSpacing(26)
+        card.v.addLayout(h)
+
+        base = cur.load_MW[0] if cur.load_MW.size else 0.0
+        room = cur.nose_MW - base
+        items = [
+            ("지금 부하", f"{base:,.1f} MW"),
+            ("버틸 수 있는 부하", f"{cur.nose_MW:,.1f} MW"),
+            ("남은 여유", f"{room:,.1f} MW  ({cur.lam_crit * 100:.1f} %)"),
+            ("코 끝점 최저 전압", f"{float(cur.v[:, min(cur.nose, cur.v.shape[1]-1)].min()):.4f} p.u."),
+        ]
+        for name, val in items:
+            box = QVBoxLayout()
+            k = QLabel(name)
+            k.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            val_l = QLabel(val)
+            val_l.setStyleSheet(f"color:{c['text']};font-size:17px;font-weight:800;")
+            box.addWidget(k)
+            box.addWidget(val_l)
+            h.addLayout(box)
+        h.addStretch(1)
+
+        if cur.switched.size:
+            names = ", ".join(str(int(b)) for b in cur.switched[:6])
+            more = "…" if cur.switched.size > 6 else ""
+            note = QLabel(f"무효출력 한계에 걸린 발전기 {cur.switched.size}대\n"
+                          f"버스 {names}{more}")
+            note.setStyleSheet(f"color:{c['warn']};font-size:12px;")
+            h.addWidget(note)
+        return card
+
     def set_targets(self, t):
         self.compare_targets = t
 
@@ -2822,8 +3299,21 @@ class Proto(QMainWindow):
 
         self._start_solve(path)
 
-    def _start_solve(self, path, case=None):
+    def _start_solve(self, path, case=None, method=None):
+        # 🚨 **다른 파일**을 열 때는 아직 계산 안 한 "바꾼 것"을 버린다 (2026-08-12 확인).
+        #    안 버리면 `_solved` 의 원본 갱신 분기(`not self.changes`)가 건너뛰어져
+        #    **화면은 새 계통인데 base_case·시나리오·곡선은 앞 계통 것**으로 남는다
+        #    (case14 에서 선로를 끈 채 case118 을 여니 화면 118버스 / base_case case14).
+        #    같은 파일을 다시 푸는 것([이 조건으로 계산]·다시 풀기)에는 손대지 않는다 —
+        #    거기서 지우면 사용자가 방금 한 편집이 사라진다.
+        if case is None and getattr(self, "_last_path", None) not in (None, path):
+            self.changes = []
+            self.cur = None
+            self.curve_err = ""
         self._last_path = path
+        if method is None:
+            method = getattr(self, "solver", "nr")
+        self.solver = method
         self.prog = QProgressDialog("조류계산 중입니다...", None, 0, 0, self)
         self.prog.setWindowTitle("UNIGRID")
         self.prog.setWindowModality(Qt.WindowModal)
@@ -2831,7 +3321,7 @@ class Proto(QMainWindow):
         self.prog.setCancelButton(None)
         self.prog.show()
 
-        self.thread = SolveThread(path, case)
+        self.thread = SolveThread(path, case, method)
         self.thread.done.connect(self._solved)
         self.thread.failed.connect(self._solve_failed)
         self.thread.engine_missing.connect(self._engine_missing)
@@ -2856,6 +3346,9 @@ class Proto(QMainWindow):
             self.changes = []
             self.book = SC.Book()
             self.book.add(loaded, [], solution=sol, name="원본")
+            # 새 계통을 열면 곡선은 버린다 — **앞 계통의 곡선**이라 지금 화면과 상관없다.
+            self.cur = None
+            self.curve_err = ""
             # 🚨 큰 계통은 **그래프를 접은 채로 연다** (2026-08-06 사용자 확정).
             #    버스가 수천이면 점이 겹쳐 빨간 덩어리가 되어 읽을 수가 없다.
             #    보고 싶으면 [그래프 펼치기] 를 누르면 된다.
@@ -2863,7 +3356,17 @@ class Proto(QMainWindow):
             n_bus = int(sol.AC.shape[0]) + int(sol.DC.shape[0] if sol.DC.size else 0)
             self.numbers_auto = n_bus > BIG_BUSES
             self.numbers = self.numbers_auto
+        # 해법 고르기가 볼 케이스 — 방금 푼 그것이다(조건을 바꿔 푼 것이면 그 케이스).
+        # 이 값으로 `gs_refusal` 을 물어 Gauss-Seidel 을 흐리게 할지 정한다 (2026-08-12, G8).
+        self._case_for_solver = (getattr(getattr(self, "thread", None), "case", None)
+                                 or loaded or getattr(self, "base_case", None))
         self.sol = sol
+        # 🚨 곡선은 **AC 단독 계통에서만** 그린다(2026-08-12 사용자 확정 — 넓히지 않는다).
+        #    곡선 화면에 있는 채로 AC/DC 파일을 열면 갈래가 곡선에 머물러 있는데
+        #    그 버튼은 흐려져 있어 **죽은 화면에 앉게 된다** ⇒ 조류계산으로 되돌린다.
+        if self.task == "PV·QV 곡선" and self.curve_why():
+            self.task = "조류계산"
+            self.cur = None
         self.t = 0
         self.bus_row = 0
         self.show_violations = False      # 새 케이스는 위반 보기 꺼진 채로 시작

@@ -1195,3 +1195,99 @@ def build(name, c, sol, t=0, bus_row=0, show_violations=False, on_toggle=None,
         print(f"[그래프] {name} 실패: {exc}")
     return None
     return None
+
+
+# ─────────────────────────────────────────── PV·QV 곡선 (2026-08-12, §7 4단계 F1d)
+
+# 여러 버스를 한 그림에 겹쳐 그리므로 색이 여럿 필요하다.
+CURVE_COLORS = ("#d1342f", "#1f6fd0", "#1f9d55", "#b8860b", "#8b3fb0",
+                "#0f8f8f", "#c25b1e", "#5566aa")
+
+
+def curve_chart(c, cur, buses=None, x_axis="MW"):
+    """PV 곡선 — 부하를 늘려 갈 때 버스 전압이 어떻게 내려가는가.
+
+    `cur`      app_engine.Curve
+    `buses`    그릴 버스 번호 목록. 비우면 곡선 대상 버스 전부(많으면 앞 8개).
+    `x_axis`   "MW" 면 늘린 버스들의 합계 부하, "lambda" 면 배수 λ.
+
+    코 끝점(더는 안 풀리는 지점)에 점을 찍는다 — **거기가 곡선의 뜻 그 자체**라
+    선만 그리면 어디가 한계인지 안 보인다.
+    """
+    title = "PV 곡선 — 부하를 늘릴 때의 전압"
+    ch = _new_chart(c, title)
+
+    if cur is None or cur.lam.size == 0:
+        return _view(ch, c)
+
+    pick = list(buses) if buses is not None and len(buses) else list(cur.curve_buses)
+    pick = [float(b) for b in pick][:8]
+
+    x = cur.load_MW if x_axis == "MW" else cur.lam
+    ymin, ymax = 1e9, -1e9
+    for i, b in enumerate(pick):
+        y = cur.at(b)
+        col = CURVE_COLORS[i % len(CURVE_COLORS)]
+        s = _line(list(zip(x, y)), col, width=1.8, name=f"버스 {int(b)}")
+        ch.addSeries(s)
+        ymin = min(ymin, float(np.min(y)))
+        ymax = max(ymax, float(np.max(y)))
+
+    # 코 끝점 — 버스마다 하나씩, 선과 같은 색으로
+    k = max(0, min(int(cur.nose), x.size - 1))
+    nose_pts = [(x[k], float(cur.at(b)[k])) for b in pick]
+    if nose_pts:
+        d = _dots(nose_pts, c["text"], "코 끝점 (한계)", size=9.0)
+        ch.addSeries(d)
+
+    ax = _style_axis(QValueAxis(), c,
+                     "늘린 버스 합계 부하 [MW]" if x_axis == "MW" else "부하 배수 λ")
+    ay = _style_axis(QValueAxis(), c, "전압 [p.u.]")
+    ch.addAxis(ax, Qt.AlignBottom)
+    ch.addAxis(ay, Qt.AlignLeft)
+    for s in ch.series():
+        s.attachAxis(ax)
+        s.attachAxis(ay)
+    ax.setRange(float(np.min(x)), float(np.max(x)) * 1.02)
+    pad = max(0.02, (ymax - ymin) * 0.08)
+    ay.setRange(max(0.0, ymin - pad), ymax + pad)
+    ax.setLabelFormat("%.0f" if x_axis == "MW" else "%.2f")
+    ay.setLabelFormat("%.2f")
+    return _view(ch, c)
+
+
+def curve_q_chart(c, cur, x_axis="MW"):
+    """발전기 무효출력 — 어느 발전기가 언제 한계에 걸려 전압을 못 잡게 되는가.
+
+    PV 곡선이 "얼마나 버티나"라면 이 그림은 **"왜 거기서 꺾이나"**를 보여 준다.
+    한계에 걸린 자리에서 선이 평평해진다.
+    """
+    ch = _new_chart(c, "발전기 무효출력 — 한계에 걸리는 자리")
+    if cur is None or cur.pv_Qg.size == 0:
+        return _view(ch, c)
+
+    x = cur.load_MW if x_axis == "MW" else cur.lam
+    n = min(cur.pv_Qg.shape[1], 8)
+    lo, hi = 1e9, -1e9
+    for i in range(n):
+        y = cur.pv_Qg[:, i]
+        col = CURVE_COLORS[i % len(CURVE_COLORS)]
+        ch.addSeries(_line(list(zip(x, y)), col, width=1.6,
+                           name=f"버스 {int(cur.pv_bus[i])}"))
+        lo = min(lo, float(np.min(y)))
+        hi = max(hi, float(np.max(y)))
+
+    ax = _style_axis(QValueAxis(), c,
+                     "늘린 버스 합계 부하 [MW]" if x_axis == "MW" else "부하 배수 λ")
+    ay = _style_axis(QValueAxis(), c, "무효출력 [MVAr]")
+    ch.addAxis(ax, Qt.AlignBottom)
+    ch.addAxis(ay, Qt.AlignLeft)
+    for s in ch.series():
+        s.attachAxis(ax)
+        s.attachAxis(ay)
+    ax.setRange(float(np.min(x)), float(np.max(x)) * 1.02)
+    pad = max(1.0, (hi - lo) * 0.08)
+    ay.setRange(lo - pad, hi + pad)
+    ax.setLabelFormat("%.0f" if x_axis == "MW" else "%.2f")
+    ay.setLabelFormat("%.0f")
+    return _view(ch, c)
