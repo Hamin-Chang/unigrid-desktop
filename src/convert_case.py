@@ -97,7 +97,8 @@ def convert_sheet(sheet: F.Sheet, ws) -> tuple[list[str], list[list]]:
     if not src:
         # 값이 없는 시트(머리글만)는 모양을 몰라도 잘못 읽을 것이 없다.
         # 계통에 그 설비가 없을 때 흔하다 — 여기서 막으면 파일 전체가 막힌다.
-        keep = [c for c in sheet.cols if c.v1_col is None or c.v1_col <= max(width, 1)]
+        keep = [c for c in sheet.cols
+                if c.v1_col is None or c.v2_new or c.v1_col <= max(width, 1)]
         return [c.header for c in (keep or sheet.cols)], []
 
     if sheet.v1_widths and width not in sheet.v1_widths:
@@ -110,7 +111,11 @@ def convert_sheet(sheet: F.Sheet, ws) -> tuple[list[str], list[list]]:
     #    없던 기능이 생긴 것으로 읽힌다(`AConly_case118` 에서 발전기 한계 표가 없다가 생겼다).
     #    반대로 자리를 없애면 있던 기능이 사라진다 — 엔진의 가름이 **짝으로** 걸려 있어서다
     #    (13 이상이면 Qmax·Qmin 둘 다 · 15 이상이면 Pmax·Pmin · 16 이상이면 S_N).
-    cols = [c for c in sheet.cols if c.v1_col is None or c.v1_col <= width]
+    #    ⚠️ 단 **`v2_new` 은 예외로 만든다**(A1 의 조정 열들, 2026-08-12) — v1 에 없던 열이지만
+    #    사람이 값을 채워 넣을 자리가 있어야 한다. 비워 두면 `read_v2` 의 폭 줄이기가 옛 폭으로
+    #    되돌리므로 없던 기능이 켜지지 않는다(위 걱정이 여기엔 해당하지 않는다).
+    cols = [c for c in sheet.cols
+            if c.v1_col is None or c.v2_new or c.v1_col <= width]
 
     head = [c.header for c in cols]
     rows = []

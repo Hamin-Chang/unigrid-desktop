@@ -47,6 +47,10 @@ class Col:
     required: bool = True         # 없으면 못 읽는 열인가
     default: float | None = None  # v1 에 그 열이 없을 때 채울 값
     note: str = ""
+    # v1 에는 아예 없던 열인데 **자리는 엔진 것**이다(v1_col 이 있다).
+    # 옛 파일을 바꿀 때도 **머리글만 만들어 둔다** — 사람이 값을 채워 넣을 자리가 필요하다.
+    # 값이 비어 있으면 `read_v2` 의 폭 줄이기가 옛 폭으로 되돌리므로 엔진은 못 본 척한다.
+    v2_new: bool = False
 
     @property
     def header(self) -> str:
@@ -68,8 +72,16 @@ class Sheet:
         return self.v1_name or self.name
 
 
-def _c(name, unit="", v1=None, scale=KEEP, required=True, default=None, note=""):
-    return Col(name, unit, v1, scale, required, default, note)
+def _c(name, unit="", v1=None, scale=KEEP, required=True, default=None, note="",
+       v2_new=False):
+    return Col(name, unit, v1, scale, required, default, note, v2_new)
+
+
+# A1(탭·위상·션트 자동 조정)이 쓰는 열은 **전부 비워 두는 것이 기본**이다.
+# 값을 하나도 안 넣으면 폭이 옛 폭(AC Line 13 · AC Bus 17)으로 줄어 엔진이 못 본 척한다
+# — 그래서 이 열을 붙여도 **옛 계통의 답이 한 자리도 안 바뀐다**(2026-08-12 회귀로 확인).
+def _a1(name, unit="", v1=None, note=""):
+    return _c(name, unit, v1, required=False, note=note, v2_new=True)
 
 
 # ─────────────────────────────────────────────── 시트 정의
@@ -103,6 +115,12 @@ SHEETS: list[Sheet] = [
         _c("V_min", "pu", 15),
         _c("V_max", "pu", 16),
         _c("Area", "", 17, required=False, default=1.0),
+        # ── A1 ③스위치드 션트 · ④SVC (2026-08-12) — 움직이는 것은 위 `Bs`, 맞추는 것은 이 버스 전압
+        _a1("Shunt Ctrl Mode", "", 18, note="0 끔 · 1 스위치드 션트(계단) · 2 SVC(연속)"),
+        _a1("Shunt Target", "pu", 19, note="맞출 전압. 비우면 V0"),
+        _a1("Shunt Bmin", "Mvar", 20, note="Bs 가 내려갈 수 있는 아래끝"),
+        _a1("Shunt Bmax", "Mvar", 21, note="Bs 가 올라갈 수 있는 위끝"),
+        _a1("Shunt Steps", "", 22, note="계단 수. 모드 1 에서만 쓴다"),
     ], v1_widths=(17,)),
 
     Sheet("AC Line Data", cols=[
@@ -115,6 +133,15 @@ SHEETS: list[Sheet] = [
         _c("Is Transformer", "0/1", 12, default=0.0,
            note="끄는 스위치가 아니다 — 이 선로가 변압기인지 표시"),
         _c("Status", "0/1", 13, default=1.0, note="켜고 끄기"),
+        # ── A1 ①탭 조정 · ②위상 조정기 (2026-08-12)
+        # 한 선로에서 둘을 같이 하지 않으므로 **열 한 벌을 같이 쓴다** — 무엇을 움직이는지는
+        # `Ctrl Mode` 가 정한다(그래서 이름에 `Tap` 을 안 넣었다. 모드 2 일 때 거짓말이 된다).
+        _a1("Ctrl Mode", "", 14, note="0 끔 · 1 탭 조정(전압을 맞춤) · 2 위상 조정기(조류를 맞춤)"),
+        _a1("Ctrl Bus", "", 15, note="보고 맞출 버스. 비우면 To"),
+        _a1("Ctrl Target", "", 16, note="모드 1 = 전압 pu · 모드 2 = 유효조류 MW"),
+        _a1("Ctrl Min", "", 17, note="아래끝. 모드 1 = 탭비 · 모드 2 = 위상 deg"),
+        _a1("Ctrl Max", "", 18, note="위끝. 단위는 Ctrl Min 과 같다"),
+        _a1("Ctrl Steps", "", 19, note="계단 수. 0 이거나 비면 연속"),
     ], v1_widths=(12, 13)),
 
     Sheet("AC Gen Data", cols=[
@@ -251,6 +278,20 @@ VALUE_NOTES: list[tuple[str, str, str]] = [
     ("AC Gen Data", "Status", "0 = 끔 · 1 = 켬.  끄면 그 발전기는 PV/Slack 분류에서 빠진다"),
     ("AC Line Data", "Is Transformer", "0 = 보통 선로 · 1 = 변압기.  **끄는 스위치가 아니다**"),
     ("AC Line Data", "Status", "0 = 끔(선로 개방) · 1 = 켬"),
+    ("AC Line Data", "Ctrl Mode",
+     "탭·위상을 계산이 스스로 움직이게 한다.  0 = 끔(지금까지처럼 Tap ratio·Phase shift 를 "
+     "그대로 쓴다) · 1 = 탭 조정(Ctrl Bus 의 전압을 Ctrl Target 으로) · "
+     "2 = 위상 조정기(이 선로의 유효조류를 Ctrl Target 으로).  **비워 두면 아무 일도 안 한다**"),
+    ("AC Line Data", "Ctrl Target",
+     "맞출 값.  모드 1 = 전압 pu(예: 1.00) · 모드 2 = 유효조류 MW"),
+    ("AC Line Data", "Ctrl Min",
+     "움직일 수 있는 범위.  모드 1 = 탭비(예: 0.9~1.1) · 모드 2 = 위상 deg.  "
+     "끝에 닿으면 그 값에 멈추고 목표는 포기한다(발전기가 무효 한계에 걸리는 것과 같다)"),
+    ("AC Bus Data", "Shunt Ctrl Mode",
+     "이 버스의 Bs 를 계산이 스스로 움직이게 한다.  0 = 끔 · 1 = 스위치드 션트(Shunt Steps "
+     "단으로 붙였다 뗐다) · 2 = SVC(연속).  **비워 두면 아무 일도 안 한다**"),
+    ("AC Bus Data", "Shunt Bmin",
+     "Bs 가 움직일 수 있는 범위 [Mvar].  Bmax 가 콘덴서 쪽(전압을 올린다)"),
     ("AC 3w Transformer Data", "tap side", "탭이 어느 권선에 달렸는지"),
     ("AC 3w Transformer Data", "winding map", "세 권선이 어느 버스에 붙는지"),
     ("DC Gen Data", "DC Gen Mode", "0 = P 고정 · 1 = Droop · 2 = CV"),
