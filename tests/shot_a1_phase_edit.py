@@ -8,6 +8,7 @@
   2) `Ctrl Mode` 에 2 를 치면 **다음 칸이 `Ctrl Target`** 이다 (Ctrl Bus 는 안 쓴다)
   3) [이 조건으로 계산] 을 누른 것과 같게 풀면 **조류가 30 MW 가 되나**
   4) 「점검」 탭 카드가 **위상**이라고 말하나
+  5) `Ctrl Bus` 칸이 **잠기고 「—」** 로 바뀌나 (모드 2 는 그 칸을 안 쓴다)
 
 ⚠️ 컴파일된 엔진을 쓴다 — 위상 조정은 엔진 **17차**부터 들어 있다.
 """
@@ -26,6 +27,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import warnings                                              # noqa: E402
 warnings.filterwarnings("ignore")
 import numpy as np                                           # noqa: E402
+from PySide6.QtCore import Qt                                # noqa: E402
 from PySide6.QtWidgets import (QApplication, QMessageBox,    # noqa: E402
                                QTabWidget, QTableWidget, QTableWidgetItem)
 
@@ -144,6 +146,25 @@ else:
     if not ok4:
         fails.append("카드 내용")
     win.grab().save(str(OUT / "A1_위상_손으로입력.png"))
+
+print("\n[5] Ctrl Bus 칸이 잠기고 「—」로 바뀌나 (모드 2 는 그 칸을 안 쓴다)")
+win.table_tab = "계통 데이터"
+win.grid_key = "AC_Line_dat"
+win.rebuild()
+pump(0.4)
+tb2, off2 = win._grid_tb, win._grid_off
+bus_cell = tb2.item(ROW, 14 + off2)          # 위상을 건 8번 줄
+other = tb2.item(0, 14 + off2)               # 조정을 안 건 1번 줄
+locked = not (bus_cell.flags() & Qt.ItemIsEditable)
+print(f"    위상 건 줄  값 {bus_cell.text()!r} · 잠김 {locked}")
+print(f"    안 건 줄    값 {other.text()!r} · 고칠 수 있나 "
+      f"{bool(other.flags() & Qt.ItemIsEditable)}")
+ok5 = (bus_cell.text() == "—" and locked
+       and bool(other.flags() & Qt.ItemIsEditable))
+print(f"    {'✅ 모드 2 에서만 잠긴다' if ok5 else '🚨 아니다'}")
+if not ok5:
+    fails.append("Ctrl Bus 잠금")
+win.grab().save(str(OUT / "A1_위상_CtrlBus잠김.png"))
 
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.stdout.flush()

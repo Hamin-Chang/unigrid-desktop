@@ -2214,6 +2214,18 @@ class Proto(QMainWindow):
 
         def cell(r, j):
             """진짜 줄 r · 데이터 열 j 의 칸 하나."""
+            # 🚨 위상 조정기(Ctrl Mode = 2)에는 `Ctrl Bus` 가 없다 — 그 선로 **자신의**
+            #    조류를 보기 때문이다. 빈 칸으로 두면 "여기 뭘 넣어야 하나" 로 읽히므로
+            #    잠그고 「—」로 보여 준다(2026-08-13 사용자: "비워 둠 이거를 해결해야").
+            #    엔진도 모드 2 에서는 이 칸을 안 읽는다.
+            if key == "AC_Line_dat" and j == 14 and ncol > 13 and arr[r, 13] == 2:
+                it = QTableWidgetItem("—")
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                it.setForeground(QColor(c["muted"]))
+                it.setToolTip("위상 조정기는 그 선로 자신의 조류를 봅니다 — "
+                              "볼 버스가 따로 없습니다")
+                return it
             val = arr[r, j] * scales.get(j, 1.0)
             txt = "" if np.isnan(val) else (
                 f"{val:.0f}" if float(val).is_integer() and abs(val) < 1e9
