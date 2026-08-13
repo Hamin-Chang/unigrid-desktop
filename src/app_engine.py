@@ -101,7 +101,7 @@ class Solution:
     # 탭 자동 조정 결과 (2026-08-13, §7 5단계 A1). 한 줄 = 조정 걸린 변압기 1대, 열 5개:
     #   [선로번호, 제어버스, 목표전압, 최종탭, 살아있나]
     #   ⚠️ **살아있나 = 0 이면 목표를 못 맞춘 것**(탭이 한계에 걸려 놓아줬다).
-    tap_ctrl: np.ndarray = field(default_factory=lambda: np.empty((0, 8)))
+    tap_ctrl: np.ndarray = field(default_factory=lambda: np.empty((0, 9)))
     method: str = "nr"            # 어느 해법으로 푼 결과인가
     seconds: float = 0.0        # 파일 읽기 + 계산까지 걸린 전체 시간
     warm_start: bool = True     # 계산 엔진이 이미 켜져 있었나 (아니면 기동 시간이 섞임)
@@ -823,8 +823,11 @@ def _arr(raw: dict, key: str) -> np.ndarray:
         return np.zeros((0, 0))
 
 
-TAP_COLS = 8
-"""탭 조정 결과의 열 수 — [선로, 버스, 목표, 탭, 살아있나, 하한, 상한, 한계자동]."""
+TAP_COLS = 9
+"""탭·위상 조정 결과의 열 수.
+
+[선로, 보는버스, 목표, 정한값, 살아있나, 하한, 상한, 한계자동, **방식**]
+방식 1 = 탭 조정(목표 pu · 값 탭비) · 2 = 위상 조정기(목표 MW · 값 deg, 보는버스 0)."""
 
 
 def _tap_arr(raw: dict) -> np.ndarray:
@@ -832,21 +835,22 @@ def _tap_arr(raw: dict) -> np.ndarray:
 
     한 대뿐이면 MATLAB 이 1차원으로 넘긴다 — 모양을 여기서 맞춘다.
     옛 엔진(그 필드가 없는 것)이면 빈 표가 된다.
-    ⚠️ 5열짜리 엔진(2026-08-13 아침 15차)은 한계·자동 칸이 없다. 그때는 뒤 세 칸을
-       비워 채운다 — 앱이 안 죽고, 「한계를 자동으로 잡았다」 안내만 안 뜬다.
+    ⚠️ 옛 엔진도 받는다 — 5열(15차)·8열(16차). 모자란 칸은 비워 채우되 **방식은 1**
+       로 둔다(그 엔진들엔 탭밖에 없었다). 앱이 안 죽고 새 안내만 안 뜬다.
     """
     a = _arr(raw, "Tap_result")
     if a.size == 0:
         return np.empty((0, TAP_COLS))
+    OK = (5, 8, TAP_COLS)
     if a.ndim == 1:
-        a = a.reshape(1, -1) if a.size in (5, TAP_COLS) \
-            else np.empty((0, TAP_COLS))
-    if a.ndim != 2 or a.shape[1] not in (5, TAP_COLS):
-        print(f"[결과] 탭 조정 표의 열 수가 5도 {TAP_COLS}도 아니라 비웁니다: {a.shape}")
+        a = a.reshape(1, -1) if a.size in OK else np.empty((0, TAP_COLS))
+    if a.ndim != 2 or a.shape[1] not in OK:
+        print(f"[결과] 탭 조정 표의 열 수가 {OK} 중 하나가 아니라 비웁니다: {a.shape}")
         return np.empty((0, TAP_COLS))
-    if a.shape[1] == 5:                       # 옛 엔진
-        pad = np.full((a.shape[0], TAP_COLS - 5), np.nan)
+    if a.shape[1] < TAP_COLS:                 # 옛 엔진
+        pad = np.full((a.shape[0], TAP_COLS - a.shape[1]), np.nan)
         a = np.hstack([a, pad])
+        a[:, 8] = 1                           # 그 엔진들엔 탭밖에 없었다
     return a
 
 

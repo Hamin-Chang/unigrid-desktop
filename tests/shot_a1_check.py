@@ -99,13 +99,16 @@ def open_check_tab():
 
 
 def tap_table():
-    """점검 탭 안의 탭 조정 표를 찾는다 (머리글로 가린다)."""
+    """점검 탭 안의 조정 표를 찾는다 (머리글로 가린다).
+
+    열 = 방식 · 선로 · 맞추는 곳 · 목표 · 정해진 값 · 움직일 수 있는 범위 · 결과
+    (2026-08-13 ② 에서 위상 조정기가 들어오며 머리글이 바뀌었다)"""
     for t in win.findChildren(QTableWidget):
         if not t.isVisible():
             continue
         heads = [t.horizontalHeaderItem(i).text() if t.horizontalHeaderItem(i) else ""
                  for i in range(t.columnCount())]
-        if "정해진 탭비" in heads:
+        if "정해진 값" in heads:
             return t
     return None
 
@@ -132,7 +135,7 @@ if t1 is None:
 else:
     vals = [t1.item(0, cc).text() for cc in range(t1.columnCount())]
     print(f"    표 내용 {vals}")
-    ok = vals[-1] == "목표 맞춤" and float(vals[3]) > 1.0
+    ok = vals[-1] == "목표 맞춤" and vals[0] == "탭" and float(vals[4]) > 1.0
     print(f"    {'✅ 정해진 탭비와 결과가 보인다' if ok else '🚨 내용이 이상하다'}")
     if not ok:
         fails.append("카드 내용")
@@ -177,7 +180,7 @@ else:
     print(f"    하한 {tap[0, 5]:g} · 상한 {tap[0, 6]:g} · 자동 표시 {tap[0, 7]:g}")
     open_check_tab()
     t3 = tap_table()
-    lim = t3.item(0, 4).text() if t3 is not None else "(표 없음)"
+    lim = t3.item(0, 5).text() if t3 is not None else "(표 없음)"   # 「움직일 수 있는 범위」
     said = [w.text() for w in win.findChildren(QLabel)
             if "0.9" in w.text() and "1.1" in w.text() and "적지 않아" in w.text()]
     print(f"    표의 「탭 한계」 칸 = {lim!r}")

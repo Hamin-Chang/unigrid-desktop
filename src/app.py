@@ -2686,21 +2686,24 @@ class Proto(QMainWindow):
             ic.setStyleSheet(
                 f"color:{c['warn'] if miss else c['muted']};font-size:15px;")
             hh.addWidget(ic)
-            ttl = QLabel(f"탭 자동 조정 {len(tap)}대"
+            n_ph = int((tap_a[:, 8] == 2).sum()) if tap_a.shape[1] > 8 else 0
+            what = "탭·위상 자동 조정" if n_ph and n_ph < len(tap) else \
+                   ("위상 자동 조정" if n_ph else "탭 자동 조정")
+            ttl = QLabel(f"{what} {len(tap)}대"
                          + (f" — {miss}대가 목표를 못 맞췄습니다" if miss else ""))
             ttl.setStyleSheet(
                 f"color:{c['warn'] if miss else c['text']};"
                 f"font-size:14px;font-weight:700;")
             hh.addWidget(ttl)
             hh.addStretch()
-            note = QLabel("탭비는 계산이 정한 값입니다"
-                          + (" · 한계에 걸리면 목표 전압을 포기합니다" if miss else ""))
+            note = QLabel("굵은 값은 계산이 정한 것입니다"
+                          + (" · 한계에 걸리면 목표를 포기합니다" if miss else ""))
             note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             hh.addWidget(note)
             cv.addLayout(hh)
 
-            heads = ["선로", "보는 버스", "목표 [pu]", "정해진 탭비",
-                     "탭 한계", "결과"]
+            heads = ["방식", "선로", "맞추는 곳", "목표", "정해진 값",
+                     "움직일 수 있는 범위", "결과"]
             tt2 = QTableWidget(len(tap), len(heads))
             tt2.setHorizontalHeaderLabels(heads)
             tt2.verticalHeader().setVisible(False)
@@ -2712,10 +2715,16 @@ class Proto(QMainWindow):
                 live = row[4] != 0
                 lo, hi = (row[5], row[6]) if len(row) > 6 else (np.nan, np.nan)
                 mine = len(row) > 7 and row[7] == 1
+                ph = len(row) > 8 and row[8] == 2      # 위상 조정기냐
+                unit = "°" if ph else ""
                 lim = "—" if np.isnan(lo) else (
-                    f"{lo:g} ~ {hi:g}" + ("  (자동)" if mine else ""))
-                vals = [f"{int(row[0])}", f"{int(row[1])}", f"{row[2]:.4f}",
-                        f"{row[3]:.4f}", lim,
+                    f"{lo:g} ~ {hi:g}{unit}" + ("  (자동)" if mine else ""))
+                vals = ["위상" if ph else "탭",
+                        f"{int(row[0])}",
+                        "이 선로" if ph else f"버스 {int(row[1])}",
+                        f"{row[2]:,.3f} MW" if ph else f"{row[2]:.4f} pu",
+                        f"{row[3]:.4f}{unit}",
+                        lim,
                         "목표 맞춤" if live else "한계에 걸림 — 목표 포기"]
                 for cc, txt in enumerate(vals):
                     it = QTableWidgetItem(txt)
@@ -2729,10 +2738,16 @@ class Proto(QMainWindow):
             cv.addWidget(tt2)
             if auto:
                 # 사용자가 안 적어서 앱이 정한 값이다 — 어디를 고치면 되는지까지 적는다.
+                # 탭이면 0.9~1.1, 위상이면 ±30° — 어느 쪽인지 갈라 적는다
+                kinds = []
+                if ((tap_a[:, 7] == 1) & (tap_a[:, 8] == 1)).any():
+                    kinds.append("탭은 0.9 ~ 1.1")
+                if ((tap_a[:, 7] == 1) & (tap_a[:, 8] == 2)).any():
+                    kinds.append("위상은 -30 ~ 30°")
                 am = QLabel(
-                    f"ⓘ {auto}대는 탭 한계(Ctrl Min·Ctrl Max)를 적지 않아 "
-                    f"**0.9 ~ 1.1** 로 잡았습니다 — 「계통 데이터」 → AC 선로에서 "
-                    f"바꿀 수 있습니다.".replace("**", ""))
+                    f"ⓘ {auto}대는 움직일 범위(Ctrl Min·Ctrl Max)를 적지 않아 "
+                    f"{' · '.join(kinds)} 로 잡았습니다 — 「계통 데이터」 → "
+                    f"AC 선로에서 바꿀 수 있습니다.")
                 am.setWordWrap(True)
                 am.setStyleSheet(f"color:{c['muted']};font-size:12px;")
                 cv.addWidget(am)
