@@ -9,6 +9,7 @@
     3) 그 답이 맞는가 — 찾은 탭을 **고정값**으로 넣고 손 안 댄 길로 다시 풀면 같은가
     4) 한계 — 못 미치는 목표면 한계에서 멈추고 놓아주나
     5) 못 하는 설정을 분명히 막나 (위상 조정기 · 계단 탭 · 제어 버스가 PV)
+    6) **한계를 비우면 0.9~1.1 로 잡고, 그렇게 잡았다고 밝히나** (2026-08-13)
 
 ⚠️ **컴파일된 엔진이 아니라 `.m` 소스를 돌린다.** 엔진에 v4 를 넣는 재컴파일은 A1 이
    끝난 뒤에 한 번에 하기로 했으므로(§7 5단계 5번), 그 전까지는 이 시험이 지킴이다.
@@ -65,14 +66,16 @@ S = load(fullfile(d,'case.mat'));
 ORD = {{{', '.join(f"'{t}'" for t in TABLES)}}};
 ROW = {CTRL_ROW};  BUS = {CTRL_BUS};  TGT = {TARGET};
 
-function [V, err] = solve_with(S, ORD, L, tag)
+function [V, err, TR] = solve_with(S, ORD, L, tag)
     a = cell(1,numel(ORD));
     for k = 1:numel(ORD)
         if strcmp(ORD{{k}},'AC_Line_dat'), a{{k}} = L; else, a{{k}} = S.(ORD{{k}}); end
     end
+    TR = [];
     try
         [~, r] = evalc('runpf_unigrid_app(tag, 1, a{{:}})');
         V = r.AC_all(:,2,1);  err = '';
+        if isfield(r,'Tap_result'), TR = r.Tap_result; end
     catch ME
         V = [];  err = [ME.identifier '|' ME.message];
     end
@@ -114,6 +117,13 @@ L3 = L19;  L3(ROW,14)=1; L3(ROW,15)=BUS; L3(ROW,16)=TGT; L3(ROW,19)=17;
 [~, out.err_steps] = solve_with(S, ORD, L3, 'steps');
 L4 = L19;  L4(ROW,14)=1; L4(ROW,15)=2;  L4(ROW,16)=TGT;   % 버스 2 = 발전기(PV)
 [~, out.err_pv]  = solve_with(S, ORD, L4, 'pvbus');
+
+% [6] 한계를 비우면 0.9~1.1 로 잡히나 (2026-08-13 사용자 확정)
+LN = L19;  LN(ROW,14)=1; LN(ROW,15)=BUS; LN(ROW,16)=TGT;
+LN(ROW,17)=NaN; LN(ROW,18)=NaN; LN(ROW,19)=0;      % 한계를 비운다
+[out.Vauto, ~, out.TRauto] = solve_with(S, ORD, LN, 'auto');
+LW = LN;  LW(ROW,17)=0.9; LW(ROW,18)=1.1;          % 같은 값을 직접 적는다
+[out.Vwrit, ~, out.TRwrit] = solve_with(S, ORD, LW, 'writ');
 
 save(fullfile(d,'out.mat'), 'out');
 disp('DONE');
@@ -186,6 +196,30 @@ disp('DONE');
         print(f"    {name:<20} {'✅ 막힘' if blocked else '🚨 안 막힘'} — {head}")
         if not blocked:
             fails.append(f"{name} 안 막힘")
+
+    print(f"\n[6] 한계를 비우면 0.9~1.1 로 잡나 (그리고 그렇다고 밝히나)")
+    Vauto = np.atleast_1d(np.asarray(o.Vauto, dtype=float))
+    Vwrit = np.atleast_1d(np.asarray(o.Vwrit, dtype=float))
+    TRa = np.atleast_2d(np.asarray(o.TRauto, dtype=float))
+    TRw = np.atleast_2d(np.asarray(o.TRwrit, dtype=float))
+    dauto = float(np.max(np.abs(Vauto - Vwrit)))
+    n_cmp += Vauto.size
+    print(f"    비운 판 ↔ 0.9/1.1 을 적은 판 전압 최대차 {dauto:.3e} "
+          f"(버스 {Vauto.size}개)")
+    if TRa.size and TRa.shape[1] >= 8:
+        lo_a, hi_a, au_a = TRa[0, 5], TRa[0, 6], TRa[0, 7]
+        au_w = TRw[0, 7] if TRw.size and TRw.shape[1] >= 8 else -1
+        print(f"    비운 판이 돌려준 한계 {lo_a:g} ~ {hi_a:g} · 자동 표시 {au_a:g}")
+        print(f"    적은 판의 자동 표시 {au_w:g}  (0 이어야 한다)")
+        ok6 = (dauto == 0 and lo_a == 0.9 and hi_a == 1.1
+               and au_a == 1 and au_w == 0)
+        n_cmp += 4
+    else:
+        print(f"    🚨 Tap_result 가 8열이 아니다: {TRa.shape}")
+        ok6 = False
+    print(f"    {'✅ 0.9~1.1 로 잡고 자동이라고 밝힌다' if ok6 else '🚨 아니다'}")
+    if not ok6:
+        fails.append("한계 기본값")
 
     print(f"\n>>> 대조 {n_cmp}개 · 실패 {len(fails)}건"
           + ("" if not fails else " — " + ", ".join(fails)))

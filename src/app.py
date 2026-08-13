@@ -2665,7 +2665,11 @@ class Proto(QMainWindow):
         # 특히 한계에 걸려 목표를 못 맞춘 경우를 모르면 "목표대로 됐겠지" 하고 넘어간다.
         tap = getattr(self.sol, "tap_ctrl", None) if self.sol else None
         if tap is not None and len(tap):
-            miss = int((np.asarray(tap)[:, 4] == 0).sum())
+            tap_a = np.asarray(tap, dtype=float)
+            miss = int((tap_a[:, 4] == 0).sum())
+            # 한계를 안 적어 앱이 0.9~1.1 로 잡은 것 (2026-08-13 사용자 확정).
+            # **내가 정하지 않은 값이 답을 가두고 있으므로** 반드시 밝힌다.
+            auto = int((tap_a[:, 7] == 1).sum()) if tap_a.shape[1] > 7 else 0
             card = QFrame()
             card.setObjectName("card")
             if miss:
@@ -2695,7 +2699,8 @@ class Proto(QMainWindow):
             hh.addWidget(note)
             cv.addLayout(hh)
 
-            heads = ["선로", "보는 버스", "목표 [pu]", "정해진 탭비", "결과"]
+            heads = ["선로", "보는 버스", "목표 [pu]", "정해진 탭비",
+                     "탭 한계", "결과"]
             tt2 = QTableWidget(len(tap), len(heads))
             tt2.setHorizontalHeaderLabels(heads)
             tt2.verticalHeader().setVisible(False)
@@ -2703,10 +2708,14 @@ class Proto(QMainWindow):
             tt2.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
             tt2.setAlternatingRowColors(True)
             tt2.setFixedHeight(34 + 28 * len(tap))
-            for r, row in enumerate(np.asarray(tap, dtype=float)):
+            for r, row in enumerate(tap_a):
                 live = row[4] != 0
+                lo, hi = (row[5], row[6]) if len(row) > 6 else (np.nan, np.nan)
+                mine = len(row) > 7 and row[7] == 1
+                lim = "—" if np.isnan(lo) else (
+                    f"{lo:g} ~ {hi:g}" + ("  (자동)" if mine else ""))
                 vals = [f"{int(row[0])}", f"{int(row[1])}", f"{row[2]:.4f}",
-                        f"{row[3]:.4f}",
+                        f"{row[3]:.4f}", lim,
                         "목표 맞춤" if live else "한계에 걸림 — 목표 포기"]
                 for cc, txt in enumerate(vals):
                     it = QTableWidgetItem(txt)
@@ -2714,8 +2723,19 @@ class Proto(QMainWindow):
                         it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     if not live:
                         it.setForeground(QColor(c["warn"]))
+                    elif cc == 4 and mine:
+                        it.setForeground(QColor(c["muted"]))
                     tt2.setItem(r, cc, it)
             cv.addWidget(tt2)
+            if auto:
+                # 사용자가 안 적어서 앱이 정한 값이다 — 어디를 고치면 되는지까지 적는다.
+                am = QLabel(
+                    f"ⓘ {auto}대는 탭 한계(Ctrl Min·Ctrl Max)를 적지 않아 "
+                    f"**0.9 ~ 1.1** 로 잡았습니다 — 「계통 데이터」 → AC 선로에서 "
+                    f"바꿀 수 있습니다.".replace("**", ""))
+                am.setWordWrap(True)
+                am.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+                cv.addWidget(am)
             outer.addWidget(card)
 
         # 무효출력 한계를 걸면 수렴하지 못하는 계통 — 아래 표는 한계를 적용하지 않은

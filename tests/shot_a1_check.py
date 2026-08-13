@@ -154,5 +154,42 @@ else:
         fails.append("한계 안내")
     win.grab().save(str(OUT / "A1_점검탭_한계.png"))
 
+print("\n[4] 한계를 안 적으면 0.9~1.1 로 잡고 **그렇게 잡았다고 밝히나** (2026-08-13)")
+from PySide6.QtWidgets import QLabel                          # noqa: E402
+
+
+def with_ctrl_nolimit(target):
+    """한계 칸(17·18)을 **비운 채** 조정만 켠 케이스."""
+    c = with_ctrl(target, 1.2)
+    df = c.tables["AC_Line_dat"]
+    df.iloc[ROW, 16] = np.nan        # Ctrl Min
+    df.iloc[ROW, 17] = np.nan        # Ctrl Max
+    return c
+
+
+sol3 = show(with_ctrl_nolimit(1.035), "auto")
+tap = np.asarray(sol3.tap_ctrl)
+print(f"    엔진이 돌려준 표 {tap.shape}")
+if tap.shape[1] < 8:
+    print("    🚨 8열이 아니다 — 엔진이 옛것이다")
+    fails.append("탭 표가 8열이 아님")
+else:
+    print(f"    하한 {tap[0, 5]:g} · 상한 {tap[0, 6]:g} · 자동 표시 {tap[0, 7]:g}")
+    open_check_tab()
+    t3 = tap_table()
+    lim = t3.item(0, 4).text() if t3 is not None else "(표 없음)"
+    said = [w.text() for w in win.findChildren(QLabel)
+            if "0.9" in w.text() and "1.1" in w.text() and "적지 않아" in w.text()]
+    print(f"    표의 「탭 한계」 칸 = {lim!r}")
+    # 🚨 `findChildren` 은 **지워지기를 기다리는 옛 화면**의 라벨도 준다 —
+    #    개수로 판정하면 안 된다(오늘만 세 번째로 걸린 함정). 있나 없나만 본다.
+    print(f"    안내 문구 = {said[0] if said else '(없음)'}  (찾은 개수 {len(said)})")
+    ok = (tap[0, 5] == 0.9 and tap[0, 6] == 1.1 and tap[0, 7] == 1
+          and "자동" in lim and len(said) >= 1)
+    print(f"    {'✅ 잡고, 밝힌다' if ok else '🚨 아니다'}")
+    if not ok:
+        fails.append("한계 자동 안내")
+    win.grab().save(str(OUT / "A1_점검탭_한계자동.png"))
+
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.exit(1 if fails else 0)
