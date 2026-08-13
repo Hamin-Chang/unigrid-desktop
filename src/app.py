@@ -392,6 +392,22 @@ def hline_soft(c):
     return f
 
 
+def _scrollable(page):
+    """카드를 세로로 쌓은 화면을 **스크롤에 담는다**.
+
+    담지 않으면 그 화면의 키가 곧 창의 최소 높이가 되어, 화면보다 큰 창이
+    만들어지고 **아래가 잘린 채 줄일 수도 없다**(2026-08-13 실측: 점검 탭 490px
+    + 그래프 470px 로 창 최소 높이가 1201px 이었다).
+    """
+    sa = QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QFrame.NoFrame)
+    sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    sa.setWidget(page)
+    sa.setMinimumHeight(0)
+    return sa
+
+
 # ─────────────────────────────────────────── 조각
 class _ClickLabel(QLabel):
     """두 번 누르면 알려 주는 라벨 (시나리오 이름 고치기용)."""
@@ -862,8 +878,21 @@ class Proto(QMainWindow):
         self._load_timer.timeout.connect(lambda: self.scale_loads(self._load_pending))
         self.visible = {k: {n for n, d in v if d} for k, v in TABLE_SPECS.items()}
         self.split_sizes = None
+        # 계통 데이터 표를 다시 그릴 때 보던 자리로 되돌리려고 들고 있는 것
+        # (2026-08-13 사용자: "숫자 하나 넣을 때마다 가로 스크롤을 다시 해야 한다")
+        self._grid_tb = None           # 지금 화면의 표
+        self._grid_view = None         # (가로, 세로) 스크롤 자리
+        self._grid_focus = None        # 다음에 고를 칸 (화면 줄, 화면 열)
         self.setWindowTitle("UNIGRID")
-        self.resize(1440, 950)
+        # 🚨 화면보다 큰 창으로 열면 **아래가 잘린 채 줄일 수도 없다**(2026-08-13).
+        #    맥북 화면은 세로가 900 언저리라 950 도 넘친다. 쓸 수 있는 넓이에 맞춘다.
+        w0, h0 = 1440, 950
+        scr = QApplication.primaryScreen()
+        if scr is not None:
+            a = scr.availableGeometry()
+            w0 = min(w0, a.width() - 40)
+            h0 = min(h0, a.height() - 40)
+        self.resize(w0, h0)
         self.build()
 
     # ── 테마 ──
@@ -947,13 +976,60 @@ class Proto(QMainWindow):
         mid = QHBoxLayout()
         mid.setContentsMargins(0, 0, 0, 0)
         mid.setSpacing(0)
-        mid.addWidget(self.sidebar())
+        # 왼쪽 줄도 스크롤에 담는다 — 카드를 다섯 장 쌓아 665px 이라, 안 담으면
+        # 이것 하나로 창 최소 높이가 781px 이 된다(2026-08-13 실측).
+        side = QScrollArea()
+        side.setWidgetResizable(True)
+        side.setFrameShape(QFrame.NoFrame)
+        side.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        side.setWidget(self.sidebar())
+        side.setFixedWidth(280)
+        side.setMinimumHeight(0)
+        mid.addWidget(side)
         mid.addWidget(self.center(), 1)
         v.addLayout(mid, 1)
         v.addWidget(self.statusbar())
 
     def rebuild(self):
+        self._save_grid_view()
         self.build()
+
+    # ── 계통 데이터 표의 "보던 자리" ───────────────────────────────────
+    # 값을 한 칸 고칠 때마다 화면을 통째로 다시 그리므로, 아무것도 안 하면 표가
+    # 맨 왼쪽으로 돌아간다. 조정 열은 19열 중 14~19열이라 **매번 오른쪽 끝까지
+    # 다시 밀어야 했다**(2026-08-13 사용자 지적). 자리를 기억했다가 되돌린다.
+
+    def _save_grid_view(self):
+        """지금 표가 어디를 보고 있었는지 적어 둔다."""
+        tb = getattr(self, "_grid_tb", None)
+        if tb is None:
+            return
+        try:
+            self._grid_view = (tb.horizontalScrollBar().value(),
+                               tb.verticalScrollBar().value())
+        except RuntimeError:        # 이미 지워진 위젯
+            pass
+        self._grid_tb = None
+
+    def _restore_grid_view(self, tb):
+        """되돌린다 — 자리를 먼저 맞추고, 다음에 칠 칸을 고른다."""
+        try:
+            if self._grid_view:
+                h, v = self._grid_view
+                tb.horizontalScrollBar().setValue(h)
+                tb.verticalScrollBar().setValue(v)
+            spot = getattr(self, "_grid_focus", None)
+            if spot:
+                r, cc = spot
+                if r < tb.rowCount() and cc < tb.columnCount():
+                    tb.setCurrentCell(r, cc)
+                    it = tb.item(r, cc)
+                    if it is not None:
+                        tb.scrollToItem(it)   # 이미 보이면 안 움직인다
+                    tb.setFocus()
+                self._grid_focus = None
+        except RuntimeError:
+            pass
 
     # ── 상단 ──
     def topbar(self):
@@ -1257,9 +1333,12 @@ class Proto(QMainWindow):
             gt.setCurrentIndex(min(self.graph_tab, gt.count() - 1))
             gt.currentChanged.connect(
                 lambda i: setattr(self, "graph_tab", int(i)))
-            # 그래프가 낮으면 QtCharts 가 x축 글자를 "..." 로 줄여 버린다.
-            # 두 개를 위아래로 쌓는 탭이 있으므로 넉넉히 잡아 준다.
-            gt.setMinimumHeight(470)
+            # 그래프가 낮으면 QtCharts 가 x축 글자를 "..." 로 줄여 버린다. 그래서
+            # **평소 높이**(아래 setSizes 620)는 넉넉히 준다. 다만 이걸 최소치로
+            # 잡아 두면 창을 화면보다 작게 못 만든다 — 470 + 표 579 로 창 최소가
+            # 1201px 이 돼 맥북 화면에서 아래가 잘렸다(2026-08-13 실측·사용자 지적).
+            # 최소는 낮추고, 좁게 볼지는 가운데 손잡이로 사용자가 정한다.
+            gt.setMinimumHeight(260)
             split.addWidget(gt)
         else:
             note = QFrame()
@@ -1378,10 +1457,12 @@ class Proto(QMainWindow):
                         t.setItem(r, cc, it)
                 tt.addTab(t, name)
 
-        # 점검 · 수렴 탭
+        # 점검 · 수렴 탭 — 카드를 세로로 쌓아서 키가 크다(점검 490 · 수렴 378).
+        # 그대로 넣으면 그 키가 **창의 최소 높이**가 돼 창을 못 줄인다. 스크롤에
+        # 담아 창이 작아도 아래까지 갈 수 있게 한다(2026-08-13).
         n = violation_count(self.viol())
-        tt.addTab(self.check_page(), f"점검 ({n})" if n else "점검")
-        tt.addTab(self.conv_page(), "수렴")
+        tt.addTab(_scrollable(self.check_page()), f"점검 ({n})" if n else "점검")
+        tt.addTab(_scrollable(self.conv_page()), "수렴")
         n_ch = len(self.changes)
         tt.addTab(self.grid_page(),
                   f"계통 데이터 ({n_ch})" if n_ch else "계통 데이터")
@@ -1392,12 +1473,24 @@ class Proto(QMainWindow):
         tt.currentChanged.connect(
             lambda i, w=tt: setattr(self, "table_tab", _tab_base(w.tabText(i))))
         tv.addWidget(tt)
+        # 표 묶음도 최소치를 못 박는다 — 안 그러면 가장 키 큰 탭이 창의 최소
+        # 높이를 정해 버린다(Qt 는 최소치를 손으로 정하면 그것을 먼저 본다).
+        tw.setMinimumHeight(170)
         split.addWidget(tw)
 
         if not self.numbers:
             split.setStretchFactor(0, 3)      # 표가 sizeHint 로 밀고 올라오는 걸 막는다
             split.setStretchFactor(1, 2)
-            split.setSizes(self.split_sizes or [620, 300])
+            if self.split_sizes:
+                split.setSizes(self.split_sizes)
+            else:
+                # 620/300 을 못 박아 두면 창이 낮을 때 그래프가 다 먹고 **표가
+                # 눌린다**(1200x680 에서 표가 120px 이었다). 창 높이로 나누되,
+                # 아래는 300px 을 되도록 지킨다 — 계통 데이터 탭은 바가 셋(표
+                # 고르기·부하·찾기)이라 그보다 얇으면 줄이 한 줄도 안 보인다.
+                room = max(430, self.height() - 190)   # 위·아래 바를 뺀 대략
+                bottom = min(max(int(room * 0.38), 350), room - 260)
+                split.setSizes([room - bottom, bottom])
             split.splitterMoved.connect(
                 lambda *_: setattr(self, "split_sizes", split.sizes()))
         v.addWidget(split, 1)
@@ -1965,6 +2058,10 @@ class Proto(QMainWindow):
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, k=key: self.set_grid_table(k))
             row.addWidget(b)
+        # 찾기 칸을 **같은 줄에** 붙인다. 따로 한 줄을 쓰면 바가 셋이 되어
+        # (표 고르기·부하·찾기) 표에 줄이 한 줄도 안 남는다(2026-08-13 실측).
+        row.addSpacing(10)
+        row.addWidget(self.find_bar(inline=True))
         row.addStretch(1)
         hint = QLabel("켜고 끄기는 바로 계산하지 않습니다 — 다 바꾼 뒤 위의 [이 조건으로 계산]")
         hint.setStyleSheet(f"color:{c['muted']};font-size:12px;")
@@ -1975,7 +2072,6 @@ class Proto(QMainWindow):
         if load is not None:
             v.addWidget(load)
 
-        v.addWidget(self.find_bar())           # 버스 번호로 찾기
         v.addWidget(self.grid_table_widget(), 1)
         return w
 
@@ -2001,7 +2097,8 @@ class Proto(QMainWindow):
                     break
         return out
 
-    def find_bar(self):
+    def find_bar(self, inline=False):
+        """버스 번호로 찾기. `inline` 이면 표 고르기 줄에 얹으므로 뒤 여백을 안 둔다."""
         c = self.c
         bar = QFrame()
         h = QHBoxLayout(bar)
@@ -2013,8 +2110,9 @@ class Proto(QMainWindow):
         h.addWidget(lab)
 
         box = QLineEdit(self.grid_find or "")
-        box.setPlaceholderText("예: 38   ·   38 39 40   (비우면 전부)")
-        box.setFixedWidth(260)
+        box.setPlaceholderText("예: 38 39 40 (비우면 전부)" if inline
+                              else "예: 38   ·   38 39 40   (비우면 전부)")
+        box.setFixedWidth(200 if inline else 260)
         box.returnPressed.connect(lambda: self.set_find(box.text()))
         box.editingFinished.connect(lambda: self.set_find(box.text()))
         h.addWidget(box)
@@ -2034,7 +2132,8 @@ class Proto(QMainWindow):
             got = QLabel(f"{arr.shape[0]:,}줄")
             got.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             h.addWidget(got)
-        h.addStretch(1)
+        if not inline:
+            h.addStretch(1)
         return bar
 
     def set_find(self, text):
@@ -2113,6 +2212,10 @@ class Proto(QMainWindow):
                 tb.setItem(at, j + off, it)
         self._grid_loading = False
         tb.itemChanged.connect(lambda item: self.grid_edited(key, item, off, scales))
+        # 보던 자리로 되돌린다. 지금 바로는 못 한다 — 열 너비가 아직 안 정해져
+        # 가로 스크롤 범위가 0이다. 화면을 한 번 그린 뒤에 맞춘다.
+        self._grid_tb = tb
+        QTimer.singleShot(0, lambda: self._restore_grid_view(tb))
         return tb
 
     def grid_edited(self, key, item, off, scales):
@@ -2148,6 +2251,11 @@ class Proto(QMainWindow):
             table=key, row=row, col=col, value=value,
             label=f"{SC.describe_row(self.base_case, key, row)} {name} → {shown:g}",
             mark=SC.row_mark(self.base_case, key, row)))
+        # 같은 줄의 **다음 고칠 수 있는 칸**을 미리 골라 둔다. 조정 열은 여섯 칸을
+        # 잇달아 채우는 일이라(Mode·Bus·Target·Min·Max·Steps) 한 칸 칠 때마다
+        # 오른쪽으로 다시 찾아가야 했다. 이제 바로 다음 칸에 숫자를 치면 된다.
+        nxt = [x for x in sorted(GRID_EDITABLE.get(key, set())) if x > col]
+        self._grid_focus = (item.row(), (nxt[0] if nxt else col) + off)
         self.rebuild()
 
     def set_grid_table(self, key):
