@@ -104,10 +104,11 @@ GRID_SCALES = _grid_scales()
 # 나머지 칸은 회색으로 두어 "④ 계통 자체는 엑셀에서" 라는 선을 화면으로 보여 준다(PDR §4.3).
 # 머리글은 있는데 파일엔 아직 없는 열까지 **빈 칸으로 보여 줄** 표.
 # A1 조정 열(14~19)은 옛 파일에 없다 — 안 보여 주면 켤 방법이 없다.
-GRID_PAD_TO_HEADERS = {"AC_Line_dat"}
+GRID_PAD_TO_HEADERS = {"AC_Line_dat", "AC_Bus_dat"}
 
 GRID_EDITABLE = {
     "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # A1 조정 — Mode·Bus·Target·Min·Max·Steps
+    "AC_Bus_dat": {17, 18, 19, 20, 21},        # A1 ④ SVC — Shunt Mode·Target·Bmin·Bmax·Steps
     "AC_gen_dat": {2, 3, 4, 7},        # 운전모드 · P-f droop · Q-V droop · 지정전압
     "DC_gen_dat": {2, 3, 5},           # 운전모드 · P-Vdc droop · 지정전압
     "IC_dat": {2, 3, 4, 5, 6, 7, 8},   # AC/DC 제어모드 · droop 셋 · P·Q 동작점
@@ -2702,9 +2703,10 @@ class Proto(QMainWindow):
             ic.setStyleSheet(
                 f"color:{c['warn'] if miss else c['muted']};font-size:15px;")
             hh.addWidget(ic)
-            n_ph = int((tap_a[:, 8] == 2).sum()) if tap_a.shape[1] > 8 else 0
-            what = "탭·위상 자동 조정" if n_ph and n_ph < len(tap) else \
-                   ("위상 자동 조정" if n_ph else "탭 자동 조정")
+            kind_col = tap_a[:, 8] if tap_a.shape[1] > 8 else np.ones(len(tap_a))
+            names = [n for k, n in ((1, "탭"), (2, "위상"), (3, "SVC"))
+                     if (kind_col == k).any()]
+            what = "·".join(names) + " 자동 조정"
             ttl = QLabel(f"{what} {len(tap)}대"
                          + (f" — {miss}대가 목표를 못 맞췄습니다" if miss else ""))
             ttl.setStyleSheet(
@@ -2731,14 +2733,14 @@ class Proto(QMainWindow):
                 live = row[4] != 0
                 lo, hi = (row[5], row[6]) if len(row) > 6 else (np.nan, np.nan)
                 mine = len(row) > 7 and row[7] == 1
-                ph = len(row) > 8 and row[8] == 2      # 위상 조정기냐
-                unit = "°" if ph else ""
+                kind = int(row[8]) if len(row) > 8 else 1
+                unit = {1: "", 2: "°", 3: " Mvar"}[kind]
                 lim = "—" if np.isnan(lo) else (
                     f"{lo:g} ~ {hi:g}{unit}" + ("  (자동)" if mine else ""))
-                vals = ["위상" if ph else "탭",
-                        f"{int(row[0])}",
-                        "이 선로" if ph else f"버스 {int(row[1])}",
-                        f"{row[2]:,.3f} MW" if ph else f"{row[2]:.4f} pu",
+                vals = [{1: "탭", 2: "위상", 3: "SVC"}[kind],
+                        "—" if kind == 3 else f"{int(row[0])}",
+                        "이 선로" if kind == 2 else f"버스 {int(row[1])}",
+                        f"{row[2]:,.3f} MW" if kind == 2 else f"{row[2]:.4f} pu",
                         f"{row[3]:.4f}{unit}",
                         lim,
                         "목표 맞춤" if live else "한계에 걸림 — 목표 포기"]
@@ -2760,10 +2762,12 @@ class Proto(QMainWindow):
                     kinds.append("탭은 0.9 ~ 1.1")
                 if ((tap_a[:, 7] == 1) & (tap_a[:, 8] == 2)).any():
                     kinds.append("위상은 -30 ~ 30°")
+                if ((tap_a[:, 7] == 1) & (tap_a[:, 8] == 3)).any():
+                    kinds.append("SVC 는 -50 ~ 50 Mvar")
                 am = QLabel(
                     f"ⓘ {auto}대는 움직일 범위(Ctrl Min·Ctrl Max)를 적지 않아 "
-                    f"{' · '.join(kinds)} 로 잡았습니다 — 「계통 데이터」 → "
-                    f"AC 선로에서 바꿀 수 있습니다.")
+                    f"{' · '.join(kinds)} 로 잡았습니다 — "
+                    f"「계통 데이터」 에서 바꿀 수 있습니다.")
                 am.setWordWrap(True)
                 am.setStyleSheet(f"color:{c['muted']};font-size:12px;")
                 cv.addWidget(am)
