@@ -98,6 +98,10 @@ class Solution:
     qlim_bound: int = 0
     qlim_bound_up: int = 0        # 발생(Qmax) 쪽
     qlim_bound_dn: int = 0        # 흡수(Qmin) 쪽 ← 전압이 올라간다
+    # 탭 자동 조정 결과 (2026-08-13, §7 5단계 A1). 한 줄 = 조정 걸린 변압기 1대, 열 5개:
+    #   [선로번호, 제어버스, 목표전압, 최종탭, 살아있나]
+    #   ⚠️ **살아있나 = 0 이면 목표를 못 맞춘 것**(탭이 한계에 걸려 놓아줬다).
+    tap_ctrl: np.ndarray = field(default_factory=lambda: np.empty((0, 5)))
     method: str = "nr"            # 어느 해법으로 푼 결과인가
     seconds: float = 0.0        # 파일 읽기 + 계산까지 걸린 전체 시간
     warm_start: bool = True     # 계산 엔진이 이미 켜져 있었나 (아니면 기동 시간이 섞임)
@@ -819,6 +823,23 @@ def _arr(raw: dict, key: str) -> np.ndarray:
         return np.zeros((0, 0))
 
 
+def _tap_arr(raw: dict) -> np.ndarray:
+    """탭 자동 조정 결과를 항상 (줄수, 5) 모양으로 (2026-08-13, A1).
+
+    한 대뿐이면 MATLAB 이 1차원으로 넘긴다 — 모양을 여기서 맞춘다.
+    옛 엔진(그 필드가 없는 것)이면 빈 표가 된다.
+    """
+    a = _arr(raw, "Tap_result")
+    if a.size == 0:
+        return np.empty((0, 5))
+    if a.ndim == 1:
+        a = a.reshape(1, -1) if a.size == 5 else np.empty((0, 5))
+    if a.ndim != 2 or a.shape[1] != 5:
+        print(f"[결과] 탭 조정 표의 열 수가 5가 아니라 비웁니다: {a.shape}")
+        return np.empty((0, 5))
+    return a
+
+
 def _gen_limit_arr(raw: dict) -> np.ndarray:
     """발전기 출력한계 표를 항상 (줄수, 11) 모양으로 돌려준다.
 
@@ -914,6 +935,7 @@ def _build(raw: dict[str, Any], seconds: float) -> Solution:
         dominant_block=[str(x) for x in dom],
         IC_lim_mode=_flat(raw, "IC_lim_mode"),
         gen_limit=_gen_limit_arr(raw),
+        tap_ctrl=_tap_arr(raw),
         qlim_enforced=bool(np.ravel(raw.get("qlim_enforced", [1]))[0]),
         qlim_message=str(raw.get("qlim_message", "") or ""),
         qlim_bound=int(float(np.ravel(raw.get("qlim_bound", [0]))[0] or 0)),

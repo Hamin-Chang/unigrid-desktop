@@ -105,10 +105,23 @@ def curve_print(app_engine, case) -> dict[str, np.ndarray]:
     }
 
 
+def tap_print(sol) -> dict:
+    """탭 자동 조정 결과를 지문에 담는다 (2026-08-13, §7 5단계 A1).
+
+    ⚠️ 전압만 봐도 조정이 깨지면 잡히긴 한다(목표를 못 맞추면 전압이 달라지므로).
+       그래도 **정해진 탭비 자체**를 담는다 — 같은 전압을 다른 탭으로 내는 경우가
+       있을 수 있고, 한계에 걸려 놓아준 것(5열)은 전압만으로는 안 보인다.
+    """
+    t = np.asarray(getattr(sol, "tap_ctrl", np.empty((0, 5))), dtype=float)
+    return {} if t.size == 0 else {"tap_ctrl": t}
+
+
 def run_case(app_engine, load_case, path: Path):
     # 조류계산과 곡선이 **같은 case 를 쓴다** — 앱도 계통 조건을 둘이 공유한다(F1d 확정).
     case = load_case(str(path))
-    f = fingerprint(app_engine.solve(case))
+    sol = app_engine.solve(case)
+    f = fingerprint(sol)
+    f.update(tap_print(sol))
     f.update(curve_print(app_engine, case))
     return f
 

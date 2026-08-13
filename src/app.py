@@ -2436,6 +2436,64 @@ class Proto(QMainWindow):
         hv.addWidget(sub)
         outer.addWidget(head)
 
+        # ── 탭 자동 조정 결과 (2026-08-13, §7 5단계 A1) ──────────────────
+        # 탭은 **계산이 정한 값**이라 사용자가 볼 데가 없으면 결과를 못 읽는다.
+        # 특히 한계에 걸려 목표를 못 맞춘 경우를 모르면 "목표대로 됐겠지" 하고 넘어간다.
+        tap = getattr(self.sol, "tap_ctrl", None) if self.sol else None
+        if tap is not None and len(tap):
+            miss = int((np.asarray(tap)[:, 4] == 0).sum())
+            card = QFrame()
+            card.setObjectName("card")
+            if miss:
+                wc2 = QColor(c["warn"])
+                card.setStyleSheet(
+                    f"#card{{background:rgba({wc2.red()},{wc2.green()},{wc2.blue()},0.12);"
+                    f"border:1px solid {c['warn']};}}")
+            cv = QVBoxLayout(card)
+            cv.setContentsMargins(14, 10, 14, 12)
+            cv.setSpacing(8)
+
+            hh = QHBoxLayout()
+            ic = QLabel("⚠" if miss else "⚙")
+            ic.setStyleSheet(
+                f"color:{c['warn'] if miss else c['muted']};font-size:15px;")
+            hh.addWidget(ic)
+            ttl = QLabel(f"탭 자동 조정 {len(tap)}대"
+                         + (f" — {miss}대가 목표를 못 맞췄습니다" if miss else ""))
+            ttl.setStyleSheet(
+                f"color:{c['warn'] if miss else c['text']};"
+                f"font-size:14px;font-weight:700;")
+            hh.addWidget(ttl)
+            hh.addStretch()
+            note = QLabel("탭비는 계산이 정한 값입니다"
+                          + (" · 한계에 걸리면 목표 전압을 포기합니다" if miss else ""))
+            note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            hh.addWidget(note)
+            cv.addLayout(hh)
+
+            heads = ["선로", "보는 버스", "목표 [pu]", "정해진 탭비", "결과"]
+            tt2 = QTableWidget(len(tap), len(heads))
+            tt2.setHorizontalHeaderLabels(heads)
+            tt2.verticalHeader().setVisible(False)
+            tt2.verticalHeader().setDefaultSectionSize(28)
+            tt2.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            tt2.setAlternatingRowColors(True)
+            tt2.setFixedHeight(34 + 28 * len(tap))
+            for r, row in enumerate(np.asarray(tap, dtype=float)):
+                live = row[4] != 0
+                vals = [f"{int(row[0])}", f"{int(row[1])}", f"{row[2]:.4f}",
+                        f"{row[3]:.4f}",
+                        "목표 맞춤" if live else "한계에 걸림 — 목표 포기"]
+                for cc, txt in enumerate(vals):
+                    it = QTableWidgetItem(txt)
+                    if cc > 0:
+                        it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if not live:
+                        it.setForeground(QColor(c["warn"]))
+                    tt2.setItem(r, cc, it)
+            cv.addWidget(tt2)
+            outer.addWidget(card)
+
         # 무효출력 한계를 걸면 수렴하지 못하는 계통 — 아래 표는 한계를 적용하지 않은
         # 값이므로 눈에 띄게 밝힌다 (2026-07-31).
         qmsg = getattr(self.sol, "qlim_message", "") if self.sol else ""
