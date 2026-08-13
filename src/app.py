@@ -102,7 +102,12 @@ GRID_SCALES = _grid_scales()
 
 # ③ 운전 조건 — **여기만 고칠 수 있다** (0부터 센 열 번호).
 # 나머지 칸은 회색으로 두어 "④ 계통 자체는 엑셀에서" 라는 선을 화면으로 보여 준다(PDR §4.3).
+# 머리글은 있는데 파일엔 아직 없는 열까지 **빈 칸으로 보여 줄** 표.
+# A1 조정 열(14~19)은 옛 파일에 없다 — 안 보여 주면 켤 방법이 없다.
+GRID_PAD_TO_HEADERS = {"AC_Line_dat"}
+
 GRID_EDITABLE = {
+    "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # A1 조정 — Mode·Bus·Target·Min·Max·Steps
     "AC_gen_dat": {2, 3, 4, 7},        # 운전모드 · P-f droop · Q-V droop · 지정전압
     "DC_gen_dat": {2, 3, 5},           # 운전모드 · P-Vdc droop · 지정전압
     "IC_dat": {2, 3, 4, 5, 6, 7, 8},   # AC/DC 제어모드 · droop 셋 · P·Q 동작점
@@ -2054,6 +2059,10 @@ class Proto(QMainWindow):
         editable = GRID_EDITABLE.get(key, set())
         eff = self.applied + self.changes      # 화면에 보이는 조건 = 푼 것 + 얹은 것
         arr = SC._values(SC.apply(self.base_case, eff), key)
+        if key in GRID_PAD_TO_HEADERS and heads and arr.shape[1] < len(heads):
+            # 파일에 없는 열은 빈 칸으로 보여 준다 — 값을 넣는 순간 표가 늘어난다
+            arr = np.hstack([arr, np.full((arr.shape[0], len(heads) - arr.shape[1]),
+                                          np.nan)])
         ncol = min(arr.shape[1], len(heads)) if heads else arr.shape[1]
         cols = (["상태"] if sw else []) + \
                [heads[i] if i < len(heads) else f"{i + 1}열" for i in range(ncol)]
@@ -2126,9 +2135,9 @@ class Proto(QMainWindow):
         # 찾기로 좁혀 놓았으면 화면 줄 ≠ 진짜 줄
         seen = getattr(self, "_grid_rows", None)
         row = seen[item.row()] if seen and item.row() < len(seen) else item.row()
-        before = float(SC._values(
-            SC.apply(self.base_case, self.applied + self.changes), key)[row, col])
-        if abs(before - value) <= abs(before) * 1e-12:
+        cur = SC._values(SC.apply(self.base_case, self.applied + self.changes), key)
+        before = float(cur[row, col]) if col < cur.shape[1] else float("nan")
+        if not np.isnan(before) and abs(before - value) <= abs(before) * 1e-12:
             return                              # 안 바뀐 값 — 목록을 더럽히지 않는다
         head = GRID_HEADERS.get(key, [])
         name = head[col] if col < len(head) else f"{col + 1}열"

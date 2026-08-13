@@ -134,10 +134,24 @@ def _values(case: Any, key: str) -> np.ndarray:
 
 
 def _put(case: Any, key: str, row: int, col: int, value: float) -> None:
+    """칸 하나에 값을 넣는다. **아직 없는 열이면 표를 그만큼 늘린다.**
+
+    A1 조정 열(AC Line Data 14~19)은 옛 파일에 없다. 없다고 못 켜게 하면
+    조정을 쓰려고 엑셀을 먼저 손봐야 한다 ⇒ 넣는 순간 늘린다.
+    늘어난 칸은 NaN 이라 엔진에겐 **없는 것과 같다**(계통 10개·852개 대조에서 확인).
+    """
     t = case.tables[key]
     if hasattr(t, "iloc"):
+        import numpy as _np
+        for j in range(t.shape[1], col + 1):
+            t[j if isinstance(t.columns[0], int) else f"c{j}"] = _np.nan
         t.iloc[row, col] = value
     else:
+        import numpy as _np
+        if col >= t.shape[1]:
+            pad = _np.full((t.shape[0], col + 1 - t.shape[1]), _np.nan)
+            t = _np.hstack([t, pad])
+            case.tables[key] = t
         t[row, col] = value
 
 
