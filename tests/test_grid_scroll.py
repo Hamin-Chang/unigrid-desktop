@@ -166,5 +166,32 @@ else:
 
         win.grab().save(str(OUT / "창크기_가로자리.png"))
 
+print("\n[5] 「계통 데이터」 탭을 열면 아래가 커지나 (결과 탭으로 가면 돌아오나)")
+win.resize(1900, 1050)
+pump(0.4)
+win.split_sizes = {}          # 손으로 끈 적 없는 상태에서 본다
+win.table_tab = "AC 결과"
+win.rebuild()
+pump(0.4)
+# 🚨 옛 위젯을 집지 않도록 **앱이 들고 있는 것**을 쓴다 (위 grid() 와 같은 이유)
+sp = win._split
+tw = win._tabs
+res_bottom = sp.sizes()[1]
+print(f"    결과 탭일 때 아래 = {res_bottom}px")
+for i in range(tw.count()):
+    if tw.tabText(i).startswith("계통 데이터"):
+        tw.setCurrentIndex(i)
+        pump(0.35)
+grid_bottom = sp.sizes()[1]
+print(f"    계통 데이터 탭일 때 아래 = {grid_bottom}px")
+tw.setCurrentIndex(0)         # AC 결과 로 돌아간다
+pump(0.35)
+back = sp.sizes()[1]
+print(f"    결과 탭으로 돌아오면 = {back}px")
+ok5 = grid_bottom > res_bottom * 1.4 and abs(back - res_bottom) < 30
+print(f"    {'✅ 탭마다 자리가 다르다' if ok5 else '🚨 안 바뀐다'}")
+if not ok5:
+    fails.append("탭별 자리")
+
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.exit(1 if fails else 0)

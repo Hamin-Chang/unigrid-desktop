@@ -877,7 +877,8 @@ class Proto(QMainWindow):
         self._load_timer.setSingleShot(True)
         self._load_timer.timeout.connect(lambda: self.scale_loads(self._load_pending))
         self.visible = {k: {n for n, d in v if d} for k, v in TABLE_SPECS.items()}
-        self.split_sizes = None
+        # 위아래 나눔 자리 — 탭 갈래마다 따로 ("grid" = 계통 데이터 · "other" = 나머지)
+        self.split_sizes = {}
         # 계통 데이터 표를 다시 그릴 때 보던 자리로 되돌리려고 들고 있는 것
         # (2026-08-13 사용자: "숫자 하나 넣을 때마다 가로 스크롤을 다시 해야 한다")
         self._grid_tb = None           # 지금 화면의 표
@@ -963,7 +964,7 @@ class Proto(QMainWindow):
     def build(self):
         self.setStyleSheet(self.qss())
         # 화면을 갈아끼우면 옛 위젯 참조는 버린다 (지워진 위젯을 만지면 죽는다)
-        self.dropzone = self.drop_label = self._tabs = None
+        self.dropzone = self.drop_label = self._tabs = self._split = None
         if self.sol is None:
             self.setCentralWidget(self.start_page())
             return
@@ -1309,6 +1310,9 @@ class Proto(QMainWindow):
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
         split.setHandleWidth(10)
+        # 🚨 `findChildren` 으로 찾으면 **지워지기를 기다리는 옛 것**이 먼저 잡힌다.
+        #    지금 화면의 것은 여기에 들고 있는다(표 `_grid_tb` 와 같은 이유).
+        self._split = split
 
         # ── 그래프 (숫자 모드면 접음) ──
         if not self.numbers:
@@ -1470,8 +1474,6 @@ class Proto(QMainWindow):
         # 보고 있던 탭으로 되돌린다 — 조건을 하나 바꿀 때마다 화면을 다시 그리므로,
         # 이걸 안 하면 매번 첫 탭(AC 결과)으로 튄다.
         self._restore_tab(tt)
-        tt.currentChanged.connect(
-            lambda i, w=tt: setattr(self, "table_tab", _tab_base(w.tabText(i))))
         tv.addWidget(tt)
         # 표 묶음도 최소치를 못 박는다 — 안 그러면 가장 키 큰 탭이 창의 최소
         # 높이를 정해 버린다(Qt 는 최소치를 손으로 정하면 그것을 먼저 본다).
@@ -1481,20 +1483,54 @@ class Proto(QMainWindow):
         if not self.numbers:
             split.setStretchFactor(0, 3)      # 표가 sizeHint 로 밀고 올라오는 걸 막는다
             split.setStretchFactor(1, 2)
-            if self.split_sizes:
-                split.setSizes(self.split_sizes)
-            else:
-                # 620/300 을 못 박아 두면 창이 낮을 때 그래프가 다 먹고 **표가
-                # 눌린다**(1200x680 에서 표가 120px 이었다). 창 높이로 나누되,
-                # 아래는 300px 을 되도록 지킨다 — 계통 데이터 탭은 바가 셋(표
-                # 고르기·부하·찾기)이라 그보다 얇으면 줄이 한 줄도 안 보인다.
-                room = max(430, self.height() - 190)   # 위·아래 바를 뺀 대략
-                bottom = min(max(int(room * 0.38), 350), room - 260)
-                split.setSizes([room - bottom, bottom])
-            split.splitterMoved.connect(
-                lambda *_: setattr(self, "split_sizes", split.sizes()))
+            self._apply_split(split)
+            # 탭을 옮기면 **그 탭에 맞는 자리**로 바꾼다 (화면은 다시 안 그린다)
+            tt.currentChanged.connect(
+                lambda i, w=tt, s=split: self._table_tab_changed(
+                    _tab_base(w.tabText(i)), s))
+            split.splitterMoved.connect(lambda *_: self._save_split(split))
+        else:
+            tt.currentChanged.connect(
+                lambda i, w=tt: setattr(self, "table_tab", _tab_base(w.tabText(i))))
         v.addWidget(split, 1)
         return w
+
+    # ── 위아래 나눔 ────────────────────────────────────────────────────
+    # 「계통 데이터」 는 값을 고치는 탭이라 **줄이 여럿 보여야** 하고, 결과 탭은
+    # 그래프가 커야 한다. 한 자리로 둘을 다 맞출 수 없어 **탭마다 따로** 기억한다
+    # (2026-08-13 사용자: "계통 데이터 탭 여기가 너무 작아서 불편해").
+
+    def _split_slot(self, tab=None):
+        tab = self.table_tab if tab is None else tab
+        return "grid" if tab == "계통 데이터" else "other"
+
+    def _apply_split(self, split, tab=None):
+        slot = self._split_slot(tab)
+        saved = (self.split_sizes or {}).get(slot)
+        if saved:
+            split.setSizes(saved)
+            return
+        # 화면에 붙어 있으면 진짜 높이를, 아직 만드는 중이면 창 높이로 어림한다
+        tot = sum(split.sizes())
+        room = tot if (split.isVisible() and tot > 300) else self.height() - 190
+        room = max(430, room)
+        # 데이터 고칠 땐 아래를 크게, 결과 볼 땐 그래프를 크게.
+        share = 0.66 if slot == "grid" else 0.38
+        bottom = min(max(int(room * share), 350), room - 260)
+        split.setSizes([room - bottom, bottom])
+
+    def _save_split(self, split):
+        """손으로 끈 자리는 **그 탭 것으로만** 기억한다."""
+        if not isinstance(self.split_sizes, dict):
+            self.split_sizes = {}
+        self.split_sizes[self._split_slot()] = split.sizes()
+
+    def _table_tab_changed(self, name, split):
+        if name == self.table_tab:
+            return
+        self._save_split(split)          # 떠나는 탭의 자리를 먼저 적어 둔다
+        self.table_tab = name
+        self._apply_split(split)
 
     # ── 시작 화면 (파일을 아직 안 불러왔을 때) ──
     def start_page(self):
