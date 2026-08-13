@@ -104,12 +104,21 @@ win.grid_find = "36"
 win.rebuild()
 seen_g = list(win._grid_rows)
 ok(len(seen_g) >= 1, "발전기도 번호로 찾힌다", f"{len(seen_g)}대")
-tb = win.grid_table_widget()
-item = tb.item(0, 5)                        # Vg [pu] (상태 칸 하나 + 5열)
+# 🚨 첫 번호 열을 왼쪽에 고정하면서 이 함수는 **표가 아니라 담는 상자**를 돌려준다.
+#    미는 쪽 표는 앱이 `_grid_tb` 로, 화면 열 자리는 `_grid_off` 로 들고 있다(2026-08-13).
+#    ⚠️ 돌려준 상자를 **붙잡고 있어야 한다** — 놓으면 그 안의 표까지 지워진다.
+box = win.grid_table_widget()
+tb, off = win._grid_tb, win._grid_off
+# ⚠️ Vg 는 **데이터 7열**이다. 옛 시험은 주석에 "Vg" 라 써 놓고 4열(Droop Q-Vac)을
+#    고치고 있었다 — 둘 다 고칠 수 있는 열이라 통과해서 안 드러났다(2026-08-13).
+VG = 7
+assert APP.GRID_HEADERS["AC_gen_dat"][VG].startswith("Vg"), \
+    APP.GRID_HEADERS["AC_gen_dat"][VG]
+item = tb.item(0, VG + off)
 if item is not None:
-    before = float(SC._values(case, "AC_gen_dat")[seen_g[0], 5])
+    before = float(SC._values(case, "AC_gen_dat")[seen_g[0], VG])
     item.setText(f"{before + 0.02:.4f}")
-    win.grid_edited("AC_gen_dat", item, 1, APP.GRID_SCALES.get("AC_gen_dat", {}))
+    win.grid_edited("AC_gen_dat", item, off, APP.GRID_SCALES.get("AC_gen_dat", {}))
     cells = [c for c in win.changes if isinstance(c, SC.Cell)]
     ok(len(cells) == 1 and cells[0].row == seen_g[0],
        "값을 고쳐도 진짜 줄에 들어간다", f"줄 {seen_g[0]}")

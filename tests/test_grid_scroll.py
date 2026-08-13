@@ -139,7 +139,8 @@ else:
         print("    ⚠️ 스크롤 범위가 0 이라 이 시험은 뜻이 없다")
         fails.append("스크롤 범위 0")
     else:
-        off = 1 if SC.SWITCHES.get("AC_Line_dat") else 0
+        # 화면 열 = 데이터 열 + off (첫 번호 열을 왼쪽에 고정하면서 달라진다)
+        off = win._grid_off
         it = QTableWidgetItem("1")
         tb.setItem(ROW, 13 + off, it)          # Ctrl Mode = 1
         win.grid_edited("AC_Line_dat", it, off, {})
@@ -192,6 +193,54 @@ ok5 = grid_bottom > res_bottom * 1.4 and abs(back - res_bottom) < 30
 print(f"    {'✅ 탭마다 자리가 다르다' if ok5 else '🚨 안 바뀐다'}")
 if not ok5:
     fails.append("탭별 자리")
+
+print("\n[6] 오른쪽으로 밀어도 첫 열(선로 번호)이 남아 있나")
+# 🚨 창이 넓으면 19열이 다 들어와 **밀 것이 없다** — 그 상태로 "남아 있다" 는
+#    아무것도 안 본 것이다(가로 최대 0). 좁혀서 실제로 밀리게 만든 뒤에 본다.
+win.resize(1150, 900)
+win.table_tab = "계통 데이터"
+win.grid_key = "AC_Line_dat"
+win.rebuild()
+pump(0.6)
+fz = win._grid_frozen
+right = win._grid_tb
+if fz is None:
+    print("    🚨 고정된 표가 없다")
+    fails.append("고정 표 없음")
+else:
+    fh = [fz.horizontalHeaderItem(i).text() for i in range(fz.columnCount())]
+    rh = [right.horizontalHeaderItem(i).text() for i in range(right.columnCount())]
+    print(f"    왼쪽(고정) 머리글 {fh}")
+    print(f"    오른쪽 첫 머리글 {rh[:3]} … 끝 {rh[-2:]}")
+    hs = right.horizontalScrollBar()
+    hs.setValue(hs.maximum())
+    pump(0.3)
+    # 끝까지 밀어도 왼쪽 표는 제자리 · 값도 그대로
+    still = fz.item(ROW, fz.columnCount() - 1)
+    print(f"    끝까지 민 뒤({hs.value()}/{hs.maximum()}) 왼쪽 {ROW}번 줄 값 "
+          f"= {still.text()!r} · 왼쪽 가로 자리 {fz.horizontalScrollBar().value()}")
+    if hs.maximum() == 0:
+        print("    🚨 밀 것이 없다 — 이 시험은 아무것도 안 본 것이다")
+        fails.append("가로 범위 0")
+    ok6 = (hs.maximum() > 0 and fh[-1] == "Line #" and "Line #" not in rh
+           and still.text() == "9" and fz.horizontalScrollBar().value() == 0)
+    print(f"    {'✅ 번호가 남아 있다' if ok6 else '🚨 안 남는다'}")
+    if not ok6:
+        fails.append("첫 열 고정")
+
+    print("\n[7] 세로로는 함께 움직이나")
+    vs = right.verticalScrollBar()
+    if vs.maximum() == 0:
+        print("    ⚠️ 세로로 밀 것이 없다 (줄이 다 보인다)")
+    else:
+        vs.setValue(vs.maximum())
+        pump(0.25)
+        same = fz.verticalScrollBar().value() == vs.value()
+        print(f"    오른쪽 {vs.value()} · 왼쪽 {fz.verticalScrollBar().value()} "
+              f"{'✅ 같이 움직인다' if same else '🚨 어긋난다'}")
+        if not same:
+            fails.append("세로 어긋남")
+    win.grab().save(str(OUT / "첫열고정.png"))
 
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.exit(1 if fails else 0)

@@ -881,7 +881,9 @@ class Proto(QMainWindow):
         self.split_sizes = {}
         # 계통 데이터 표를 다시 그릴 때 보던 자리로 되돌리려고 들고 있는 것
         # (2026-08-13 사용자: "숫자 하나 넣을 때마다 가로 스크롤을 다시 해야 한다")
-        self._grid_tb = None           # 지금 화면의 표
+        self._grid_tb = None           # 지금 화면의 표 (미는 쪽)
+        self._grid_frozen = None       # 왼쪽에 고정한 표 (상태 + 첫 번호 열)
+        self._grid_off = 0             # 화면 열 = 데이터 열 + off
         self._grid_view = None         # (가로, 세로) 스크롤 자리
         self._grid_focus = None        # 다음에 고를 칸 (화면 줄, 화면 열)
         self.setWindowTitle("UNIGRID")
@@ -1010,7 +1012,7 @@ class Proto(QMainWindow):
                                tb.verticalScrollBar().value())
         except RuntimeError:        # 이미 지워진 위젯
             pass
-        self._grid_tb = None
+        self._grid_tb = self._grid_frozen = None
 
     def _restore_grid_view(self, tb):
         """되돌린다 — 자리를 먼저 맞추고, 다음에 칠 칸을 고른다."""
@@ -2199,28 +2201,77 @@ class Proto(QMainWindow):
             arr = np.hstack([arr, np.full((arr.shape[0], len(heads) - arr.shape[1]),
                                           np.nan)])
         ncol = min(arr.shape[1], len(heads)) if heads else arr.shape[1]
-        cols = (["상태"] if sw else []) + \
-               [heads[i] if i < len(heads) else f"{i + 1}열" for i in range(ncol)]
+        head_of = (lambda i: heads[i] if i < len(heads) else f"{i + 1}열")
 
         # 🚨 찾기로 좁히면 **보이는 줄 번호와 진짜 줄 번호가 달라진다.**
         #    켜고 끄기·값 고치기는 진짜 번호로 해야 하므로 그 대응을 들고 있는다.
         picked = self.find_rows(key, arr)
         self._grid_rows = list(range(arr.shape[0])) if picked is None else picked
-
-        tb = QTableWidget(len(self._grid_rows), len(cols))
-        tb.setHorizontalHeaderLabels(cols)
-        tb.verticalHeader().setVisible(False)
-        tb.verticalHeader().setDefaultSectionSize(30)
-        # 🚨 열이 많으면 늘려 맞추기(Stretch)가 머리글을 잘라 버린다 — IC 는 20열이라
-        #    "Rating Power [MW]" 가 "ng Po" 로 보였다. 그럴 땐 글자에 맞추고 옆으로 넘긴다.
-        tb.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch if len(cols) <= 9 else QHeaderView.ResizeToContents)
-        tb.setAlternatingRowColors(True)
+        nrow = len(self._grid_rows)
 
         touched = {(ch.row, ch.col) for ch in self.changes
                    if isinstance(ch, SC.Cell) and ch.table == key}
-        off = 1 if sw else 0
+
+        def cell(r, j):
+            """진짜 줄 r · 데이터 열 j 의 칸 하나."""
+            val = arr[r, j] * scales.get(j, 1.0)
+            txt = "" if np.isnan(val) else (
+                f"{val:.0f}" if float(val).is_integer() and abs(val) < 1e9
+                else f"{val:,.4f}".rstrip("0").rstrip("."))
+            it = QTableWidgetItem(txt)
+            if j > 0:
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if j in editable:
+                it.setToolTip("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
+                              "위의 [이 조건으로 계산] 을 눌러야 풉니다")
+            else:
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
+            if (r, j) in touched:
+                it.setForeground(QColor(c["warn"]))
+            return it
+
+        def new_table(labels):
+            t = QTableWidget(nrow, len(labels))
+            t.setHorizontalHeaderLabels(labels)
+            t.verticalHeader().setVisible(False)
+            t.verticalHeader().setDefaultSectionSize(30)
+            t.setAlternatingRowColors(True)
+            return t
+
+        # ── 왼쪽(고정) / 오른쪽(미는 것) ────────────────────────────────
+        # 오른쪽으로 밀면 **어느 줄인지 알 수 없다** — Ctrl 열은 19열 중 14~19열이라
+        # 선로 번호가 화면 밖으로 나간다(2026-08-13 사용자: "첫 열을 고정시켜줘").
+        # 그래서 상태 + 첫 번호 열을 **따로 만든 표**로 왼쪽에 세운다.
+        # 🚨 데이터 열 0 은 어느 표에서도 고칠 수 있는 열이 아니다(GRID_EDITABLE 확인) —
+        #    그래서 왼쪽 표에는 itemChanged 를 안 잇는다.
+        freeze = ncol >= 2
         self._grid_loading = True              # 그리는 동안의 itemChanged 는 무시
+
+        left = None
+        if freeze:
+            left = new_table((["상태"] if sw else []) + [head_of(0)])
+            left.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            left.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            left.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+            if sw:
+                # 🚨 순서가 중요하다 — `ResizeToContents` 인 채로 폭을 정하면 **무시된다.**
+                #    상태 칸에는 글자가 아니라 단추가 들어서 자동 폭이 22px 로 눌린다
+                #    (2026-08-13 렌더로 확인: 머리글이 "태", 단추 글자 안 보임).
+                left.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+                left.setColumnWidth(0, 66)
+            for at, r in enumerate(self._grid_rows):
+                left.setItem(at, 1 if sw else 0, cell(r, 0))
+
+        body = [j for j in range(ncol)] if not freeze else list(range(1, ncol))
+        off = (1 if sw else 0) if not freeze else -1   # 화면 열 = 데이터 열 + off
+        labels = ((["상태"] if sw else []) + [head_of(j) for j in body]) if not freeze \
+            else [head_of(j) for j in body]
+        tb = new_table(labels)
+        # 🚨 열이 많으면 늘려 맞추기(Stretch)가 머리글을 잘라 버린다 — IC 는 20열이라
+        #    "Rating Power [MW]" 가 "ng Po" 로 보였다. 그럴 땐 글자에 맞추고 옆으로 넘긴다.
+        tb.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch if len(labels) <= 9 else QHeaderView.ResizeToContents)
         for at, r in enumerate(self._grid_rows):     # at = 화면 줄, r = 진짜 줄
             if sw:
                 on = SC.is_on(self.base_case, key, r, eff)
@@ -2228,31 +2279,51 @@ class Proto(QMainWindow):
                 b.setObjectName("seg_on" if on else "seg_off")
                 b.setCursor(Qt.PointingHandCursor)
                 b.clicked.connect(lambda _, rr=r: self.flip_row(rr))
-                tb.setCellWidget(at, 0, b)
-            for j in range(ncol):
-                val = arr[r, j] * scales.get(j, 1.0)
-                txt = "" if np.isnan(val) else (
-                    f"{val:.0f}" if float(val).is_integer() and abs(val) < 1e9
-                    else f"{val:,.4f}".rstrip("0").rstrip("."))
-                it = QTableWidgetItem(txt)
-                if j > 0:
-                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if j in editable:
-                    it.setToolTip("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
-                                  "위의 [이 조건으로 계산] 을 눌러야 풉니다")
-                else:
-                    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-                    it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
-                if (r, j) in touched:
-                    it.setForeground(QColor(c["warn"]))
-                tb.setItem(at, j + off, it)
+                (left if freeze else tb).setCellWidget(at, 0, b)
+            for j in body:
+                tb.setItem(at, j + off, cell(r, j))
         self._grid_loading = False
         tb.itemChanged.connect(lambda item: self.grid_edited(key, item, off, scales))
-        # 보던 자리로 되돌린다. 지금 바로는 못 한다 — 열 너비가 아직 안 정해져
-        # 가로 스크롤 범위가 0이다. 화면을 한 번 그린 뒤에 맞춘다.
-        self._grid_tb = tb
+
+        self._grid_tb = tb          # 스크롤 자리·다음 칸은 **미는 쪽** 기준
+        self._grid_off = off        # 시험이 화면 열을 계산할 때 쓴다
+        self._grid_frozen = left
         QTimer.singleShot(0, lambda: self._restore_grid_view(tb))
-        return tb
+        if not freeze:
+            return tb
+
+        # 세로로 함께 움직인다. 줄 높이가 둘 다 30 이고 줄 단위로 구르므로 값이 같다.
+        tb.verticalScrollBar().valueChanged.connect(left.verticalScrollBar().setValue)
+        left.verticalScrollBar().valueChanged.connect(tb.verticalScrollBar().setValue)
+
+        box = QWidget()
+        h = QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        lwrap = QWidget()
+        lv = QVBoxLayout(lwrap)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(0)
+        lv.addWidget(left, 1)
+        # 오른쪽에 가로 막대가 뜨면 그만큼 보이는 높이가 줄어든다. 왼쪽에도 같은
+        # 높이를 비워 둬야 **마지막 줄이 어긋나지 않는다.**
+        pad = QWidget()
+        pad.setFixedHeight(0)
+        lv.addWidget(pad)
+        h.addWidget(lwrap)
+        h.addWidget(tb, 1)
+
+        def fit():
+            try:
+                left.setFixedWidth(left.horizontalHeader().length() + 2)
+                hb = tb.horizontalScrollBar()
+                pad.setFixedHeight(hb.sizeHint().height() if hb.isVisible() else 0)
+            except RuntimeError:
+                pass
+
+        tb.horizontalScrollBar().rangeChanged.connect(lambda *_: fit())
+        QTimer.singleShot(0, fit)
+        return box
 
     def grid_edited(self, key, item, off, scales):
         """운전 조건 칸을 고쳤다. **계산은 안 한다** — 바꾼 목록에만 얹는다."""

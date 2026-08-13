@@ -86,7 +86,7 @@ if tb is None:
     fails.append("칸이 안 보임")
 else:
     print(f"    보인다 ✅ — 머리글 뒤쪽 {heads[-6:]}")
-    off = 1 if SC.SWITCHES.get("AC_Line_dat") else 0
+    off = win._grid_off
     cell = tb.item(ROW, 13 + off)
     editable = bool(cell.flags() & Qt.ItemIsEditable)
     print(f"    9번 줄 Ctrl Mode 칸: 값 {cell.text()!r} · 고칠 수 있나 {editable}")
@@ -94,7 +94,7 @@ else:
         fails.append("Ctrl Mode 를 못 고침")
 
 print("\n[2] 고치면 '바꾼 것' 에 얹히나")
-off = 1 if SC.SWITCHES.get("AC_Line_dat") else 0
+off = win._grid_off
 for col, val in ((13, 1), (14, BUS), (15, TARGET), (16, 0.9), (17, 1.1), (18, 0)):
     it = QTableWidgetItem(f"{val:g}")
     tb.setItem(ROW, col + off, it)          # 사람이 친 것과 같은 길

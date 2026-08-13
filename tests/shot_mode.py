@@ -63,19 +63,28 @@ win.grid_key = "AC_gen_dat"
 win.rebuild()
 
 # ── 1) 단위 확인 ────────────────────────────────────────────────
-tb = win.grid_table_widget()
-heads = [tb.horizontalHeaderItem(i).text() for i in range(tb.columnCount())]
+# 첫 번호 열은 왼쪽 표로 따로 나갔다 — 이 함수는 담는 상자를 돌려준다(2026-08-13).
+# 상자를 붙잡고 있어야 안의 표가 안 지워진다. 데이터 열 j = 화면 열 j + _grid_off.
+box = win.grid_table_widget()
+tb, off = win._grid_tb, win._grid_off
+heads = [""] * (-off) + [tb.horizontalHeaderItem(i).text()
+                         for i in range(tb.columnCount())]
+
+
+def cellf(r, j):
+    """데이터 열 j 의 칸 (왼쪽으로 나간 열이면 None)."""
+    return tb.item(r, j + off) if j + off >= 0 else None
 print("발전기 표 머리글:", heads[:9])
-print("첫 줄 값       :", [tb.item(0, i).text() if tb.item(0, i) else "" for i in range(9)])
+print("첫 줄 값       :", [cellf(0, i).text() if cellf(0, i) else "" for i in range(9)])
 raw = float(np.asarray(case.tables["AC_gen_dat"].values, dtype=float)[0, 5])
-print(f"  → 엔진 값 {raw:,.0f} W · 화면 값 '{tb.item(0, 6).text()}' (머리글 {heads[6]})")
+print(f"  → 엔진 값 {raw:,.0f} W · 화면 값 '{cellf(0, 5).text()}' (머리글 {heads[5]})")
 
 # ── 3) 못 고치는 칸이 정말 막혔나 ────────────────────────────────
 locked = [i for i in range(tb.columnCount())
           if tb.item(0, i) and not (tb.item(0, i).flags() & Qt.ItemIsEditable)]
 free = [i for i in range(tb.columnCount())
         if tb.item(0, i) and (tb.item(0, i).flags() & Qt.ItemIsEditable)]
-print(f"고칠 수 있는 칸 {[heads[i] for i in free]}")
+print(f"고칠 수 있는 칸 {[heads[i - off] for i in free]}")
 print(f"막힌 칸 {len(locked)}개")
 
 # 화면에서도 발전기 표를 보이게
