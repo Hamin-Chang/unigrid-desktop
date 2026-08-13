@@ -2362,6 +2362,10 @@ class Proto(QMainWindow):
         # 잇달아 채우는 일이라(Mode·Bus·Target·Min·Max·Steps) 한 칸 칠 때마다
         # 오른쪽으로 다시 찾아가야 했다. 이제 바로 다음 칸에 숫자를 치면 된다.
         nxt = [x for x in sorted(GRID_EDITABLE.get(key, set())) if x > col]
+        # 위상 조정기(Ctrl Mode = 2)는 `Ctrl Bus` 를 안 쓴다 — 그 선로 자신의 조류를
+        # 보기 때문이다. 방금 2 를 쳤으면 그 칸을 건너뛰고 `Ctrl Target` 으로 간다.
+        if key == "AC_Line_dat" and col == 13 and value == 2:
+            nxt = [x for x in nxt if x != 14]
         self._grid_focus = (item.row(), (nxt[0] if nxt else col) + off)
         self.rebuild()
 
