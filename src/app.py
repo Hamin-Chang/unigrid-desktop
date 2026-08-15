@@ -1895,55 +1895,78 @@ class Proto(QMainWindow):
     # (2026-08-06 사용자 확정). 버튼 한 번 = 조류계산 한 번 = 시나리오 한 줄.
 
     def change_bar(self):
-        """무엇을 바꿨는지 + [이 조건으로 계산] · [되돌리기]. 바꾼 게 없으면 안 만든다."""
-        if not self.changes:
+        """무엇을 바꿨는지 + [이 조건으로 계산] · [되돌리기] · [원본으로].
+
+        ⚠️ **예전에는 `self.changes` 가 있을 때만 만들었다.** 그래서 [이 조건으로 계산] 을
+           누르는 순간 띠가 통째로 사라졌고, **원본으로 돌아갈 길이 화면에서 없어졌다.**
+           길이 없던 게 아니라 시나리오 목록 안에 숨어 있었는데, 그 목록은 시나리오가
+           2개 이상일 때만 그려지고 거기가 *조건을 되돌리는 곳* 이라고 말하지도 않는다.
+           (사용자: *"선로 4번을 껐는데 5번을 끄고 싶다. 직접 되돌리는 게 불안하다"*)
+           ⇒ **이미 계산한 조건이 걸려 있으면 얇은 띠로 남겨** 돌아갈 길을 보여 준다.
+        """
+        if not self.changes and not self.applied:
             return None
         c = self.c
+        pending = bool(self.changes)          # 아직 안 푼 것이 있나
+        edge = c["warn"] if pending else c["border"]
         bar = QFrame()
         bar.setObjectName("card")
         bar.setStyleSheet(
-            f"#card {{ background:{c['surface']};border:1px solid {c['warn']};"
+            f"#card {{ background:{c['surface']};border:1px solid {edge};"
             f"border-radius:10px; }}")
         h = QHBoxLayout(bar)
         h.setContentsMargins(15, 9, 11, 9)
         h.setSpacing(11)
 
-        tag = QLabel(f"바꾼 것 {len(self.changes)}건")
-        tag.setStyleSheet(
-            f"color:{c['warn']};font-size:12px;font-weight:600;padding:2px 9px;"
-            f"border:1px solid {c['warn']};border-radius:9px;")
-        h.addWidget(tag)
+        if pending:
+            tag = QLabel(f"바꾼 것 {len(self.changes)}건")
+            tag.setStyleSheet(
+                f"color:{c['warn']};font-size:12px;font-weight:600;padding:2px 9px;"
+                f"border:1px solid {c['warn']};border-radius:9px;")
+            h.addWidget(tag)
 
-        what = QLabel(SC.describe(self.changes))
-        what.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
-        h.addWidget(what)
-
-        if self.task == "PV·QV 곡선":
-            # 곡선은 **이 조건을 이미 쓴다**(`curve_case` 가 changes 까지 얹는다).
-            # 조류계산 쪽 문구("아직 계산 안 함")를 그대로 두면 곡선이 옛 조건으로 그려진
-            # 줄 알게 된다 — 실제로는 여유가 이미 달라져 있다.
-            wait = QLabel("곡선은 이 조건으로 그립니다")
-            wait.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            what = QLabel(SC.describe(self.changes))
+            what.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
+            h.addWidget(what)
         else:
-            base = "원본" if not self.applied else SC.describe(self.applied)
-            wait = QLabel(f"아직 계산 안 함 — 지금 화면은 「{base}」 결과입니다")
-            wait.setStyleSheet(f"color:{c['warn']};font-size:12px;")
-        h.addWidget(wait)
+            # 다 계산해 놓은 상태 — 경고가 아니라 **지금 무슨 조건을 보고 있나**를 말한다.
+            tag = QLabel("지금 조건")
+            tag.setStyleSheet(
+                f"color:{c['muted']};font-size:12px;padding:2px 9px;"
+                f"border:1px solid {c['border']};border-radius:9px;")
+            h.addWidget(tag)
 
-        # 쪼개짐은 **막지 않고 알려만 준다** (2026-08-06 확정 — 71bus 는 모든 선로가 쪼갠다)
-        if self.base_case is not None:
-            msg = SC.splits(self.base_case, self.changes)
-            if msg:
-                warn = QLabel("계통이 쪼개집니다")
-                warn.setStyleSheet(
-                    f"color:{c['warn']};font-size:12px;font-weight:600;"
-                    f"background:{c['bg']};border-radius:8px;padding:3px 9px;")
-                warn.setToolTip(msg + "\n\n막지는 않습니다. 떨어져 나간 쪽에 전원이 없으면 "
-                                      "그 답은 뜻이 없으니 결과를 볼 때 감안하세요.")
-                h.addWidget(warn)
+            what = QLabel(SC.describe(self.applied))
+            what.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
+            h.addWidget(what)
+
+        if pending:
+            if self.task == "PV·QV 곡선":
+                # 곡선은 **이 조건을 이미 쓴다**(`curve_case` 가 changes 까지 얹는다).
+                # 조류계산 쪽 문구("아직 계산 안 함")를 그대로 두면 곡선이 옛 조건으로 그려진
+                # 줄 알게 된다 — 실제로는 여유가 이미 달라져 있다.
+                wait = QLabel("곡선은 이 조건으로 그립니다")
+                wait.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            else:
+                base = "원본" if not self.applied else SC.describe(self.applied)
+                wait = QLabel(f"아직 계산 안 함 — 지금 화면은 「{base}」 결과입니다")
+                wait.setStyleSheet(f"color:{c['warn']};font-size:12px;")
+            h.addWidget(wait)
+
+            # 쪼개짐은 **막지 않고 알려만 준다** (2026-08-06 확정 — 71bus 는 모든 선로가 쪼갠다)
+            if self.base_case is not None:
+                msg = SC.splits(self.base_case, self.changes)
+                if msg:
+                    warn = QLabel("계통이 쪼개집니다")
+                    warn.setStyleSheet(
+                        f"color:{c['warn']};font-size:12px;font-weight:600;"
+                        f"background:{c['bg']};border-radius:8px;padding:3px 9px;")
+                    warn.setToolTip(msg + "\n\n막지는 않습니다. 떨어져 나간 쪽에 전원이 없으면 "
+                                          "그 답은 뜻이 없으니 결과를 볼 때 감안하세요.")
+                    h.addWidget(warn)
         h.addStretch(1)
 
-        if self.task != "PV·QV 곡선":
+        if pending and self.task != "PV·QV 곡선":
             # 곡선 화면에는 안 붙인다 — 여기서 누르면 **조류계산**이 돈다.
             # 곡선은 왼쪽 [곡선 그리기] 가 자기 실행이다.
             run = QPushButton("▶  이 조건으로 계산")
@@ -1952,11 +1975,40 @@ class Proto(QMainWindow):
             run.clicked.connect(self.run_changes)
             h.addWidget(run)
 
-        undo = QPushButton("↩ 되돌리기")
-        undo.setCursor(Qt.PointingHandCursor)
-        undo.clicked.connect(self.undo_changes)
-        h.addWidget(undo)
+        if pending:
+            undo = QPushButton("↩ 되돌리기")
+            undo.setToolTip("아직 계산 안 한 것만 물립니다.\n"
+                            "이미 계산해서 보고 있는 조건은 그대로 둡니다.")
+            undo.setCursor(Qt.PointingHandCursor)
+            undo.clicked.connect(self.undo_changes)
+            h.addWidget(undo)
+
+        # 이미 계산해 굳은 조건이 있을 때만 — 「되돌리기」가 못 하는 일이다.
+        if self.applied:
+            home = QPushButton("⟲ 원본으로")
+            home.setToolTip("파일을 열었을 때의 계통으로 돌아갑니다.\n"
+                            "바꾼 것은 시나리오 목록에 그대로 남습니다.")
+            home.setCursor(Qt.PointingHandCursor)
+            home.clicked.connect(self.reset_to_base)
+            h.addWidget(home)
         return bar
+
+    def reset_to_base(self):
+        """파일을 열었을 때의 계통으로 돌아간다.
+
+        「↩ 되돌리기」와 하는 일이 다르다 — 저건 **아직 계산 안 한 것**만 지운다.
+        [이 조건으로 계산] 을 누르는 순간 그 조건은 굳고, 그때부터 되돌리기로는 못 푼다.
+        """
+        base = self.book.base() if self.book is not None else None
+        # 🚨 `book.base()` 는 원본이 없으면 **첫 시나리오로 떨어진다**(`scenario.py:481`).
+        #    그걸 그대로 쓰면 「원본으로」가 엉뚱한 조건으로 데려간다 ⇒ 바꾼 것이 없는지 직접 본다.
+        if base is not None and base.solved and not base.changes:
+            self.show_scenario(base)      # 이미 푼 답을 들고 있으므로 **다시 안 푼다**
+            return
+        # 원본 결과가 없다(파일을 열고 아직 한 번도 원본으로 안 풀었다) — 조건만 비운다.
+        self.changes = []
+        self.applied = []
+        self.rebuild()
 
     # ── ② 부하 일괄 증감 ──────────────────────────────────────────────
     # 칸을 하나씩 고치는 대신 **부하 전체에 한 수를 곱한다**. 부하 여유(margin)를 보는
