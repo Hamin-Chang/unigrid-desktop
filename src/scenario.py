@@ -155,6 +155,41 @@ def _put(case: Any, key: str, row: int, col: int, value: float) -> None:
         t[row, col] = value
 
 
+# 🚨 **조정을 켰으면 조정 열 끝까지 폭을 보장한다** (2026-08-14).
+#   엔진은 `size(표,2) >= N` 으로 기능 유무를 가린다 — 「폭이 곧 뜻」이다. 그런데
+#   `_put` 은 **값을 넣은 칸까지만** 늘리므로, 사용자가 필요한 칸만 채우면
+#   (예: SVC 를 걸면서 계단은 안 쓰니 `Shunt Step Size` 를 비움) 표가 21열까지만 늘고
+#   엔진은 22열이 아니라서 **조정을 통째로 무시한다 — 오류도 없이 조용히.**
+#   실제로 그랬다: 버스 14 에 SVC 를 걸었는데 전압이 1.0075 그대로였다(2026-08-14).
+#   ⇒ 모드 칸에 0 아닌 값이 있으면 끝 열까지 NaN 으로 늘린다. NaN 은 엔진에게
+#     「안 적음」이라 뜻이 안 바뀐다(한계는 자동, 계단은 연속).
+_CTRL_SPAN = {
+    "AC_Line_dat": (13, 19),   # Ctrl Mode 는 14열(0부터 13) · 조정 열은 19열까지
+    "AC_Bus_dat": (17, 22),    # Shunt Ctrl Mode 는 18열 · 조정 열은 22열까지
+}
+
+
+def _ensure_ctrl_width(case: Any) -> None:
+    """조정이 켜진 표는 조정 열 끝까지 폭을 채운다."""
+    import numpy as _np
+    for key, (mode_col, need) in _CTRL_SPAN.items():
+        t = case.tables.get(key)
+        if t is None:
+            continue
+        arr = _values(case, key)
+        if arr.size == 0 or arr.shape[1] <= mode_col or arr.shape[1] >= need:
+            continue
+        mode = _np.nan_to_num(arr[:, mode_col].astype(float))
+        if not _np.any(mode != 0):
+            continue                       # 아무도 안 켰다 — 폭을 건드리지 않는다
+        if hasattr(t, "iloc"):
+            for j in range(t.shape[1], need):
+                t[j if isinstance(t.columns[0], int) else f"c{j}"] = _np.nan
+        else:
+            pad = _np.full((t.shape[0], need - t.shape[1]), _np.nan)
+            case.tables[key] = _np.hstack([t, pad])
+
+
 def _has_row(case: Any, key: str, row: int) -> bool:
     arr = _values(case, key)
     return arr.ndim == 2 and 0 <= row < arr.shape[0]
@@ -268,6 +303,7 @@ def apply(case: Any, changes: Sequence[Change]) -> Any:
                     t.iloc[:, start:] = t.iloc[:, start:] * ch.factor
                 else:
                     t[:, start:] = t[:, start:] * ch.factor
+    _ensure_ctrl_width(out)
     return out
 
 
