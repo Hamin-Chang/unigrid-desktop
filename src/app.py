@@ -115,6 +115,19 @@ GRID_EDITABLE = {
     "DCDC_Conv_dat": {5, 6, 7, 9},     # droop 둘 · 동작점 · 운전모드
 }
 
+# 🚨 **비울 수 있는 칸** (2026-08-14 사용자 요청). 표에서 값을 지우면 NaN 이 되는데,
+#   그게 뜻을 갖는 칸은 **A1 조정 칸뿐**이다 — 비어 있음 = 「안 걸었다」·「한계를 안 적어
+#   자동으로 잡는다」. 엔진이 이미 그렇게 읽는다(`isnan` 검사가 다 있다).
+#   ⚠️ 나머지 편집 칸(발전기 운전모드·droop·지정전압 등)은 **비우면 어떻게 되는지
+#      확인하지 않았으므로 그대로 막는다.** 넓히려면 그 칸이 NaN 일 때 엔진이 무엇을
+#      하는지 먼저 확인하고 여기 더한다.
+#   계기: 계단을 켠 뒤 한계를 다시 비워 자동(0.9~1.1)으로 돌리려는데 **방법이 없었다** —
+#         `float("")` 이 걸려 "숫자가 아닙니다" 로 되돌아갔다.
+GRID_CLEARABLE = {
+    "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # Ctrl Mode·Bus·Target·Min·Max·Step Size
+    "AC_Bus_dat": {17, 18, 19, 20, 21},        # Shunt Ctrl Mode·Target·Bmin·Bmax·Step Size
+}
+
 # 이 버스 수를 넘으면 **그래프를 접은 채로 연다** (2026-08-06 사용자 확정).
 #   이유는 속도가 아니라 **읽기 어려워서**다 — 6,495버스면 점이 6,495개라 빨간 덩어리가 된다.
 #   ⚠️ 접어도 별로 안 빨라진다(실측 0.86~1.49배, `실측_R4_버스수대시간.csv`). 표가 그만큼
@@ -2346,20 +2359,33 @@ class Proto(QMainWindow):
         if col < 0 or col not in GRID_EDITABLE.get(key, set()):
             return
         txt = item.text().strip().replace(",", "")
-        try:
-            shown = float(txt)
-        except ValueError:
-            QMessageBox.information(self, "숫자를 넣어 주세요",
-                                    f"'{item.text()}' 는 숫자가 아닙니다.")
-            self.rebuild()
-            return
-        scale = scales.get(col, 1.0)
-        value = shown * (1.0 / scale) if scale != 1.0 else shown
+        if txt == "":
+            # 지워서 비운 것 — 「안 적음」이다. 비워도 되는 칸에서만 받는다.
+            if col not in GRID_CLEARABLE.get(key, set()):
+                QMessageBox.information(
+                    self, "비울 수 없는 칸입니다",
+                    "이 칸은 값이 있어야 합니다. 숫자를 넣어 주세요.\n"
+                    "(비울 수 있는 것은 조정 칸입니다 — 비우면 「안 걸었다」는 뜻이 됩니다.)")
+                self.rebuild()
+                return
+            shown = value = float("nan")
+        else:
+            try:
+                shown = float(txt)
+            except ValueError:
+                QMessageBox.information(self, "숫자를 넣어 주세요",
+                                        f"'{item.text()}' 는 숫자가 아닙니다.")
+                self.rebuild()
+                return
+            scale = scales.get(col, 1.0)
+            value = shown * (1.0 / scale) if scale != 1.0 else shown
         # 찾기로 좁혀 놓았으면 화면 줄 ≠ 진짜 줄
         seen = getattr(self, "_grid_rows", None)
         row = seen[item.row()] if seen and item.row() < len(seen) else item.row()
         cur = SC._values(SC.apply(self.base_case, self.applied + self.changes), key)
         before = float(cur[row, col]) if col < cur.shape[1] else float("nan")
+        if np.isnan(before) and np.isnan(value):
+            return                              # 비어 있던 것을 또 비웠다 — 아무 일도 아니다
         if not np.isnan(before) and abs(before - value) <= abs(before) * 1e-12:
             return                              # 안 바뀐 값 — 목록을 더럽히지 않는다
         head = GRID_HEADERS.get(key, [])
@@ -2369,7 +2395,8 @@ class Proto(QMainWindow):
                                 and ch.row == row and ch.col == col)]
         self.changes.append(SC.Cell(
             table=key, row=row, col=col, value=value,
-            label=f"{SC.describe_row(self.base_case, key, row)} {name} → {shown:g}",
+            label=(f"{SC.describe_row(self.base_case, key, row)} {name} → "
+                   + ("(비움)" if np.isnan(shown) else f"{shown:g}")),
             mark=SC.row_mark(self.base_case, key, row)))
         # 같은 줄의 **다음 고칠 수 있는 칸**을 미리 골라 둔다. 조정 열은 여섯 칸을
         # 잇달아 채우는 일이라(Mode·Bus·Target·Min·Max·Steps) 한 칸 칠 때마다
