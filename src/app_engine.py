@@ -823,7 +823,7 @@ def _arr(raw: dict, key: str) -> np.ndarray:
         return np.zeros((0, 0))
 
 
-TAP_COLS = 9
+TAP_COLS = 11
 """탭·위상 조정 결과의 열 수.
 
 [선로, 보는버스, 목표, 정한값, 살아있나, 하한, 상한, 한계자동, **방식**]
@@ -841,16 +841,24 @@ def _tap_arr(raw: dict) -> np.ndarray:
     a = _arr(raw, "Tap_result")
     if a.size == 0:
         return np.empty((0, TAP_COLS))
-    OK = (5, 8, TAP_COLS)
+    # 🚨 **옛 엔진의 열 수를 여기 다 적어 둬야 한다.** 하나라도 빠지면 표를 통째로
+    #    버리고, 화면에는 "조정을 안 걸었다" 로 보인다 — 조용히 사라지는 종류다.
+    #    5열(15차) · 8열(16차) · 9열(17~19차, 방식이 붙음) · 11열(20차, 계단).
+    OK = (5, 8, 9, TAP_COLS)
     if a.ndim == 1:
         a = a.reshape(1, -1) if a.size in OK else np.empty((0, TAP_COLS))
     if a.ndim != 2 or a.shape[1] not in OK:
         print(f"[결과] 탭 조정 표의 열 수가 {OK} 중 하나가 아니라 비웁니다: {a.shape}")
         return np.empty((0, TAP_COLS))
     if a.shape[1] < TAP_COLS:                 # 옛 엔진
-        pad = np.full((a.shape[0], TAP_COLS - a.shape[1]), np.nan)
+        had = a.shape[1]
+        pad = np.full((a.shape[0], TAP_COLS - had), np.nan)
         a = np.hstack([a, pad])
-        a[:, 8] = 1                           # 그 엔진들엔 탭밖에 없었다
+        if had < 9:
+            a[:, 8] = 1                       # 그 엔진들엔 탭밖에 없었다
+        # 계단 칸은 **0 으로** 채운다(NaN 이 아니라) — 화면이 int() 로 읽는다.
+        a[:, 9] = 0.0                         # 한 단 크기 없음 = 연속
+        a[:, 10] = 0.0                        # 계단으로 내린 적 없음
     return a
 
 

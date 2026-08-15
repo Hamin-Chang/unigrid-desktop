@@ -111,10 +111,18 @@ L = L13;  L(ROW,7) = 1.10;
 [out.Vmax, ~] = solve_with(S, ORD, L, 'tmax');
 
 % [5] 막아야 하는 설정
-L2 = L19;  L2(ROW,14)=2; L2(ROW,16)=1.0;
-[~, out.err_mode2] = solve_with(S, ORD, L2, 'mode2');
-L3 = L19;  L3(ROW,14)=1; L3(ROW,15)=BUS; L3(ROW,16)=TGT; L3(ROW,19)=17;
-[~, out.err_steps] = solve_with(S, ORD, L3, 'steps');
+%   ⚠️ 2026-08-14: 여기 있던 두 검사가 **낡아서** 실패로 잡혔다 —
+%      ① 모드 2(위상 조정기)는 08-13 에 구현돼 이제 정상 동작이고
+%      ② 계단(19열)은 08-14 에 구현돼 역시 정상이다.
+%      ⇒ 여전히 막아야 하는 것으로 바꾼다: 변압기가 아닌 선로에 조정 걸기 ·
+%        한 단 크기가 한계 안에 자리를 못 만드는 경우.
+L2 = L19;  L2(ROW,14)=1; L2(ROW,15)=BUS; L2(ROW,16)=TGT; L2(ROW,12)=0;  % 변압기가 아님
+[~, out.err_mode2] = solve_with(S, ORD, L2, 'notrafo');
+% 1.02~1.08 안에는 중립 1.0 에서 0.5 씩 센 자리가 하나도 없다
+% (1.0 은 범위 밖이고 1.5 는 너무 크다).
+L3 = L19;  L3(ROW,14)=1; L3(ROW,15)=BUS; L3(ROW,16)=TGT;
+L3(ROW,17)=1.02; L3(ROW,18)=1.08; L3(ROW,19)=0.5;
+[~, out.err_steps] = solve_with(S, ORD, L3, 'nostep');
 L4 = L19;  L4(ROW,14)=1; L4(ROW,15)=2;  L4(ROW,16)=TGT;   % 버스 2 = 발전기(PV)
 [~, out.err_pv]  = solve_with(S, ORD, L4, 'pvbus');
 
@@ -187,8 +195,8 @@ disp('DONE');
         fails.append("한계 처리")
 
     print(f"\n[5] 못 하는 설정을 막나")
-    for name, got_err, want in (("위상 조정기(모드 2)", str(o.err_mode2), "위상 조정기"),
-                                ("계단 탭(Steps>0)", str(o.err_steps), "계단"),
+    for name, got_err, want in (("변압기가 아닌 선로", str(o.err_mode2), "변압기"),
+                                ("계단 자리가 없음", str(o.err_steps), "자리가"),
                                 ("제어 버스가 PV", str(o.err_pv), "고정")):
         blocked = want in got_err
         n_cmp += 1

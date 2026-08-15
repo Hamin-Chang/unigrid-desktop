@@ -120,7 +120,8 @@ SHEETS: list[Sheet] = [
         _a1("Shunt Target", "pu", 19, note="맞출 전압. 비우면 V0"),
         _a1("Shunt Bmin", "Mvar", 20, note="Bs 가 내려갈 수 있는 아래끝"),
         _a1("Shunt Bmax", "Mvar", 21, note="Bs 가 올라갈 수 있는 위끝"),
-        _a1("Shunt Steps", "", 22, note="계단 수. 모드 1 에서만 쓴다"),
+        _a1("Shunt Step Size", "Mvar", 22,
+            note="한 단 크기. 0 이거나 비면 연속. 예: 10 → …-10 · 0 · 10 · 20…"),
     ], v1_widths=(17,)),
 
     Sheet("AC Line Data", cols=[
@@ -143,7 +144,14 @@ SHEETS: list[Sheet] = [
             note="아래끝. 모드 1 = 탭비 · 모드 2 = 위상 deg. 비우면 0.9"),
         _a1("Ctrl Max", "", 18,
             note="위끝. 단위는 Ctrl Min 과 같다. 비우면 1.1"),
-        _a1("Ctrl Steps", "", 19, note="계단 수. 0 이거나 비면 연속"),
+        # 🚨 **개수가 아니라 「한 단 크기」다**(2026-08-14 사용자 확정). 실물 명세도
+        #    도구들도 그렇게 적는다 — 실제 OLTC 는 "±16단 × 0.625%", pandapower 는
+        #    `tap_step_percent`, PowerWorld 는 `Step Size`. 개수로 적게 하는 건
+        #    PSS/E `NTP` 뿐이고 그것도 기본값 33 + 한계 0.9/1.1 이 정확히 0.625%
+        #    로 떨어지게 맞춰 둔 조합이다. 크기로 두면 **한계를 바꿔도 설 자리가
+        #    안 흔들린다**(개수로 두면 Max 를 줄이는 순간 간격이 통째로 바뀐다).
+        _a1("Ctrl Step Size", "", 19,
+            note="한 단 크기. 0 이거나 비면 연속. 모드 1 = 탭비(예 0.00625) · 모드 2 = 도(예 0.5)"),
     ], v1_widths=(12, 13)),
 
     Sheet("AC Gen Data", cols=[

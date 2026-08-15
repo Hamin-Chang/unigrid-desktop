@@ -2684,12 +2684,21 @@ class Proto(QMainWindow):
         if tap is not None and len(tap):
             tap_a = np.asarray(tap, dtype=float)
             miss = int((tap_a[:, 4] == 0).sum())
+            # ── 계단 (2026-08-14, §7 5단계 ③) ────────────────────────────
+            # 🚨 계단이면 **목표를 정확히 못 맞추는 것이 정상**이다(설 자리가
+            #    정해져 있으니까). 그래서 「목표 맞춤」이라 쓰면 거짓말이 되고,
+            #    반대로 경고를 달면 멀쩡한 것을 결함처럼 보이게 한다.
+            #    ⇒ 11열을 보고 **계단은 계단이라고** 쓴다.
+            #    2 = 계단 자리로 옮긴 뒤 다시 푸는 데 실패해 연속값이 그대로다.
+            #        이것만은 경고다 — 사용자는 계단인 줄 알고 있을 테니까.
+            nofit = int((tap_a[:, 10] == 2).sum()) if tap_a.shape[1] > 10 else 0
+            warn_on = bool(miss or nofit)
             # 한계를 안 적어 앱이 0.9~1.1 로 잡은 것 (2026-08-13 사용자 확정).
             # **내가 정하지 않은 값이 답을 가두고 있으므로** 반드시 밝힌다.
             auto = int((tap_a[:, 7] == 1).sum()) if tap_a.shape[1] > 7 else 0
             card = QFrame()
             card.setObjectName("card")
-            if miss:
+            if warn_on:
                 wc2 = QColor(c["warn"])
                 card.setStyleSheet(
                     f"#card{{background:rgba({wc2.red()},{wc2.green()},{wc2.blue()},0.12);"
@@ -2699,23 +2708,28 @@ class Proto(QMainWindow):
             cv.setSpacing(8)
 
             hh = QHBoxLayout()
-            ic = QLabel("⚠" if miss else "⚙")
+            ic = QLabel("⚠" if warn_on else "⚙")
             ic.setStyleSheet(
-                f"color:{c['warn'] if miss else c['muted']};font-size:15px;")
+                f"color:{c['warn'] if warn_on else c['muted']};font-size:15px;")
             hh.addWidget(ic)
             kind_col = tap_a[:, 8] if tap_a.shape[1] > 8 else np.ones(len(tap_a))
             names = [n for k, n in ((1, "탭"), (2, "위상"), (3, "SVC"))
                      if (kind_col == k).any()]
             what = "·".join(names) + " 자동 조정"
             ttl = QLabel(f"{what} {len(tap)}대"
-                         + (f" — {miss}대가 목표를 못 맞췄습니다" if miss else ""))
+                         + (f" — {miss}대가 목표를 못 맞췄습니다" if miss else "")
+                         + (f" — {nofit}대는 계단으로 못 내렸습니다" if nofit else ""))
             ttl.setStyleSheet(
-                f"color:{c['warn'] if miss else c['text']};"
+                f"color:{c['warn'] if warn_on else c['text']};"
                 f"font-size:14px;font-weight:700;")
             hh.addWidget(ttl)
             hh.addStretch()
             note = QLabel("굵은 값은 계산이 정한 것입니다"
-                          + (" · 한계에 걸리면 목표를 포기합니다" if miss else ""))
+                          + (" · 한계에 걸리면 목표를 포기합니다" if miss else "")
+                          + (" · 계단은 정해진 자리에만 서므로 목표에 근접합니다"
+                             if (np.asarray(tap, dtype=float).shape[1] > 9
+                                 and (np.asarray(tap, dtype=float)[:, 9] > 0).any())
+                             else ""))
             note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             hh.addWidget(note)
             cv.addLayout(hh)
@@ -2735,6 +2749,9 @@ class Proto(QMainWindow):
                 mine = len(row) > 7 and row[7] == 1
                 kind = int(row[8]) if len(row) > 8 else 1
                 unit = {1: "", 2: "°", 3: " Mvar"}[kind]
+                # 계단 (2026-08-14) — 10열 = 한 단 크기 · 11열 = 내렸나
+                sz = float(row[9]) if len(row) > 9 else 0.0
+                state = int(row[10]) if len(row) > 10 else 0
                 lim = "—" if np.isnan(lo) else (
                     f"{lo:g} ~ {hi:g}{unit}" + ("  (자동)" if mine else ""))
                 vals = [{1: "탭", 2: "위상", 3: "SVC"}[kind],
@@ -2743,12 +2760,17 @@ class Proto(QMainWindow):
                         f"{row[2]:,.3f} MW" if kind == 2 else f"{row[2]:.4f} pu",
                         f"{row[3]:.4f}{unit}",
                         lim,
-                        "목표 맞춤" if live else "한계에 걸림 — 목표 포기"]
+                        # 🚨 계단은 「목표 맞춤」이라 쓰면 거짓말이다 — 설 자리가
+                        #    정해져 있어 목표에 **가까운 자리**에 설 뿐이다.
+                        ("한계에 걸림 — 목표 포기" if not live
+                         else "계단으로 못 내림 — 연속값 그대로" if state == 2
+                         else f"계단 자리 (한 단 {sz:g}{unit})" if state == 1
+                         else "목표 맞춤")]
                 for cc, txt in enumerate(vals):
                     it = QTableWidgetItem(txt)
                     if cc > 0:
                         it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                    if not live:
+                    if not live or state == 2:
                         it.setForeground(QColor(c["warn"]))
                     elif cc == 4 and mine:
                         it.setForeground(QColor(c["muted"]))

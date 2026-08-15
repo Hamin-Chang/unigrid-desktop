@@ -93,9 +93,33 @@ def _num(v) -> float:
         return np.nan
 
 
+# 🚨 뜻이 바뀌어 이름을 갈아 낀 열. **옛 이름을 만나면 막는다.**
+#    A1 조정 열은 `required=False` 라 못 찾아도 조용히 넘어가는데(값이 NaN 이 되어
+#    엔진에겐 없는 것과 같다), 여기서는 그 조용한 무시가 위험하다 — 사용자는
+#    `Ctrl Steps = 4` 를 적어 놓고 계단이 걸린 줄 알지만 실제로는 연속으로 돈다.
+#    ⭐ *조용히 무시하느니 분명히 막는다*(2026-08-13 AC/DC 경로에서 정한 것과 같은 규칙).
+RENAMED = {
+    "ctrl steps": ("Ctrl Step Size",
+                   "계단 **수**(예: 4) 였는데 이제 **한 단 크기**(예: 0.00625) 입니다"),
+    "shunt steps": ("Shunt Step Size",
+                    "계단 **수** 였는데 이제 **한 단 크기**(Mvar, 예: 10) 입니다"),
+}
+
+
 def read_sheet(sheet: F.Sheet, ws) -> np.ndarray:
     """v2 시트 하나 → 엔진이 아는 자리에 놓인 배열."""
     head, body = _sheet_rows(ws)
+
+    for h in head:
+        old = RENAMED.get(_key(h))
+        if old is None:
+            continue
+        new_name, what = old
+        raise MissingColumn(
+            f"'{sheet.name}' 시트의 열 이름 '{h}' 는 이제 안 씁니다.\n"
+            f"  → '{new_name}' 로 바꿔 주십시오.\n"
+            f"  ⚠️ 이름만 바뀐 게 아니라 **뜻이 바뀌었습니다** — {what}.\n"
+            f"     적어 둔 값도 다시 보셔야 합니다.")
 
     if sheet.time_series:
         # 부하 시트: 첫 열이 버스, 그다음이 시각. MW → W 로 되돌린다.

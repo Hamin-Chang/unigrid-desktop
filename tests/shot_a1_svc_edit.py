@@ -77,7 +77,9 @@ print("\n[1] 옛 파일에도 조정 칸이 보이나")
 tb, off = win._grid_tb, win._grid_off
 heads = [tb.horizontalHeaderItem(i).text() for i in range(tb.columnCount())]
 print(f"    오른쪽 끝 머리글 {heads[-5:]}")
-ok1 = "Shunt Ctrl Mode" in heads and "Shunt Steps" in heads
+# 머리글에는 단위가 붙는다("Shunt Step Size [Mvar]") — 떼고 견준다.
+bare = [h.split("[")[0].strip() for h in heads]
+ok1 = "Shunt Ctrl Mode" in bare and "Shunt Step Size" in bare
 cell = tb.item(ROW, 17 + off)
 editable = bool(cell.flags() & Qt.ItemIsEditable)
 print(f"    버스 {BUS} 의 Shunt Ctrl Mode 칸: 값 {cell.text()!r} · 고칠 수 있나 {editable}")
