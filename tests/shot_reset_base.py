@@ -65,11 +65,19 @@ class Fake:
 
 
 def buttons() -> list[str]:
-    """조건 띠에 실제로 붙어 있는 단추 이름들."""
-    bar = win.change_bar()
-    if bar is None:
-        return []
-    return [b.text() for b in bar.findChildren(QPushButton)]
+    """지금 화면 위쪽(조건 띠 + 시나리오 카드)에 붙어 있는 단추 이름들.
+
+    ⚠️ 「⟲ 원본으로」는 2026-08-15 하루에 **두 번 옮겨졌다** — 조건 띠 → 시나리오 카드 머리
+       (띠가 카드와 같은 말을 하며 44px 을 먹었다) → **다시 조건 띠**(시나리오 목록을 아래
+       탭으로 내리면서 위쪽에 남은 것이 얇은 띠뿐이 됐다). **지금 자리는 조건 띠다.**
+       ⇒ 시험은 단추가 **어디에** 있는지가 아니라 **화면에 있는지**를 봐야 하므로 둘 다 훑는다.
+       자리가 또 바뀌어도 이 시험은 안 깨진다.
+    """
+    out = []
+    for w in (win.change_bar(), win.scenario_bar()):
+        if w is not None:
+            out += [b.text() for b in w.findChildren(QPushButton)]
+    return out
 
 
 def solve_now():
@@ -109,12 +117,12 @@ v_a = float(np.asarray(win.sol.AC, dtype=float)[:, 1].min())
 print(f"    바꾼 것 {len(win.changes)}건 · 굳은 조건 {len(win.applied)}건 · "
       f"전압 최저 {v_a:.5f} pu · 시나리오 {len(win.book.items)}개")
 
-print("\n[1] 계산해서 굳은 뒤에도 조건 띠가 남아 있나")
-bar = win.change_bar()
-ok1 = bar is not None
-print(f"    조건 띠 {'있다 ✅' if ok1 else '없다 🚨 (예전 그대로)'}")
+print("\n[1] 계산해서 굳은 뒤에도 **돌아갈 자리**가 화면에 남아 있나")
+# 보는 것은 *자리가 있나* 다 — 조건 띠든 시나리오 카드든 한쪽만 있으면 된다.
+ok1 = win.change_bar() is not None or win.scenario_bar() is not None
+print(f"    돌아갈 자리 {'있다 ✅' if ok1 else '없다 🚨'}")
 if not ok1:
-    fails.append("띠가 사라짐")
+    fails.append("돌아갈 자리 없음")
 
 print("\n[2] [⟲ 원본으로] 는 있고 [↩ 되돌리기] 는 없나")
 b1 = buttons()

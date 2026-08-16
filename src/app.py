@@ -134,6 +134,10 @@ GRID_CLEARABLE = {
 #      넓어져 줄을 더 그리기 때문이다. 그러니 "빨라진다"고 말하지 않는다.
 #   숫자는 점이 겹쳐 보이기 시작하는 지점으로 잡았다. 바꾸려면 여기 한 줄만 고치면 된다.
 BIG_BUSES = 1000
+# 시나리오 목록에서 **한 번에 보여 줄 줄 수**. 넘으면 목록 안에서 스크롤한다.
+# 안 씌우면 한 줄에 25px 씩 카드가 계속 자라 그래프와 표를 먹는다(2026-08-15 실측).
+SCENARIO_ROWS = 4
+SCENARIO_ROW_H = 42   # 실측 줄 간격(렌더에서 잼 — sizeHint 증가분 25 와 다르다)
 
 # 계통 데이터 탭에 보여 줄 표 (차례대로). 켜고 끌 수 있는 것이 앞에 온다.
 GRID_TABLES = [
@@ -424,11 +428,31 @@ def _scrollable(page):
 
 # ─────────────────────────────────────────── 조각
 class _ClickLabel(QLabel):
-    """두 번 누르면 알려 주는 라벨 (시나리오 이름 고치기용)."""
+    """누르면 알려 주는 라벨.
+
+    한 번 = 그 시나리오로 가기 · 두 번 = 이름 고치기.
+    (2026-08-15에 한 번 누르기를 더했다 — [결과 보기] 단추를 없애고 이름이 그 일을 맡는다.
+     단추 하나가 줄 높이를 42px 로 만들어 목록이 자리를 크게 먹고 있었다.)
+    """
 
     double_clicked = Signal(object)
+    clicked = Signal(object)
+
+    def mouseReleaseEvent(self, ev):
+        # 🚨 두 번 누르기와 안 부딪히게 — Qt 는 두 번 누를 때도 뗌을 먼저 보낸다.
+        #    잠깐 기다렸다가 그 사이에 두 번째가 안 오면 그때 한 번으로 친다.
+        self._pending = getattr(self, "_pending", None) or QTimer(self)
+        self._pending.setSingleShot(True)
+        try:
+            self._pending.timeout.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self._pending.timeout.connect(lambda: self.clicked.emit(self))
+        self._pending.start(QApplication.doubleClickInterval())
 
     def mouseDoubleClickEvent(self, ev):
+        if getattr(self, "_pending", None) is not None:
+            self._pending.stop()             # 한 번 누르기로 새지 않게
         self.double_clicked.emit(self)
 
 
@@ -859,6 +883,8 @@ class Proto(QMainWindow):
         self.curve_err = ""
         self.numbers = False
         self.numbers_auto = False     # 큰 계통이라 **자동으로** 접힌 것인가
+        self.graph_kept = False       # 사용자가 직접 펼친 적이 있나 (있으면 자동으로 안 접는다)
+        self.numbers_why = ""         # 왜 접혔나 — "big"(큰 계통) · "changed"(조건을 바꿔 품)
         self.mode = "스냅샷"
         self.compare_axis = "버스끼리"
         self.overlay = set()          # 겹쳐 볼 시나리오 (Book 안 자리 번호) — 비면 전부
@@ -1319,9 +1345,9 @@ class Proto(QMainWindow):
         bar = self.change_bar()          # 바꾼 것이 있을 때만 나온다
         if bar is not None:
             v.addWidget(bar)
-        sb = self.scenario_bar()         # 담아 둔 것이 있을 때만 나온다
-        if sb is not None:
-            v.addWidget(sb)
+        # 🚨 시나리오 목록은 **여기 있지 않다** (2026-08-15). 위에 두면 줄마다 자리를 먹어
+        #    (4줄 248px) 그래프와 표를 밀어냈다 ⇒ **아래 탭 하나로** 내려보냈다.
+        #    위에는 `change_bar` 가 「지금 조건 + [⟲ 원본으로]」 한 줄만 남긴다.
 
         split = QSplitter(Qt.Vertical)
         split.setChildrenCollapsible(False)
@@ -1358,7 +1384,28 @@ class Proto(QMainWindow):
             # 잡아 두면 창을 화면보다 작게 못 만든다 — 470 + 표 579 로 창 최소가
             # 1201px 이 돼 맥북 화면에서 아래가 잘렸다(2026-08-13 실측·사용자 지적).
             # 최소는 낮추고, 좁게 볼지는 가운데 손잡이로 사용자가 정한다.
-            gt.setMinimumHeight(260)
+            #
+            # 🚨 **계통 데이터 탭에서는 낮춘다** (2026-08-15). 아래는 이미 표에 66% 를
+            #    주도록 돼 있는데(`_apply_split`), 이 최소치가 그걸 막고 있었다 —
+            #    `min(…, room - 260)` 에 걸려 표가 353 을 받으려다 275 로 깎였고,
+            #    위쪽 띠가 늘어난 만큼의 손실이 **전부 표로** 갔다.
+            #
+            # ⚠️ 단 **얼마나 낮출 수 있는지는 차트가 몇 개 쌓이느냐가 정한다.**
+            #    처음에 그냥 150 으로 낮췄더니 「전압·위상」(차트 둘이 위아래로)에서
+            #    한 개당 90px 밖에 안 돌아가 **x축 글자가 `...` 로 뭉개지고 아래가 잘렸다**
+            #    (사용자가 보고 *"여기가 이상한데?"*). 옆으로 놓는 탭(조류 P·Q)과 한 장짜리
+            #    (부하율·토폴로지)는 한 줄이라 낮춰도 멀쩡하다.
+            gt.setMinimumHeight(self._graph_floor())
+            # 🚨 **펼치기가 있으면 접기도 있어야 한다** (2026-08-15 사용자 지적).
+            #    접혀 있을 때는 [그래프 펼치기] 가 그래프 자리에 바로 있는데, 펼치고 나면
+            #    되접는 길이 저 멀리 위쪽 [숫자만] 뿐이었다 — 이름도 달라 같은 일인 줄 모른다.
+            #    탭 줄 오른쪽 구석에 둔다 — **세로 자리를 안 먹는다.**
+            fold = QPushButton("그래프 접기")
+            fold.setToolTip("그래프를 접고 표를 넓게 씁니다.\n"
+                            "위쪽 [숫자만] 과 같은 일입니다.")
+            fold.setCursor(Qt.PointingHandCursor)
+            fold.clicked.connect(lambda: self.set_numbers(True))
+            gt.setCornerWidget(fold, Qt.TopRightCorner)
             split.addWidget(gt)
         else:
             note = QFrame()
@@ -1369,7 +1416,10 @@ class Proto(QMainWindow):
             # ⚠️ 예전 문구는 "약 5~7배 빠름" 이라고 말했는데 **사실이 아니다** —
             #    실측 0.86~1.49배다(`실측_R4_버스수대시간.csv`). 표가 그만큼 넓어져
             #    줄을 더 그리기 때문이다. 안 빨라지는 것을 빨라진다고 말하지 않는다.
-            if self.numbers_auto and self.sol is not None:
+            if self.numbers_why == "changed":
+                msg = ("계통을 바꿔 계산해서 그래프를 접고 표를 넓게 폈습니다 — "
+                       "펼치면 표가 그만큼 줄어듭니다.")
+            elif self.numbers_auto and self.sol is not None:
                 n_bus = int(self.sol.AC.shape[0]) + \
                     int(self.sol.DC.shape[0] if self.sol.DC.size else 0)
                 msg = (f"버스가 {n_bus:,}개라 그래프를 접어 두었습니다 — "
@@ -1392,9 +1442,13 @@ class Proto(QMainWindow):
         tv.setContentsMargins(0, 0, 0, 0)
         tv.setSpacing(7)
 
-        head = QHBoxLayout()
+        # 🚨 이 줄은 **따로 한 줄을 쓰지 않는다** (2026-08-15). 표 묶음 186px 중 표에 남는
+        #    것이 19px 뿐이었는데, 그 줄 하나가 46px 을 먹고 있었다.
+        #    표 탭바 오른쪽 구석으로 옮기면 **세로 자리를 안 쓴다**(그래프 접기 단추와 같은 수법).
+        head_w = QWidget()
+        head = QHBoxLayout(head_w)
+        head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(8)
-        head.addStretch()
         lab = QLabel("VSC 표")
         lab.setStyleSheet(f"color:{c['muted']};font-size:13px;")
         head.addWidget(lab)
@@ -1427,9 +1481,9 @@ class Proto(QMainWindow):
         cb = QPushButton("열 선택")
         cb.clicked.connect(self.pick_columns)
         head.addWidget(cb)
-        tv.addLayout(head)
 
         tt = QTabWidget()
+        tt.setCornerWidget(head_w, Qt.TopRightCorner)
         self._tabs = tt
         tt.setTabPosition(QTabWidget.North)
 
@@ -1486,6 +1540,9 @@ class Proto(QMainWindow):
         n_ch = len(self.changes)
         tt.addTab(self.grid_page(),
                   f"계통 데이터 ({n_ch})" if n_ch else "계통 데이터")
+        sp = self.scenario_bar()
+        if sp is not None:
+            tt.addTab(_scrollable(sp), f"시나리오 ({len(self.book.items)})")
 
         # 보고 있던 탭으로 되돌린다 — 조건을 하나 바꿀 때마다 화면을 다시 그리므로,
         # 이걸 안 하면 매번 첫 탭(AC 결과)으로 튄다.
@@ -1516,6 +1573,34 @@ class Proto(QMainWindow):
     # 그래프가 커야 한다. 한 자리로 둘을 다 맞출 수 없어 **탭마다 따로** 기억한다
     # (2026-08-13 사용자: "계통 데이터 탭 여기가 너무 작아서 불편해").
 
+    def _graph_rows(self) -> int:
+        """지금 그래프 탭에서 차트가 **몇 줄로 쌓이나**. 옆으로 놓는 탭은 한 줄이다."""
+        try:
+            _name, plots, layout = GRAPHS[self.mode][self.graph_tab]
+        except (KeyError, IndexError):
+            return 2                      # 모르면 넉넉한 쪽으로
+        return len(plots) if layout == "v" else 1
+
+    # 그래프 높이 두 가지. **실측으로 정했다**(2026-08-15, 14버스 · 창 950px):
+    #   260 → x축 숫자가 `...` 로 뭉개진다   320 → 제대로 나온다   380 → 여유 있다
+    # 그래서 두 줄짜리 탭의 **바닥은 320**, 사용자가 직접 펼쳤을 때 **주는 값은 380**.
+    GRAPH_FLOOR = {1: 150, 2: 320}
+    GRAPH_WANT = {1: 220, 2: 380}
+
+    def _graph_floor(self) -> int:
+        """그래프에 남겨 둘 **최소** 높이.
+
+        표를 고치는 **계통 데이터** 탭에서만 낮춘다. 얼마나 낮출지는 차트가 몇 줄로
+        쌓이느냐가 정한다 — 위아래로 둘이면 많이 못 낮춘다(각 90px 이 되어 축이 뭉개진다).
+        """
+        if self.table_tab != "계통 데이터":
+            return 260
+        return self.GRAPH_FLOOR.get(self._graph_rows(), 320)
+
+    def _graph_want(self) -> int:
+        """사용자가 **직접 펼쳤을 때** 그래프에 주는 높이 — 읽을 수 있는 크기."""
+        return self.GRAPH_WANT.get(self._graph_rows(), 380)
+
     def _split_slot(self, tab=None):
         tab = self.table_tab if tab is None else tab
         return "grid" if tab == "계통 데이터" else "other"
@@ -1530,9 +1615,23 @@ class Proto(QMainWindow):
         tot = sum(split.sizes())
         room = tot if (split.isVisible() and tot > 300) else self.height() - 190
         room = max(430, room)
+        # 🚨 **직접 펼쳤으면 그래프가 우선이다** (2026-08-15 사용자 확정 —
+        #    *"사용자가 키고 싶으면 그때 그래프를 띄우고 표는 작게 줄이자"*).
+        #    계통 데이터 탭은 평소 표에 66% 를 주는데, 그 규칙을 그대로 두면 그래프가
+        #    늘 바닥값만 받아 **축 글자가 뭉개진 채**로 보인다. 보겠다고 누른 사람에게
+        #    못 읽는 그래프를 주는 것은 안 켜 준 것과 같다.
+        if slot == "grid" and self.graph_kept and not self.numbers:
+            # ⚠️ `room` 으로 깎지 않는다 — 다시 그리는 도중에는 그 값이 실제보다 작게
+            #    잡혀(470 으로 잡힌 적이 있다) 그래프 요청이 270 까지 깎였고, 결국 바닥값만
+            #    받았다. **원하는 비율로 넘기고 남는 자리는 Qt 가 나눠 준다.**
+            split.setSizes([self._graph_want(), 200])
+            return
         # 데이터 고칠 땐 아래를 크게, 결과 볼 땐 그래프를 크게.
         share = 0.66 if slot == "grid" else 0.38
-        bottom = min(max(int(room * share), 350), room - 260)
+        # 그래프에 남겨 둘 최소치. **위 `gt.setMinimumHeight` 과 같은 값이어야 한다** —
+        # 어긋나면 그래프 최소를 낮춰 놓고도 여기서 도로 깎아 표가 안 넓어진다(2026-08-15).
+        keep = self._graph_floor() if slot == "grid" else 260
+        bottom = min(max(int(room * share), 350), room - keep)
         split.setSizes([room - bottom, bottom])
 
     def _save_split(self, split):
@@ -1902,8 +2001,16 @@ class Proto(QMainWindow):
            길이 없던 게 아니라 시나리오 목록 안에 숨어 있었는데, 그 목록은 시나리오가
            2개 이상일 때만 그려지고 거기가 *조건을 되돌리는 곳* 이라고 말하지도 않는다.
            (사용자: *"선로 4번을 껐는데 5번을 끄고 싶다. 직접 되돌리는 게 불안하다"*)
-           ⇒ **이미 계산한 조건이 걸려 있으면 얇은 띠로 남겨** 돌아갈 길을 보여 준다.
+
+        ⚠️ **2026-08-15 자리를 옮겼다.** 처음엔 굳은 상태에서도 이 띠를 남겼는데,
+           **시나리오 카드와 같은 말을 두 곳에서** 하면서 44px + 간격을 먹었고 그만큼
+           아래 표가 눌렸다(사용자: *"표가 너무 작아서 보기 힘들다"*). ⇒ 「⟲ 원본으로」는
+           **시나리오 카드 머리로** 옮기고, 이 띠는 원래대로 *아직 안 푼 것이 있을 때만* 뜬다.
+           단 카드가 안 그려지는 경우(시나리오가 하나뿐 — 원본을 지웠을 때)에는
+           돌아갈 길이 또 사라지므로 그때는 여기가 맡는다.
         """
+        # 시나리오 목록이 아래 탭으로 내려갔으므로(2026-08-15), 굳은 조건이 있으면
+        # **늘** 이 한 줄이 나온다 — 지금 무슨 조건을 보고 있는지와 돌아갈 길.
         if not self.changes and not self.applied:
             return None
         c = self.c
@@ -2048,19 +2155,29 @@ class Proto(QMainWindow):
         return self.base_case is not None and any(
             SC._values(self.base_case, k).size for k in SC.LOAD_TABLES)
 
-    def load_bar(self):
-        """부하 전체 ×배수 슬라이더. 여기서도 **바로 계산하지 않는다.**"""
+    def load_bar(self, inline: bool = False):
+        """부하 전체 ×배수 슬라이더. 여기서도 **바로 계산하지 않는다.**
+
+        `inline` 이면 카드 테두리 없이 **표 고르기 줄 안에** 들어간다 — 따로 한 줄을
+        쓰면 그만큼 표가 줄어든다(2026-08-15: 표에 19px 밖에 안 남아 있었다).
+        """
         if not self.has_load():
             return None
         c = self.c
         now = self.load_factor()
-        bar = QFrame()
-        bar.setObjectName("card")
-        bar.setStyleSheet(f"#card {{ background:{c['surface']};"
-                          f"border:1px solid {c['border']};border-radius:10px; }}")
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(15, 7, 11, 7)
-        h.setSpacing(11)
+        if inline:
+            bar = QWidget()
+            h = QHBoxLayout(bar)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(8)
+        else:
+            bar = QFrame()
+            bar.setObjectName("card")
+            bar.setStyleSheet(f"#card {{ background:{c['surface']};"
+                              f"border:1px solid {c['border']};border-radius:10px; }}")
+            h = QHBoxLayout(bar)
+            h.setContentsMargins(15, 7, 11, 7)
+            h.setSpacing(11)
 
         tag = QLabel("부하 전체")
         tag.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
@@ -2069,7 +2186,7 @@ class Proto(QMainWindow):
         sl = QSlider(Qt.Horizontal)
         sl.setRange(50, 200)
         sl.setValue(int(round(now * 100)))
-        sl.setFixedWidth(240)
+        sl.setFixedWidth(150 if inline else 240)
         sl.setTickPosition(QSlider.TicksBelow)
         sl.setTickInterval(25)
         n_t = self.load_times()
@@ -2096,7 +2213,8 @@ class Proto(QMainWindow):
             tot.setToolTip(f"지금 보고 있는 시각의 합입니다. "
                            f"곱하기는 {n_t}시각 전부에 걸립니다.")
         h.addWidget(tot)
-        h.addStretch(1)
+        if not inline:
+            h.addStretch(1)
 
         back = QPushButton("원래대로 (×1)")
         back.setCursor(Qt.PointingHandCursor)
@@ -2132,8 +2250,9 @@ class Proto(QMainWindow):
         c = self.c
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(14, 11, 14, 12)
-        v.setSpacing(9)
+        # 여백·간격을 줄인다 — 표에 19px 밖에 안 남던 시절의 값이었다(2026-08-15).
+        v.setContentsMargins(12, 6, 12, 8)
+        v.setSpacing(6)
 
         if self.base_case is None:
             note = QLabel("케이스를 열면 여기에 계통 데이터가 나옵니다.")
@@ -2167,14 +2286,17 @@ class Proto(QMainWindow):
         row.addSpacing(10)
         row.addWidget(self.find_bar(inline=True))
         row.addStretch(1)
-        hint = QLabel("켜고 끄기는 바로 계산하지 않습니다 — 다 바꾼 뒤 위의 [이 조건으로 계산]")
-        hint.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-        row.addWidget(hint)
-        v.addLayout(row)
-
-        load = self.load_bar()                 # ② 부하 일괄 증감
+        # 안내는 **글줄로 두지 않고** 표 고르기 단추의 설명으로 옮겼다 — 그 자리에
+        # 부하 슬라이더를 들여야 한 줄이 준다.
+        for i in range(row.count()):
+            wd = row.itemAt(i).widget()
+            if isinstance(wd, QPushButton):
+                wd.setToolTip("켜고 끄기는 바로 계산하지 않습니다 — "
+                              "다 바꾼 뒤 위의 [이 조건으로 계산] 을 누르세요.")
+        load = self.load_bar(inline=True)       # ② 부하 일괄 증감 — **같은 줄에**
         if load is not None:
-            v.addWidget(load)
+            row.addWidget(load)
+        v.addLayout(row)
 
         v.addWidget(self.grid_table_widget(), 1)
         return w
@@ -2614,8 +2736,8 @@ class Proto(QMainWindow):
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(3)
         for j, (name, w) in enumerate(
-                [("겹쳐", 46), ("이름", 0), ("바꾼 것", 52), ("결과", 66),
-                 ("전압 최저", 82), ("원본 대비", 74), ("", 210)]):
+                [("겹쳐", 46), ("이름", 0), ("", 0), ("", 0),
+                 ("전압 최저", 82), ("원본 대비", 74), ("", 34)]):
             if name:
                 q = QLabel(name)
                 q.setStyleSheet(f"color:{c['muted']};font-size:11px;")
@@ -2627,7 +2749,15 @@ class Proto(QMainWindow):
         base = self.book.base()
         for i, s in enumerate(self.book.items, start=1):
             self._scenario_row(g, i, s, base)
+
+        # 🚨 **몇 줄까지만 보이고 넘으면 목록 안에서 스크롤한다** (2026-08-15 사용자 확정).
+        #    그전에는 시나리오 한 줄에 **25px 씩 카드가 계속 자랐다** — 7개면 235px 이고,
+        #    그만큼 그래프와 표가 줄었다. 6개부터는 **둘 다 바닥에 닿아** 표가 통째로 잘렸다
+        #    (실측: 카드 0→110→160→235 / 그래프 523→408→353→320 / 표 275→215→186→170).
+        #    ⇒ 상한을 씌워 **쌓일수록 나빠지는 것 자체를 없앤다.**
+        #    시나리오는 보통 최근 것만 보므로 네 줄이면 실제로 쓸 만하다.
         v.addLayout(g)
+        v.addStretch(1)
         return card
 
     def _scenario_row(self, g, i, s, base):
@@ -2676,8 +2806,12 @@ class Proto(QMainWindow):
                 q.setToolTip(tip)
             g.addWidget(q, i, col)
 
-        cell(2, "—" if s.base else f"{len(s.changes)}건")
-        cell(3, s.summary, c["warn"] if s.error else c["muted"], bold=bool(s.error))
+        # 🚨 「바꾼 것 N건」과 「반복 N회」는 뺐다 (2026-08-15) — 앞엣것은 이름이 이미
+        #    말해 주고(`AC 선로 2-4 끔`), 뒤엣것은 시나리오를 고르는 데 안 쓰인다
+        #    (지금 보는 것의 반복 횟수는 아래 상태줄에 있다). 대신 **못 푼 것**은
+        #    반드시 보여야 하므로 그때만 자리를 쓴다.
+        if s.error:
+            cell(2, s.summary, c["warn"], bold=True)
         vmin = s.vmin()
         cell(4, "—" if np.isnan(vmin) else f"{vmin:.4f} pu", c["text"], right=True)
         d = s.against(base) if (base is not None and not s.base) else float("nan")
@@ -2685,16 +2819,21 @@ class Proto(QMainWindow):
              c["warn"] if (not np.isnan(d) and d < -1e-6) else c["muted"],
              right=True, tip="원본 대비 전압 최저 변화")
 
+        # 🚨 [결과 보기] 단추를 뺐다 — **이름을 누르면 간다.** 단추(34px)가 줄 높이를
+        #    42px 로 만들고 있었고, 목록이 그만큼 자리를 먹었다(4줄 248px).
+        #    [지우기] 는 작은 ✕ 로 줄인다.
+        if not here:
+            name.setCursor(Qt.PointingHandCursor)
+            name.clicked.connect(lambda _s=s: self.show_scenario(_s))
+            name.setToolTip(SC.describe(s.changes) +
+                            ("\n\n눌러서 이 결과를 봅니다" if s.solved
+                             else "\n\n눌러서 이 조건만 불러옵니다"))
         act = QHBoxLayout()
         act.setSpacing(6)
         act.addStretch(1)
-        if not here:
-            b = QPushButton("결과 보기" if s.solved else "조건만 불러오기")
-            b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _, _s=s: self.show_scenario(_s))
-            act.addWidget(b)
         if not s.base:
-            x = QPushButton("지우기")
+            x = QPushButton("✕")
+            x.setFixedSize(22, 22)
             x.setCursor(Qt.PointingHandCursor)
             x.setToolTip("이 시나리오를 목록에서 지웁니다 (계통은 안 건드립니다)")
             x.clicked.connect(lambda _, _s=s: self.drop_scenario(_s))
@@ -3714,6 +3853,14 @@ class Proto(QMainWindow):
     def set_numbers(self, v):
         self.numbers = v
         self.numbers_auto = False        # 사용자가 직접 골랐다 — 자동이 아니다
+        if not v:
+            # 직접 펼쳤다 ⇒ 이 케이스에서는 **더 이상 자동으로 접지 않는다**.
+            # (조건을 바꿀 때마다 도로 접히면 못 쓴다)
+            self.graph_kept = True
+            # 🚨 **적어 둔 자리를 버린다.** 안 버리면 접히기 전의 「표 66%」 가 그대로
+            #    되살아나 그래프가 바닥값만 받는다 — 펼쳐 놓고도 못 읽는 꼴이 된다.
+            if isinstance(self.split_sizes, dict):
+                self.split_sizes.pop(self._split_slot(), None)
         self.rebuild()
 
     def toggle_theme(self):
@@ -3778,6 +3925,16 @@ class Proto(QMainWindow):
             self.applied = list(pending)      # 이제 이것이 화면의 조건이다
             self.changes = []
             self._pending = None
+            # 🚨 **계통을 바꿔 계산하면 그래프를 접고 표를 넓게 연다** (2026-08-15 사용자 확정).
+            #    계통을 고칠 때 눈이 가는 것은 표인데, 그래프가 자리를 크게 먹어 표가
+            #    한두 줄로 눌렸다(사용자: *"아래 표가 너무 작아서 보기 힘들다"*).
+            #    보고 싶으면 [그래프 펼치기] 를 누르면 되고, 그때는 표가 도로 줄어든다.
+            #    ⚠️ **한 번이라도 직접 펼쳤으면 다시 안 접는다** — 조건 하나 바꿀 때마다
+            #       도로 접히면 못 쓴다(큰 계통 자동 접기에서 정한 것과 같은 이유, 2026-08-06).
+            if not self.graph_kept:
+                self.numbers = True
+                self.numbers_auto = True
+                self.numbers_why = "changed"
         elif loaded is not None and not self.changes:
             self.base_case = loaded
             self.applied = []
@@ -3794,6 +3951,8 @@ class Proto(QMainWindow):
             n_bus = int(sol.AC.shape[0]) + int(sol.DC.shape[0] if sol.DC.size else 0)
             self.numbers_auto = n_bus > BIG_BUSES
             self.numbers = self.numbers_auto
+            self.numbers_why = "big" if self.numbers_auto else ""
+            self.graph_kept = False       # 새 계통 — 「직접 펼쳤다」 기억도 새로
         # 해법 고르기가 볼 케이스 — 방금 푼 그것이다(조건을 바꿔 푼 것이면 그 케이스).
         # 이 값으로 `gs_refusal` 을 물어 Gauss-Seidel 을 흐리게 할지 정한다 (2026-08-12, G8).
         self._case_for_solver = (getattr(getattr(self, "thread", None), "case", None)
