@@ -1035,6 +1035,11 @@ class Proto(QMainWindow):
 
     def rebuild(self):
         self._save_grid_view()
+        # 그리기 **전에** 접힘 상태를 자리에 맞춘다. `_table_tab_changed` 에서도 부르지만
+        # 그 길로만 오는 게 아니다 — 새 파일을 열 때 앞 파일의 탭이 그대로 남아 있고,
+        # 표 한 칸을 고쳐도 여기로 온다. 여기서 맞춰 두면 어느 길로 와도 같아진다.
+        # (다시 그리는 중이므로 돌아온 값은 안 본다 — 곧 그릴 화면이 이미 새 상태다.)
+        self._fold_for_room()
         self.build()
 
     # ── 계통 데이터 표의 "보던 자리" ───────────────────────────────────
@@ -1419,6 +1424,9 @@ class Proto(QMainWindow):
             if self.numbers_why == "changed":
                 msg = ("계통을 바꿔 계산해서 그래프를 접고 표를 넓게 폈습니다 — "
                        "펼치면 표가 그만큼 줄어듭니다.")
+            elif self.numbers_why == "narrow":
+                msg = ("표를 고치는 화면이라 그래프를 접고 표를 넓게 폈습니다 — "
+                       "펼치면 표가 그만큼 줄어듭니다.")
             elif self.numbers_auto and self.sol is not None:
                 n_bus = int(self.sol.AC.shape[0]) + \
                     int(self.sol.DC.shape[0] if self.sol.DC.size else 0)
@@ -1581,10 +1589,16 @@ class Proto(QMainWindow):
             return 2                      # 모르면 넉넉한 쪽으로
         return len(plots) if layout == "v" else 1
 
-    # 그래프 높이 두 가지. **실측으로 정했다**(2026-08-15, 14버스 · 창 950px):
-    #   260 → x축 숫자가 `...` 로 뭉개진다   320 → 제대로 나온다   380 → 여유 있다
-    # 그래서 두 줄짜리 탭의 **바닥은 320**, 사용자가 직접 펼쳤을 때 **주는 값은 380**.
-    GRAPH_FLOOR = {1: 150, 2: 320}
+    # 그래프 높이 두 가지 — **다시 실측했다**(2026-08-18, 50버스 · 창 950px).
+    # 🚨 2026-08-15 에 적어 둔 *"320 → 제대로 나온다"* 는 **틀렸다.** 두 줄짜리 탭에서
+    #    320·360·400·420 이 전부 **세로축 숫자를 `...` 로 뭉갠다.** 숫자가 살아나는
+    #    문턱은 **425** 다(420 뭉개짐 · 430 나옴). 한 줄짜리는 150 에서도 멀쩡하다.
+    #    ⇒ 두 줄 바닥을 320 → **425** 로 올린다. 이 값을 못 주는 탭에서는 그래프를
+    #      **접는다**(`_graph_fits`) — 못 읽는 그래프를 자리만 차지한 채 두지 않는다.
+    #    함께 버린 안 둘: **차트 제목 떼기**(380 에서도 여전히 뭉갠다 — 제목이 원인이
+    #    아니었다) · **전압·위상을 좌우로 놓기**(세로축은 살지만 50버스의 x축 번호가
+    #    `1... 1... ...` 로 통째로 죽는다).
+    GRAPH_FLOOR = {1: 150, 2: 425}
     GRAPH_WANT = {1: 220, 2: 380}
 
     # 점검 탭 표 — 한 줄 높이 · 머리글이 먹는 몫 · 몇 줄에서 끊나 (2026-08-18)
@@ -1597,14 +1611,57 @@ class Proto(QMainWindow):
     CHECK_MAX_ROWS = 10
 
     def _graph_floor(self) -> int:
-        """그래프에 남겨 둘 **최소** 높이.
+        """그래프에 남겨 둘 **최소** 높이 — **읽을 수 있는 크기**다.
 
-        표를 고치는 **계통 데이터** 탭에서만 낮춘다. 얼마나 낮출지는 차트가 몇 줄로
-        쌓이느냐가 정한다 — 위아래로 둘이면 많이 못 낮춘다(각 90px 이 되어 축이 뭉개진다).
+        얼마나 필요한지는 차트가 몇 줄로 쌓이느냐가 정한다(위아래로 둘이면 한 장이
+        절반씩 나눠 갖는다). ⚠️ 예전에는 **탭마다 달랐다** — 계통 데이터 탭은
+        `GRAPH_FLOOR`, 나머지는 260. 그런데 260 도 320 도 세로축을 뭉개는 값이라
+        (2026-08-18 실측) 탭을 가릴 이유가 없어졌다. **어느 탭이든 읽을 수 있는
+        크기가 바닥이고, 그걸 못 주면 접는다.**
         """
-        if self.table_tab != "계통 데이터":
-            return 260
-        return self.GRAPH_FLOOR.get(self._graph_rows(), 320)
+        return self.GRAPH_FLOOR.get(self._graph_rows(), self.GRAPH_FLOOR[2])
+
+    def _room_for_graph(self) -> int:
+        """위아래로 나눠 쓸 수 있는 높이. `_apply_split` 이 쓰는 셈과 같게 맞춘다."""
+        sp = self._split
+        tot = sum(sp.sizes()) if sp is not None else 0
+        room = tot if (sp is not None and sp.isVisible() and tot > 300) \
+            else self.height() - 190
+        return max(430, room)
+
+    def _graph_fits(self, tab=None) -> bool:
+        """그 탭에서 **읽을 수 있는 그래프**와 표 몫을 함께 줄 수 있나.
+
+        계통 데이터 탭은 표에 66% 를 주기로 돼 있어(표를 고치는 곳이다) 그래프에
+        남는 것이 34% 뿐이다. 950px 창이면 271px — **바닥값 425 에 한참 못 미친다.**
+        그럴 때 예전에는 그래프를 425 로 붙들어 표를 373 으로 깎았는데, 그러면
+        **표도 좁고 그래프도 못 읽는다.** 접으면 표가 전부 갖는다.
+        """
+        tab = self.table_tab if tab is None else tab
+        if self._split_slot(tab) != "grid":
+            return True          # 결과 탭은 그래프 쪽에 62% 를 주므로 늘 넉넉하다
+        room = self._room_for_graph()
+        return self._graph_floor() <= room - int(room * 0.66)
+
+    def _fold_for_room(self, tab=None) -> bool:
+        """자리 때문에 접거나 펴야 하면 상태를 바꾸고 True. 부르는 쪽이 다시 그린다.
+
+        사용자가 **직접 펼친 뒤**(`graph_kept`)에는 건드리지 않는다 — 그때는
+        `_apply_split` 이 그래프를 우선으로 놓아 읽을 수 있는 크기를 준다.
+        """
+        if self.graph_kept:
+            return False
+        fits = self._graph_fits(tab)
+        if not self.numbers and not fits:
+            self.numbers, self.numbers_auto = True, True
+            self.numbers_why = "narrow"
+            return True
+        # 좁아서 접은 것이면, 자리가 나는 탭으로 가면 도로 편다
+        if self.numbers and self.numbers_why == "narrow" and fits:
+            self.numbers, self.numbers_auto = False, False
+            self.numbers_why = ""
+            return True
+        return False
 
     def _graph_want(self) -> int:
         """사용자가 **직접 펼쳤을 때** 그래프에 주는 높이 — 읽을 수 있는 크기."""
@@ -1629,7 +1686,11 @@ class Proto(QMainWindow):
         #    계통 데이터 탭은 평소 표에 66% 를 주는데, 그 규칙을 그대로 두면 그래프가
         #    늘 바닥값만 받아 **축 글자가 뭉개진 채**로 보인다. 보겠다고 누른 사람에게
         #    못 읽는 그래프를 주는 것은 안 켜 준 것과 같다.
-        if slot == "grid" and self.graph_kept and not self.numbers:
+        # ⚠️ 예전에는 `slot == "grid"` 로 잠겨 있어 **계통 데이터 탭에만** 걸렸다.
+        #    그 바람에 결과 탭에서 [그래프 펼치기] 를 누르면 393px 밖에 안 받아
+        #    **펼쳐 놓고도 세로축이 뭉개졌다**(2026-08-18 실측). 바로 위 주석이
+        #    금지한 그 상태다. ⇒ 어느 탭에서 눌러도 읽을 수 있는 크기를 준다.
+        if self.graph_kept and not self.numbers:
             # ⚠️ `room` 으로 깎지 않는다 — 다시 그리는 도중에는 그 값이 실제보다 작게
             #    잡혀(470 으로 잡힌 적이 있다) 그래프 요청이 270 까지 깎였고, 결국 바닥값만
             #    받았다. **원하는 비율로 넘기고 남는 자리는 Qt 가 나눠 준다.**
@@ -1639,7 +1700,7 @@ class Proto(QMainWindow):
         share = 0.66 if slot == "grid" else 0.38
         # 그래프에 남겨 둘 최소치. **위 `gt.setMinimumHeight` 과 같은 값이어야 한다** —
         # 어긋나면 그래프 최소를 낮춰 놓고도 여기서 도로 깎아 표가 안 넓어진다(2026-08-15).
-        keep = self._graph_floor() if slot == "grid" else 260
+        keep = self._graph_floor()
         bottom = min(max(int(room * share), 350), room - keep)
         split.setSizes([room - bottom, bottom])
 
@@ -1654,6 +1715,11 @@ class Proto(QMainWindow):
             return
         self._save_split(split)          # 떠나는 탭의 자리를 먼저 적어 둔다
         self.table_tab = name
+        # 자리가 모자라 접거나, 자리가 나서 도로 펴야 하면 화면을 다시 그린다
+        # (그래프 자리가 통째로 안내 띠로 바뀌므로 split 만 고쳐서는 안 된다)
+        if self._fold_for_room(name):
+            self.rebuild()
+            return
         self._apply_split(split)
 
     # ── 시작 화면 (파일을 아직 안 불러왔을 때) ──
@@ -3873,6 +3939,10 @@ class Proto(QMainWindow):
     def set_numbers(self, v):
         self.numbers = v
         self.numbers_auto = False        # 사용자가 직접 골랐다 — 자동이 아니다
+        # ⚠️ **이유도 함께 지운다.** 안 지우면 직접 접었는데도 앞서 자동으로 접혔던
+        #    이유가 그대로 남아 *"계통을 바꿔 계산해서…"* 같은 남의 문구를 달게 된다
+        #    (접힘 → 펼침 → 직접 접기 순서에서 실제로 그렇게 된다).
+        self.numbers_why = ""
         if not v:
             # 직접 펼쳤다 ⇒ 이 케이스에서는 **더 이상 자동으로 접지 않는다**.
             # (조건을 바꿀 때마다 도로 접히면 못 쓴다)
