@@ -655,7 +655,7 @@ class ExportDialog(QDialog):
     고를 수 있게 뒀다.
     """
 
-    def __init__(self, parent, c, mode, numbers_only, picked_items):
+    def __init__(self, parent, c, mode, picked_items):
         super().__init__(parent)
         self.setWindowTitle("내보내기")
         self.setMinimumWidth(520)
@@ -714,15 +714,17 @@ class ExportDialog(QDialog):
             l2.setStyleSheet(f"color:{c['muted']};font-size:14px;")
             v.addWidget(l2)
             for tab, fname in exporter.figure_names(self.sol, mode):
+                # 🚨 예전에는 그래프가 접혀 있으면 이 칸을 **꺼서 못 고르게** 했다
+                #    (2026-08-18 삭제). 그런데 `exporter.save_figures` 는 화면의
+                #    그래프를 쓰지 않고 **결과에서 새로 그린다** — 접혀 있어도 그림 8개가
+                #    멀쩡히 나오는 것을 실측으로 확인했다. 막을 까닭이 없었다.
+                #    ⚠️ 게다가 **저절로 접혔을 때도** 막혔다 — 선로 하나 껐을 뿐인데
+                #       *"지금은 숫자 모드라 그림을 저장할 수 없습니다"* 가 떴다.
+                #       고른 적 없는 모드를 이유로 대는 셈이었다.
                 cb = QCheckBox(f"{tab}     {fname}.png / .pdf")
-                cb.setChecked(not numbers_only)
-                cb.setEnabled(not numbers_only)
+                cb.setChecked(True)
                 v.addWidget(cb)
                 self.tabs.append((tab, cb))
-            if numbers_only:
-                w = QLabel("지금은 숫자 모드라 그림을 저장할 수 없습니다")
-                w.setStyleSheet(f"color:{c['warn']};font-size:13px;")
-                v.addWidget(w)
 
         path = QFrame()
         path.setObjectName("plot")
@@ -1111,29 +1113,18 @@ class Proto(QMainWindow):
             h.addWidget(b)
         h.addStretch()
 
-        lb = QLabel("표시 모드")
-        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;")
-        h.addWidget(lb)
-        h.addSpacing(2)
-        seg = QFrame()
-        seg.setObjectName("segwrap")
-        seg.setFixedHeight(40)
-        seg.setStyleSheet(
-            f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
-            f"border-radius:10px; }}")
-        sh = QHBoxLayout(seg)
-        sh.setContentsMargins(4, 4, 4, 4)
-        sh.setSpacing(4)
-        for txt, val in [("숫자만", True), ("그림 포함", False)]:
-            b = QPushButton(txt)
-            b.setObjectName("seg_on" if self.numbers == val else "seg_off")
-            b.setCursor(Qt.PointingHandCursor)
-            b.setMinimumWidth(104)
-            b.setToolTip("그래프를 그리지 않아 5~7배 빠릅니다" if val
-                         else "모든 그래프를 그립니다")
-            b.clicked.connect(lambda _, x=val: self.set_numbers(x))
-            sh.addWidget(b)
-        h.addWidget(seg)
+        # 🚨 여기 있던 「표시 모드 — 숫자만 / 그림 포함」 을 **없앴다** (2026-08-18 사용자
+        #    지적 *"그래프 펼치기랑 숫자만/그림 포함 이게 좀 겹치는거 같은데"*).
+        #    스위치는 `self.numbers` **하나**인데 이름이 넷이었다 —
+        #    위쪽 [숫자만]/[그림 포함] · 그래프 자리 [그래프 접기]/[그래프 펼치기].
+        #    2026-08-15 에 그래프 자리에 접기를 넣으면서 겹침을 **툴팁으로 때웠고**
+        #    (*"위쪽 [숫자만] 과 같은 일입니다"*), 그 땜질이 결국 이 지적으로 돌아왔다.
+        #    남긴 쪽은 **그래프 자리**다 — 그래프 바로 옆이라 무엇을 접는지 분명하고,
+        #    접혀 있을 때는 안내 띠가 상태와 이유를 함께 말해 준다. 위쪽은 그래프에서
+        #    멀고 `숫자만` 이라는 이름만으로는 무슨 일이 나는지 눌러 봐야 알았다.
+        #    ⚠️ 함께 사라진 것 = 그 단추의 **거짓 툴팁** *"5~7배 빠릅니다"*. 같은 파일
+        #       아래쪽(안내 띠)이 이미 *"사실이 아니다 — 실측 0.86~1.49배"* 라고 적어
+        #       놨는데 툴팁만 옛 문구를 달고 남아 있었다.
 
         return bar
 
@@ -1361,7 +1352,7 @@ class Proto(QMainWindow):
         #    지금 화면의 것은 여기에 들고 있는다(표 `_grid_tb` 와 같은 이유).
         self._split = split
 
-        # ── 그래프 (숫자 모드면 접음) ──
+        # ── 그래프 (접혀 있으면 안내 띠로 바뀐다) ──
         if not self.numbers:
             gt = QTabWidget()
             for name, plots, layout in GRAPHS[self.mode]:
@@ -1403,11 +1394,11 @@ class Proto(QMainWindow):
             gt.setMinimumHeight(self._graph_floor())
             # 🚨 **펼치기가 있으면 접기도 있어야 한다** (2026-08-15 사용자 지적).
             #    접혀 있을 때는 [그래프 펼치기] 가 그래프 자리에 바로 있는데, 펼치고 나면
-            #    되접는 길이 저 멀리 위쪽 [숫자만] 뿐이었다 — 이름도 달라 같은 일인 줄 모른다.
+            #    되접는 길이 저 멀리 위쪽 [숫자만] 뿐이었다 — 이름도 달라 같은 일인 줄
+            #    몰랐다. **2026-08-18 에 그 위쪽 단추를 아예 없애 여기가 유일한 길이 됐다.**
             #    탭 줄 오른쪽 구석에 둔다 — **세로 자리를 안 먹는다.**
             fold = QPushButton("그래프 접기")
-            fold.setToolTip("그래프를 접고 표를 넓게 씁니다.\n"
-                            "위쪽 [숫자만] 과 같은 일입니다.")
+            fold.setToolTip("그래프를 접고 표를 넓게 씁니다.")
             fold.setCursor(Qt.PointingHandCursor)
             fold.clicked.connect(lambda: self.set_numbers(True))
             gt.setCornerWidget(fold, Qt.TopRightCorner)
@@ -1433,7 +1424,7 @@ class Proto(QMainWindow):
                 msg = (f"버스가 {n_bus:,}개라 그래프를 접어 두었습니다 — "
                        f"점이 겹쳐 읽기 어렵습니다. 값은 [엑셀로 만들기] 로 보세요.")
             else:
-                msg = "숫자 모드 — 그래프를 접어 표를 넓게 씁니다"
+                msg = "그래프를 접고 표를 넓게 쓰는 중입니다"
             t = QLabel(msg)
             t.setStyleSheet(f"color:{c['muted']};font-size:14px;")
             nv.addWidget(t)
@@ -4142,7 +4133,7 @@ class Proto(QMainWindow):
             self._start_solve(last)
 
     def do_export(self):
-        ExportDialog(self, self.c, self.mode, self.numbers, self.picked).exec()
+        ExportDialog(self, self.c, self.mode, self.picked).exec()
 
 
 def main():
