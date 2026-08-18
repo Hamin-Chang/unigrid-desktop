@@ -1587,6 +1587,15 @@ class Proto(QMainWindow):
     GRAPH_FLOOR = {1: 150, 2: 320}
     GRAPH_WANT = {1: 220, 2: 380}
 
+    # 점검 탭 표 — 한 줄 높이 · 머리글이 먹는 몫 · 몇 줄에서 끊나 (2026-08-18)
+    #   한 줄 30px 은 `setDefaultSectionSize(30)` 으로 못박혀 있어 폰트와 무관하다.
+    #   머리글은 이 맥에서 **40px 실측**인데 폰트가 바뀌면 커질 수 있어 **6px 여유**를 둔다
+    #   (모자라면 마지막 줄이 잘리고, 남으면 표 아래에 빈 띠가 6px 생길 뿐이다).
+    #   가로 스크롤은 열이 `QHeaderView.Stretch` 라 뜨지 않으므로 셈에서 뺀다(실측 확인).
+    CHECK_ROW_H = 30
+    CHECK_CHROME = 46
+    CHECK_MAX_ROWS = 10
+
     def _graph_floor(self) -> int:
         """그래프에 남겨 둘 **최소** 높이.
 
@@ -3080,7 +3089,18 @@ class Proto(QMainWindow):
                 tb.verticalHeader().setVisible(False)
                 tb.verticalHeader().setDefaultSectionSize(30)
                 tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-                tb.setMaximumHeight(30 * len(rows) + 42)
+                # 🚨 **상한만 걸면 표가 눌린다** (2026-08-18 실측).
+                #    이 화면은 카드를 세로로 쌓고 끝에 `outer.addStretch()` 를 두는데,
+                #    `addWidget` 으로 붙은 것은 **늘림 몫이 0**이라 남는 자리를 전부 그
+                #    stretch 가 가져간다. 그래서 `setMaximumHeight` 는 아무 일도 안 하고
+                #    표는 늘 제 기본 크기(88px)로 눌린 채 그려졌다 — **19건짜리 표가 한 줄**.
+                #    26건을 잡아 놓고 화면이 3줄만 보여 주니 기능이 없는 것과 같았다.
+                #    ⇒ **높이를 못박는다**(`setFixedHeight` 는 최소·최대를 함께 건다).
+                #    다 보여 주되 한 표가 화면을 통째로 먹지 않게 **10줄에서 끊는다** —
+                #    그보다 많으면 표 안에서 스크롤하고, 전체 건수는 제목 옆 "N건" 이 말한다.
+                #    (건수에 상한이 없다 — `checks.real_violations` 는 걸린 것을 다 담는다.)
+                tb.setFixedHeight(self.CHECK_ROW_H * min(len(rows), self.CHECK_MAX_ROWS)
+                                  + self.CHECK_CHROME)
                 for r, row in enumerate(rows):
                     for cc, val in enumerate(row):
                         it = QTableWidgetItem(val)
