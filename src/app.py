@@ -427,6 +427,32 @@ def _scrollable(page):
 
 
 # ─────────────────────────────────────────── 조각
+class NumItem(QTableWidgetItem):
+    """숫자로 견주는 표 칸 (2026-08-18).
+
+    `QTableWidgetItem` 은 **보이는 글자로** 견준다. 그대로 정렬하면 버스가
+    1 · 10 · 100 · 11 · 2 … 로 늘어서고, 전압도 `1.0993` 이 `0.983` 보다 앞선다.
+    ⇒ 원래 숫자를 들고 있다가 그것으로 견준다.
+    """
+
+    __slots__ = ("_v",)
+
+    def __init__(self, text, value):
+        super().__init__(text)
+        self._v = float(value)
+
+    def __lt__(self, other):
+        ov = getattr(other, "_v", None)
+        if ov is None:
+            return super().__lt__(other)
+        a, b = self._v, ov
+        if a != a:            # NaN 은 맨 뒤로 — 위로 올라오면 표가 못 쓰게 된다
+            return False
+        if b != b:
+            return True
+        return a < b
+
+
 class _ClickLabel(QLabel):
     """누르면 알려 주는 라벨.
 
@@ -909,6 +935,13 @@ class Proto(QMainWindow):
         self.applied = []             # **지금 화면의 결과**를 만든 조건 (이미 계산된 것)
         self.changes = []             # 그 위에 얹었지만 **아직 계산 안 한** 것
         self.book = SC.Book()         # 담아 둔 시나리오
+        # 결과 표를 어떤 열로 늘어놓고 보고 있나 — {표 이름: (열 번호, 오름/내림)}.
+        # 🚨 **계산해도 유지한다** (2026-08-18 사용자 확정). 「전압 낮은 순」으로 보다가
+        #    선로를 끄고 다시 계산하면 또 전압 낮은 순으로 보여야, 무엇이 달라졌는지
+        #    바로 견줄 수 있다. 매번 풀리면 그때마다 다시 눌러야 한다.
+        self.sort_by = {}
+        self._applying_sort = False   # 되돌아 부르는 것을 막는 빗장 (아래 _sort_changed)
+        self._strips = {}             # 표 위 띠 — 정렬만 바뀌면 이것만 다시 채운다
         self.grid_key = "AC_Line_dat" # 계통 데이터 탭에서 보고 있는 표
         self.grid_find = ""           # 계통 데이터 탭에서 찾는 버스 번호
         self._grid_rows = []          # 화면 줄 → 진짜 줄 (찾기로 좁혔을 때)
@@ -1036,6 +1069,7 @@ class Proto(QMainWindow):
         v.addWidget(self.statusbar())
 
     def rebuild(self):
+        self._strips = {}       # 옛 띠는 곧 지워진다 — 죽은 위젯을 붙들지 않는다
         self._save_grid_view()
         # 그리기 **전에** 접힘 상태를 자리에 맞춘다. `_table_tab_changed` 에서도 부르지만
         # 그 길로만 오는 게 아니다 — 새 파일을 열 때 앞 파일의 탭이 그대로 남아 있고,
@@ -1506,13 +1540,28 @@ class Proto(QMainWindow):
                         val = arr[r, cc]
                         txt = f"{val:.0f}" if cc == 0 and float(val).is_integer() \
                             else f"{val:,.4f}".rstrip("0").rstrip(".")
-                        it = QTableWidgetItem(txt)
+                        it = NumItem(txt, val)
                         if cc > 0:
                             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                         if flag:
                             it.setForeground(warn)
                         t.setItem(r, cc, it)
-                tt.addTab(self._with_viol_legend(name, t, bad), name)
+                # 🚨 **칸을 다 채운 뒤에 켠다.** 채우기 전에 켜면 한 칸 넣을 때마다
+                #    표를 다시 늘어놓아 느리고, 넣는 자리가 밀려 값이 어긋난다.
+                # 🚨 그리고 **켜는 순간 Qt 가 제멋대로 한 번 늘어놓는다** —
+                #    `setSortingEnabled(True)` 가 지금 표시자(기본 0열)로 `sortByColumn`
+                #    을 부른다. 실측: 아무것도 안 눌렀는데 버스가 302·301·224… 로
+                #    뒤집혀 나왔다. ⇒ 켜기 전에 **표시자를 지운다**(-1 = 없음).
+                self._applying_sort = True
+                try:
+                    t.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+                    t.setSortingEnabled(True)
+                finally:
+                    self._applying_sort = False
+                self._apply_sort(name, t, cols)
+                t.horizontalHeader().sortIndicatorChanged.connect(
+                    lambda col, order, nm=name: self._sort_changed(nm, col, order))
+                tt.addTab(self._with_viol_legend(name, t, bad, cols), name)
         else:
             for name in tables_for(self.mode, self.show_vsc and self.case_has_vsc):
                 cols = [n for n, _ in TABLE_SPECS[name] if n in self.visible[name]]
@@ -2052,23 +2101,123 @@ class Proto(QMainWindow):
             return VIOLATIONS
         return real_violations(self.sol, self.t)
 
-    def _with_viol_legend(self, name, table, bad):
-        """표 위에 **주황이 무슨 뜻인지** 한 줄을 달아 돌려준다 (2026-08-18).
+    def _apply_sort(self, name, table, cols):
+        """적어 둔 정렬을 다시 건다. 없으면 원래 순서 그대로 둔다."""
+        want = self.sort_by.get(name)
+        if not want:
+            return
+        col, order = want
+        if not (0 <= col < len(cols)):
+            self.sort_by.pop(name, None)      # 열 선택으로 그 열이 사라졌다
+            return
+        # 🚨 빗장 — `sortItems` 도 `sortIndicatorChanged` 를 낸다. 안 막으면
+        #    `_sort_changed` → `rebuild` → 여기 → 또 신호 로 **끝없이 돈다.**
+        self._applying_sort = True
+        try:
+            table.sortItems(col, order)
+        finally:
+            self._applying_sort = False
 
-        계기 — AC 결과 표에서 전압 한계를 벗어난 버스는 **줄 전체가 주황**인데
-        (바로 위 `setForeground(warn)`), 그 규칙이 화면 어디에도 안 적혀 있었다.
-        표에 `Vmin[pu]`·`Vmax[pu]` 열이 있어 눈으로 짚으면 짐작은 되지만,
-        **짐작해야 한다는 게 문제**다 — 주황이 「위반」인지 「고른 줄」인지 알 길이 없다.
+    def _sort_changed(self, name, col, order):
+        """열 머리를 눌렀다 — 적어 두고 **띠만** 다시 채운다.
+
+        🚨 처음엔 여기서 `rebuild()` 를 불렀는데 **못 쓸 만큼 느렸다**(실측:
+           50버스 0.17초 · 1,888버스 2.05초 · **6,495버스 5.97초**). 정렬은 "이 열로
+           봐야지" 하고 자주 누르는 것이고, **정렬이 가장 필요한 게 큰 계통인데
+           거기서 제일 느리다.** 게다가 다시 그릴 까닭도 없다 — 표는 Qt 가 이미
+           늘어놓았고, 달라지는 것은 위 띠 한 줄뿐이다.
+        """
+        if self._applying_sort:
+            return
+        self.sort_by[name] = (int(col), order)
+        self._fill_strip(name)
+
+    def _clear_sort(self, name):
+        self.sort_by.pop(name, None)
+        self.rebuild()
+
+    def _fill_strip(self, name):
+        """표 위 띠의 내용을 다시 채운다. 보일 것이 없으면 숨긴다.
+
+        띠를 **미리 만들어 두고 내용만 갈아 끼운다** — 정렬을 누를 때마다 화면을
+        통째로 다시 그리지 않으려면 이 방법뿐이다(위 `_sort_changed` 참고).
+        """
+        keep = self._strips.get(name)
+        if keep is None:
+            return
+        bar, cols = keep
+        h = bar.layout()
+        while h.count():                      # 옛 내용을 비운다
+            it = h.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        c = self.c
+        bad = self.violating_buses()
+        n = (sum(1 for grid, _bus in bad if grid == name[:2])
+             if name in ("AC 결과", "DC 결과") else 0)
+        sorted_by = self.sort_by.get(name)
+        # 🚨 **정렬 중이면 위반이 없어도 띄운다** (2026-08-18 사용자 확정).
+        #    안 그러면 성한 계통에서 정렬했을 때 되돌릴 길이 화면에 없다 —
+        #    열 머리를 다시 눌러도 오름 ↔ 내림만 오갈 뿐 「원래 순서」로는 못 간다.
+        if not n and not sorted_by:
+            bar.hide()
+            return
+        bar.show()
+
+        if n:
+            sq = QLabel("■")
+            sq.setStyleSheet(f"color:{c['warn']};font-size:13px;")
+            h.addWidget(sq)
+            txt = QLabel(f"주황 = 전압이 한계를 벗어난 버스 {n}곳")
+            txt.setStyleSheet(f"color:{c['text']};font-size:13px;")
+            h.addWidget(txt)
+
+        if sorted_by:
+            col, order = sorted_by
+            col_name = cols[col] if cols and 0 <= col < len(cols) else "?"
+            way = "작은 값부터" if order == Qt.AscendingOrder else "큰 값부터"
+            if n:
+                sep = QLabel("·")
+                sep.setStyleSheet(f"color:{c['border']};font-size:13px;")
+                h.addWidget(sep)
+            st = QLabel(f"{col_name} {way} 늘어놓음")
+            st.setStyleSheet(f"color:{c['accent']};font-size:13px;font-weight:600;")
+            h.addWidget(st)
+            back = QPushButton("원래 순서로")
+            back.setCursor(Qt.PointingHandCursor)
+            back.setStyleSheet(
+                f"border:none;background:transparent;color:{c['muted']};"
+                f"font-size:13px;padding:0 4px;")
+            back.clicked.connect(lambda _=False, nm=name: self._clear_sort(nm))
+            h.addWidget(back)
+
+        h.addStretch()
+
+        if n:
+            go = QPushButton("자세히 보기  →")
+            go.setCursor(Qt.PointingHandCursor)
+            go.setStyleSheet(
+                f"border:none;background:transparent;color:{c['accent']};"
+                f"font-size:13px;font-weight:600;padding:0;")
+            go.clicked.connect(self.go_check)
+            h.addWidget(go)
+
+    def _with_viol_legend(self, name, table, bad, cols=None):
+        """표 위에 띠를 얹어 돌려준다 — **주황이 무슨 뜻인지**와 **정렬 상태**.
+
+        계기(주황) — AC·DC 결과 표에서 전압 한계를 벗어난 버스는 **줄 전체가 주황**
+        인데, 그 규칙이 화면 어디에도 안 적혀 있었다. 표에 `Vmin[pu]`·`Vmax[pu]` 열이
+        있어 눈으로 짚으면 짐작은 되지만, **짐작해야 한다는 게 문제**다.
+        계기(정렬) — 열 머리로 늘어놓고 나면 **원래 순서로 돌아갈 길**이 필요하다.
 
         자리는 **탭 줄과 표 사이**다. 표 위로 끼어들므로 어떤 줄도 가리지 않는다.
-        위반이 없으면 띠를 아예 안 만든다 — 성한 계통에 군더더기를 남기지 않는다.
+        ⚠️ 보일 것이 없어도 **띠는 만들어 둔다(숨김)** — 정렬을 누를 때 이 띠만
+           갈아 끼우려면 미리 있어야 한다(`_fill_strip`). 안 그러면 화면을 통째로
+           다시 그려야 하고, 그건 6,495버스에서 6초다.
         """
-        if name not in ("AC 결과", "DC 결과"):
-            return table
-        n = sum(1 for grid, _bus in bad if grid == name[:2])
-        if not n:
-            return table
-
         c = self.c
         box = QWidget()
         v = QVBoxLayout(box)
@@ -2085,26 +2234,14 @@ class Proto(QMainWindow):
         h.setContentsMargins(14, 0, 12, 0)
         h.setSpacing(8)
 
-        sq = QLabel("■")
-        sq.setStyleSheet(f"color:{c['warn']};font-size:13px;")
-        h.addWidget(sq)
-        txt = QLabel(f"주황 = 전압이 한계를 벗어난 버스 {n}곳")
-        txt.setStyleSheet(f"color:{c['text']};font-size:13px;")
-        h.addWidget(txt)
-        h.addStretch()
-
-        # 아래 상태 띠의 「위반 N건」 과 **같은 길**로 보낸다 — 두 곳이 같은 곳을
-        # 가리키게 두는 것이 화면마다 다른 길을 내는 것보다 낫다.
-        go = QPushButton("자세히 보기  →")
-        go.setCursor(Qt.PointingHandCursor)
-        go.setStyleSheet(
-            f"border:none;background:transparent;color:{c['accent']};"
-            f"font-size:13px;font-weight:600;padding:0;")
-        go.clicked.connect(self.go_check)
-        h.addWidget(go)
-
+        self._strips[name] = (bar, list(cols or []))
         v.addWidget(bar)
         v.addWidget(table, 1)
+        # 🚨 **채우기는 레이아웃에 넣은 뒤에** (2026-08-18). Qt 는 위젯을 레이아웃에
+        #    넣을 때 부모가 보이면 **자동으로 다시 보이게** 한다. 먼저 채우면서
+        #    `bar.hide()` 를 불러도 그 다음 `addWidget` 이 도로 켜 버려서,
+        #    위반도 정렬도 없는 계통에 **빈 파란 띠**가 그대로 남았다(시험이 잡았다).
+        self._fill_strip(name)
         return box
 
     def violating_buses(self):
@@ -4121,6 +4258,10 @@ class Proto(QMainWindow):
             self.numbers = self.numbers_auto
             self.numbers_why = "big" if self.numbers_auto else ""
             self.graph_kept = False       # 새 계통 — 「직접 펼쳤다」 기억도 새로
+            # 정렬 기억도 새로 (2026-08-18). 계통이 달라지면 열 구성부터 달라질 수
+            # 있고(AC 단독 ↔ AC/DC), 앞 계통을 보던 눈이 새 계통에 그대로 걸려 있으면
+            # 파일을 열자마자 영문 모를 순서로 늘어서 있다. 위 `graph_kept` 와 같은 계열.
+            self.sort_by = {}
         # 해법 고르기가 볼 케이스 — 방금 푼 그것이다(조건을 바꿔 푼 것이면 그 케이스).
         # 이 값으로 `gs_refusal` 을 물어 Gauss-Seidel 을 흐리게 할지 정한다 (2026-08-12, G8).
         self._case_for_solver = (getattr(getattr(self, "thread", None), "case", None)
