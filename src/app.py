@@ -33,7 +33,7 @@ import engine_path
 import charts
 import checks
 from checks import (col_index, gen_limit_rows, real_violations,   # noqa: F401
-                    violation_count, GEN_LIMIT_COLS)
+                    unrated_lines, violation_count, GEN_LIMIT_COLS)
 import exporter
 
 # 케이스 읽기는 **이 저장소 안**에 있다 (2026-08-05 들여옴).
@@ -3187,6 +3187,28 @@ class Proto(QMainWindow):
             itxt.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             iv.addWidget(itxt, 1)
             outer.addWidget(info)
+
+        # ── 정격이 안 적혀 부하율을 못 재는 선로가 있으면 밝힌다 (2026-08-18)
+        #    ⚠️ **조용히 빼면 그것대로 못 믿는다.** 과부하 판정에서 뺀 것은 맞지만,
+        #       뺐다는 사실을 화면이 말해야 사용자가 "왜 0건이지?" 를 안 겪는다.
+        #       (반대 방향의 옛 결함 = 이 선로들을 전부 과부하로 세어 IEEE 118버스에서
+        #        거짓 경보 186건을 띄우던 것.)
+        n_unrated = unrated_lines(self.sol, self.t) if self.sol is not None else 0
+        if n_unrated:
+            info2 = QFrame()
+            info2.setObjectName("card")
+            iv2 = QHBoxLayout(info2)
+            iv2.setContentsMargins(14, 9, 14, 9)
+            ic2 = QLabel("ⓘ")
+            ic2.setStyleSheet(f"color:{c['muted']};font-size:15px;font-weight:700;")
+            iv2.addWidget(ic2)
+            it2 = QLabel(
+                f"선로 {n_unrated}개는 정격(용량)이 안 적혀 있어 부하율을 재지 못했습니다 — "
+                f"과부하 판정에서 뺐습니다.")
+            it2.setWordWrap(True)
+            it2.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            iv2.addWidget(it2, 1)
+            outer.addWidget(info2)
 
         for title, (cols, rows) in self.viol().items():
             box = QFrame()

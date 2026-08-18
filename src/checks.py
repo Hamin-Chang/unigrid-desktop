@@ -19,6 +19,39 @@ def col_index(cols, name):
     except ValueError:
         return -1
 
+def _rated(row, iC, iL):
+    """이 선로의 **부하율을 믿을 수 있나**.
+
+    믿을 수 없는 경우 둘 —
+      · 용량이 0 이하다 (정격이 안 적혔다는 뜻. MATPOWER 관례로 `rateA = 0` = 무제한)
+      · 부하율이 유한하지 않다 (0 으로 나눈 `inf`, 또는 `NaN`)
+    """
+    if iC >= 0 and not (row[iC] > 0):
+        return False
+    return math.isfinite(float(row[iL]))
+
+
+def unrated_lines(sol, t) -> int:
+    """정격이 안 적혀 **부하율을 못 재는** 선로가 몇 개인가.
+
+    조용히 빼면 그것대로 못 믿으므로, 화면이 이 수를 밝힐 수 있게 따로 센다.
+
+    ⚠️ **꺼진 선로는 안 센다.** 꺼져 있으면 조류가 0 이라 부하율을 볼 일이 없는데,
+       같이 세면 안내에 적히는 수가 부푼다 (case33_matpower: 37 → 32. 그 5개는
+       `Status = 0` 이고 부하율도 0 이라 옛 규칙에서도 과부하가 아니었다).
+    """
+    arr = sol.at("Branch", t) if sol is not None else None
+    if arr is None or not arr.size:
+        return 0
+    cols = sol.cols("Branch")
+    iL, iC = col_index(cols, "Loading[%]"), col_index(cols, "Capacity[MVA]")
+    iS = col_index(cols, "Status")
+    if iL < 0:
+        return 0
+    return sum(1 for r in arr
+               if (iS < 0 or r[iS] != 0) and not _rated(r, iC, iL))
+
+
 def real_violations(sol, t):
     """전압 위반 · 과부하 · 변환기 한계를 결과에서 걸러낸다."""
     res = {}
@@ -54,6 +87,16 @@ def real_violations(sol, t):
         iC = col_index(cols, "Capacity[MVA]")
         if min(iF, iT, iL) >= 0:
             for r in arr:
+                # 🚨 **정격이 안 적힌 선로는 과부하를 잴 수 없다** (2026-08-18).
+                #    MATPOWER 에서 `rateA = 0` 은 「용량이 0」이 아니라 **「정격이 안
+                #    적힘(무제한)」** 이라는 뜻이다. 그런데 엔진은 그 0 으로 나눠
+                #    부하율을 `inf` 로 내고, 여기 `r[iL] > 100.0` 이 `inf > 100` 이라
+                #    참이 되어 **그 선로를 전부 과부하로 잡았다.**
+                #    실측 — IEEE 118버스에서 **선로 186개 전부**가 과부하로 떴다.
+                #    (`unigrid_convert.py:147` 은 `.m` 을 읽을 때 rateA=0 을 9999 로
+                #     바꿔 이미 이 관례를 지키고 있었다. 판정하는 이쪽만 몰랐다.)
+                if not _rated(r, iC, iL):
+                    continue
                 if r[iL] > 100.0:
                     cap = f"{r[iC]:.1f}" if iC >= 0 else "—"
                     rows.append([str(int(r[iF])), str(int(r[iT])),

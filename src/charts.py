@@ -637,6 +637,16 @@ def loading_chart(c, sol, t):
     if "Loading[%]" not in cols:
         return None
     load = np.asarray(br[:, cols.index("Loading[%]")], dtype=float)
+    # 🚨 **정격이 안 적힌 선로는 부하율이 `inf` 다** (2026-08-18).
+    #    MATPOWER 관례로 `rateA = 0` 은 「무제한」인데 엔진이 그 0 으로 나눈다.
+    #    그대로 두면 아래 `load.max()` 가 `inf` 가 되어 세로축이 `[0 ~ inf]` 로 잡히고
+    #    (Qt 로그: *Attempting to set invalid range for value axis*) **막대가 안 보인다.**
+    #    ⇒ 잴 수 없는 선로는 **0 으로 눕혀 그린다**. 몇 개가 그런지는 점검 탭이 말한다
+    #      (`checks.unrated_lines`) — 그래프에서 소리 없이 빼기만 하지 않는다.
+    if "Capacity[MVA]" in cols:
+        cap = np.asarray(br[:, cols.index("Capacity[MVA]")], dtype=float)
+        load = np.where(cap > 0, load, 0.0)
+    load = np.where(np.isfinite(load), load, 0.0)
     names = line_names(br)
     n = len(names)
     x = np.arange(1, n + 1)
