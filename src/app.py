@@ -942,6 +942,10 @@ class Proto(QMainWindow):
         self.sort_by = {}
         self._applying_sort = False   # 되돌아 부르는 것을 막는 빗장 (아래 _sort_changed)
         self._strips = {}             # 표 위 띠 — 정렬만 바뀌면 이것만 다시 채운다
+        self.res_find = ""            # 결과 표에서 찾는 버스 번호 (계통 데이터 탭과 별개)
+        self._res_tables = {}         # {표 이름: (표, 열이름들)} — 찾기를 제자리에서 건다
+        self._find_label = None       # "50줄 중 3줄" 을 적는 자리
+        self._find_clear = None       # 「전부 보기」 — 만들어 두고 숨김만 바꾼다
         self.grid_key = "AC_Line_dat" # 계통 데이터 탭에서 보고 있는 표
         self.grid_find = ""           # 계통 데이터 탭에서 찾는 버스 번호
         self._grid_rows = []          # 화면 줄 → 진짜 줄 (찾기로 좁혔을 때)
@@ -1070,6 +1074,9 @@ class Proto(QMainWindow):
 
     def rebuild(self):
         self._strips = {}       # 옛 띠는 곧 지워진다 — 죽은 위젯을 붙들지 않는다
+        self._res_tables = {}
+        self._find_label = None
+        self._find_clear = None
         self._save_grid_view()
         # 그리기 **전에** 접힘 상태를 자리에 맞춘다. `_table_tab_changed` 에서도 부르지만
         # 그 길로만 오는 게 아니다 — 새 파일을 열 때 앞 파일의 탭이 그대로 남아 있고,
@@ -1511,6 +1518,33 @@ class Proto(QMainWindow):
                 b.clicked.connect(lambda _, x=val: self.set_vsc(x))
                 sh.addWidget(b)
             head.addWidget(seg)
+        # 버스 번호로 찾기 — 계통 데이터 탭에만 있던 것을 **결과 표에도** (2026-08-18).
+        # 1,888버스 계통이면 표가 1,888줄인데 한 화면에 20줄이라 찾을 길이 없었다.
+        # 자리는 이 머리 줄 — 원래 비어 있던 자리라 세로를 더 안 쓴다.
+        if self.sol is not None:
+            fl = QLabel("버스 번호로 찾기")
+            fl.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            head.addWidget(fl)
+            fb = QLineEdit(self.res_find or "")
+            fb.setPlaceholderText("예: 106 107 (비우면 전부)")
+            fb.setFixedWidth(190)
+            fb.returnPressed.connect(lambda: self.set_res_find(fb.text()))
+            fb.editingFinished.connect(lambda: self.set_res_find(fb.text()))
+            head.addWidget(fb)
+            self._find_label = QLabel("")
+            head.addWidget(self._find_label)
+            # ⚠️ **항상 만들어 두고 숨김만 바꾼다.** 찾을 때마다 이 단추를 만들려고
+            #    화면을 다시 그리면 6,495버스에서 **4.58초**다(실측). 띠에서 겪은
+            #    것과 같은 수법으로 푼다 — 만들어 두고 보였다 숨겼다 한다.
+            self._find_clear = QPushButton("전부 보기")
+            self._find_clear.setCursor(Qt.PointingHandCursor)
+            self._find_clear.setStyleSheet(
+                f"border:none;background:transparent;color:{c['muted']};"
+                f"font-size:12px;padding:0 4px;")
+            self._find_clear.clicked.connect(lambda: self.set_res_find(""))
+            head.addWidget(self._find_clear)
+            self._find_clear.setVisible(bool(self.res_find))
+
         cb = QPushButton("열 선택")
         cb.clicked.connect(self.pick_columns)
         head.addWidget(cb)
@@ -1561,6 +1595,8 @@ class Proto(QMainWindow):
                 self._apply_sort(name, t, cols)
                 t.horizontalHeader().sortIndicatorChanged.connect(
                     lambda col, order, nm=name: self._sort_changed(nm, col, order))
+                self._res_tables[name] = (t, list(cols))
+                self._apply_find(name)
                 tt.addTab(self._with_viol_legend(name, t, bad, cols), name)
         else:
             for name in tables_for(self.mode, self.show_vsc and self.case_has_vsc):
@@ -1595,6 +1631,9 @@ class Proto(QMainWindow):
         # 보고 있던 탭으로 되돌린다 — 조건을 하나 바꿀 때마다 화면을 다시 그리므로,
         # 이걸 안 하면 매번 첫 탭(AC 결과)으로 튄다.
         self._restore_tab(tt)
+        # 표를 다 만든 뒤에 「N줄 중 M줄」 을 채운다 — 보고 있는 탭 기준이라
+        # 탭이 정해진 다음이어야 한다.
+        self._update_find_label()
         tv.addWidget(tt)
         # 표 묶음도 최소치를 못 박는다 — 안 그러면 가장 키 큰 탭이 창의 최소
         # 높이를 정해 버린다(Qt 는 최소치를 손으로 정하면 그것을 먼저 본다).
@@ -2101,6 +2140,74 @@ class Proto(QMainWindow):
             return VIOLATIONS
         return real_violations(self.sol, self.t)
 
+    # ── 결과 표에서 버스 번호로 찾기 (2026-08-18) ─────────────────────────
+    #    계통 데이터 탭에만 있던 것을 결과 표에도 붙였다. 1,888버스 계통이면 표가
+    #    1,888줄인데 한 화면에 20줄이라, 특정 버스를 보려면 95화면을 굴려야 했다.
+    #    ⭐ **줄을 숨겨서** 거른다 — 화면을 다시 그리지 않으므로 6,495버스에서도 즉시다.
+
+    RES_ID_COLS = ("Bus", "From", "To")   # 버스 번호가 든 열 이름
+
+    def _apply_find(self, name):
+        """찾는 번호에 안 걸리는 줄을 숨긴다. 찾는 게 없으면 전부 보인다."""
+        keep = self._res_tables.get(name)
+        if keep is None:
+            return 0, 0
+        table, cols = keep
+        want = {int(x) for x in re.findall(r"\d+", self.res_find or "")}
+        idc = [i for i, cn in enumerate(cols) if cn in self.RES_ID_COLS]
+        n = table.rowCount()
+        if not want or not idc:
+            for r in range(n):
+                table.setRowHidden(r, False)
+            return n, n
+        shown = 0
+        for r in range(n):
+            hit = False
+            for ci in idc:
+                it = table.item(r, ci)
+                if it is None:
+                    continue
+                try:
+                    if int(float(it.text().replace(",", ""))) in want:
+                        hit = True
+                        break
+                except ValueError:
+                    continue
+            table.setRowHidden(r, not hit)
+            shown += int(hit)
+        return n, shown
+
+    def set_res_find(self, text):
+        """찾는 번호가 바뀌었다 — **화면을 다시 그리지 않고** 줄만 걸러 낸다."""
+        text = (text or "").strip()
+        if text == (self.res_find or ""):
+            return
+        self.res_find = text
+        for nm in list(self._res_tables):
+            self._apply_find(nm)
+        self._update_find_label()
+
+    def _update_find_label(self):
+        if self._find_clear is not None:
+            self._find_clear.setVisible(bool(self.res_find))
+        lb = self._find_label
+        if lb is None:
+            return
+        nm = self._tabs.tabText(self._tabs.currentIndex()) if self._tabs else ""
+        if nm not in self._res_tables:
+            nm = next(iter(self._res_tables), "")
+        if not nm:
+            lb.setText("")
+            return
+        n, shown = self._apply_find(nm)
+        c = self.c
+        if self.res_find and shown != n:
+            lb.setText(f"{n:,}줄 중 {shown:,}줄")
+            lb.setStyleSheet(f"color:{c['accent']};font-size:12px;font-weight:600;")
+        else:
+            lb.setText(f"{n:,}줄")
+            lb.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+
     def _apply_sort(self, name, table, cols):
         """적어 둔 정렬을 다시 건다. 없으면 원래 순서 그대로 둔다."""
         want = self.sort_by.get(name)
@@ -2130,6 +2237,9 @@ class Proto(QMainWindow):
         if self._applying_sort:
             return
         self.sort_by[name] = (int(col), order)
+        # 🚨 **찾기를 다시 건다.** 줄 숨김은 *줄 번호*로 걸리는데 정렬은 줄을
+        #    뒤섞으므로, 다시 안 걸면 **엉뚱한 줄이 숨는다.**
+        self._apply_find(name)
         self._fill_strip(name)
 
     def _clear_sort(self, name):
