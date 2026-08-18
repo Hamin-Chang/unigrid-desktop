@@ -1512,7 +1512,7 @@ class Proto(QMainWindow):
                         if flag:
                             it.setForeground(warn)
                         t.setItem(r, cc, it)
-                tt.addTab(t, name)
+                tt.addTab(self._with_viol_legend(name, t, bad), name)
         else:
             for name in tables_for(self.mode, self.show_vsc and self.case_has_vsc):
                 cols = [n for n, _ in TABLE_SPECS[name] if n in self.visible[name]]
@@ -2041,6 +2041,61 @@ class Proto(QMainWindow):
         if self.sol is None:
             return VIOLATIONS
         return real_violations(self.sol, self.t)
+
+    def _with_viol_legend(self, name, table, bad):
+        """표 위에 **주황이 무슨 뜻인지** 한 줄을 달아 돌려준다 (2026-08-18).
+
+        계기 — AC 결과 표에서 전압 한계를 벗어난 버스는 **줄 전체가 주황**인데
+        (바로 위 `setForeground(warn)`), 그 규칙이 화면 어디에도 안 적혀 있었다.
+        표에 `Vmin[pu]`·`Vmax[pu]` 열이 있어 눈으로 짚으면 짐작은 되지만,
+        **짐작해야 한다는 게 문제**다 — 주황이 「위반」인지 「고른 줄」인지 알 길이 없다.
+
+        자리는 **탭 줄과 표 사이**다. 표 위로 끼어들므로 어떤 줄도 가리지 않는다.
+        위반이 없으면 띠를 아예 안 만든다 — 성한 계통에 군더더기를 남기지 않는다.
+        """
+        if name not in ("AC 결과", "DC 결과"):
+            return table
+        n = sum(1 for grid, _bus in bad if grid == name[:2])
+        if not n:
+            return table
+
+        c = self.c
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        bar = QFrame()
+        bar.setObjectName("violbar")
+        bar.setFixedHeight(38)
+        bar.setStyleSheet(
+            f"#violbar {{ background:{c['accent_soft']};"
+            f"border-bottom:1px solid {c['border']}; }}")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(14, 0, 12, 0)
+        h.setSpacing(8)
+
+        sq = QLabel("■")
+        sq.setStyleSheet(f"color:{c['warn']};font-size:13px;")
+        h.addWidget(sq)
+        txt = QLabel(f"주황 = 전압이 한계를 벗어난 버스 {n}곳")
+        txt.setStyleSheet(f"color:{c['text']};font-size:13px;")
+        h.addWidget(txt)
+        h.addStretch()
+
+        # 아래 상태 띠의 「위반 N건」 과 **같은 길**로 보낸다 — 두 곳이 같은 곳을
+        # 가리키게 두는 것이 화면마다 다른 길을 내는 것보다 낫다.
+        go = QPushButton("자세히 보기  →")
+        go.setCursor(Qt.PointingHandCursor)
+        go.setStyleSheet(
+            f"border:none;background:transparent;color:{c['accent']};"
+            f"font-size:13px;font-weight:600;padding:0;")
+        go.clicked.connect(self.go_check)
+        h.addWidget(go)
+
+        v.addWidget(bar)
+        v.addWidget(table, 1)
+        return box
 
     def violating_buses(self):
         """표에서 빨갛게 칠할 (계통, 버스번호) 집합."""
