@@ -1658,9 +1658,19 @@ class Proto(QMainWindow):
         """사용자가 **직접 펼쳤을 때** 그래프에 주는 높이 — 읽을 수 있는 크기."""
         return self.GRAPH_WANT.get(self._graph_rows(), 380)
 
+    # 표가 주인공인 탭 — 그래프보다 표에 자리를 몰아 준다 (2026-08-18 사용자 확정).
+    #   계통 데이터 = 표를 **고치는** 곳 · 점검 = 무엇이 걸렸는지 **읽는** 곳.
+    # 🚨 둘이 접히는 까닭은 서로 다르다. 계통 데이터는 표에 66% 를 주면 그래프에
+    #    425px 이 안 남는다는 **자리 계산**으로 접힌다(`_graph_fits`). 점검은 자리로만
+    #    보면 431px 이 나오지만, 표 셋(전압 위반·과부하 선로·발전기 한계)이 352px 에
+    #    들어가질 않아 **한 표도 온전히 안 보였다**(실측: 다 보이는 표 0개 → 접으면 2개).
+    #    그래서 여기 목록에 넣어 같은 길을 타게 한다.
+    TABLE_FIRST = ("계통 데이터", "점검")
+
     def _split_slot(self, tab=None):
         tab = self.table_tab if tab is None else tab
-        return "grid" if tab == "계통 데이터" else "other"
+        # 점검 탭은 이름이 "점검 (26)" 처럼 건수를 달고 다니므로 앞부분으로 본다
+        return "grid" if any(tab.startswith(n) for n in self.TABLE_FIRST) else "other"
 
     def _apply_split(self, split, tab=None):
         slot = self._split_slot(tab)

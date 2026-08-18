@@ -195,6 +195,22 @@ for tab in ("AC 결과", "점검", "계통 데이터"):
     check(f"{tab} — 펼치면 {floor2}px 이상인가", g >= floor2, True)
     print(f"    그래프 {g}px")
 
+print("\n[12] 🚨 표가 주인공인 탭은 **전부** 접히나 (2026-08-18)")
+# 목록 = APP.Proto.TABLE_FIRST. 계통 데이터(표를 고치는 곳) · 점검(무엇이 걸렸는지 읽는 곳).
+# 점검을 넣은 까닭은 자리 계산이 아니라 실측이다 — 표 셋이 352px 에 안 들어가
+# **한 표도 온전히 안 보였다**(다 보이는 표 0개 → 접으면 2개).
+open_case(CASE)
+h_res = table_h()
+for tab in APP.Proto.TABLE_FIRST:
+    win._table_tab_changed(tab, win._split)
+    pump()
+    check(f"{tab} — 접혔나", win.numbers, True)
+    check(f"{tab} — 이유", win.numbers_why, "narrow")
+    print(f"    표 몫 {h_res} → {table_h()}px")
+    win._table_tab_changed("AC 결과", win._split)
+    pump()
+    check("결과 탭으로 오면 도로 펴지나", win.numbers, False)
+
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.stdout.flush()
 app_engine.shutdown()
