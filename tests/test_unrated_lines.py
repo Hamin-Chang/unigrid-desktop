@@ -27,6 +27,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import warnings                                                   # noqa: E402
 warnings.filterwarnings("ignore")
 import numpy as np                                                # noqa: E402
+from PySide6.QtCore import Qt as _Qt                              # noqa: E402
 from PySide6.QtWidgets import QApplication                        # noqa: E402
 
 qapp = QApplication([])
@@ -94,30 +95,63 @@ print(f"    용량 0 인 선로 {n_all}개 중 켜진 것 {n_on}개")
 check("켜진 것만 세나", unrated_lines(sol, 0), n_on)
 check("꺼진 것이 실제로 있나 (시험이 헛돌지 않게)", n_all > n_on, True)
 
-print("\n[5] 부하율 그래프의 세로축이 성한가")
-sol = solve("cases_v2/AConly_case118_v2.xlsx")
-view = CH.loading_chart(CH.palette(False) if hasattr(CH, "palette") else
-                        __import__("app").LIGHT, sol, 0)
+print("\n[5] 부하율 그래프의 세로축이 성한가 (정격이 있는 케이스)")
+# ⚠️ 예전에는 여기서 case118 을 썼는데, 이제 그 케이스는 **그래프가 아니라 안내**를
+#    돌려준다([6]). inf 가 축을 깨뜨리지 않는지는 [8](일부만 못 재는 경우)이 지킨다.
+sol = solve("cases_v2/ACDC_case24_MatACDC_v2.xlsx")
+view = CH.loading_chart(__import__("app").LIGHT, sol, 0)
 check("그래프가 만들어지나", view is not None, True)
 if view is not None:
-    # ⚠️ 범주 축(QBarCategoryAxis)도 `.max()` 를 갖는데 그건 **글자**다
-    #    ('line 75-118'). 값 축만 골라야 한다.
     from PySide6.QtCharts import QValueAxis
     ys = [ax for ax in view.chart().axes() if isinstance(ax, QValueAxis)]
     check("값 축을 찾았나", len(ys) > 0, True)
     # ⚠️ 값 축이 둘이다 — 세로축(부하율 %)과, 100% 점선을 그리려고 **숨겨 둔 가로축**
-    #    (범위가 0~선로수라 case118 이면 186 이 나온다). 둘을 섞어 보면 안 된다.
-    from PySide6.QtCore import Qt as _Qt
-    for a in ys:
-        side = view.chart().axes()
-        where = "세로" if a.alignment() == _Qt.AlignLeft else "숨긴 가로"
-        print(f"    {where} 축 범위 {a.min()} ~ {a.max()}")
-        check(f"{where} 축 위끝이 유한한가", bool(np.isfinite(float(a.max()))), True)
-    left = [a for a in ys if a.alignment() == _Qt.AlignLeft]
+    #    (범위가 0~선로수). 둘을 섞어 보면 안 된다.
+    for a_ in ys:
+        where = "세로" if a_.alignment() == _Qt.AlignLeft else "숨긴 가로"
+        print(f"    {where} 축 범위 {a_.min()} ~ {a_.max()}")
+        check(f"{where} 축 위끝이 유한한가", bool(np.isfinite(float(a_.max()))), True)
+    left = [a_ for a_ in ys if a_.alignment() == _Qt.AlignLeft]
     check("세로축이 하나 있나", len(left), 1)
-    if left:
-        # 모든 선로가 「정격 없음」이면 막대가 전부 0 이라 바닥값 105 가 나와야 한다
-        check("세로축 위끝이 바닥값 105 인가", round(float(left[0].max())), 105)
+
+print("\n[6] 하나도 못 재면 빈 그래프 대신 **이유**를 그 자리에 적나 (2026-08-18)")
+# 계기 — 사용자 *"이거 막대그래프 아예 없는데 정상인거야?"*. 막대가 전부 0 이면
+# 화면은 그냥 비어 보이고, 보는 사람에겐 앱이 고장 난 것으로 읽힌다.
+from PySide6.QtCharts import QChartView                            # noqa: E402
+from PySide6.QtWidgets import QLabel                               # noqa: E402
+import app as APP                                                  # noqa: E402
+
+sol = solve("cases_v2/AConly_case118_v2.xlsx")
+w = CH.loading_chart(APP.LIGHT, sol, 0)
+check("그래프가 아니라 안내인가", isinstance(w, QChartView), False)
+if w is not None and not isinstance(w, QChartView):
+    txt = " ".join(l.text() for l in w.findChildren(QLabel))
+    check("몇 개인지 말하나", "186" in txt, True)
+    check("무엇을 하면 되는지 말하나", "rateA" in txt, True)
+
+print("\n[7] ⚠️ 꺼진 선로가 섞여도 안내가 뜨나 (한때 여기서 빈 그래프가 나갔다)")
+# `measurable |= (st == 0)` 으로 썼을 때 case33_matpower(못 잼 32 + 꺼짐 5)에서
+# `measurable.any()` 가 참이 되어 안내가 안 뜨고 빈 그래프가 그대로 나갔다.
+sol = solve("cases_v2/AConly_case33_matpower_v2.xlsx")
+w = CH.loading_chart(APP.LIGHT, sol, 0)
+check("안내인가", isinstance(w, QChartView), False)
+if w is not None and not isinstance(w, QChartView):
+    txt = " ".join(l.text() for l in w.findChildren(QLabel))
+    check("꺼진 선로를 빼고 32 라 말하나", "32" in txt, True)
+
+print("\n[8] 일부만 못 재면 나머지를 그리고 제목에 몇 개인지 붙이나")
+sol = solve("cases_v2/ACDC_case24_MatACDC_v2.xlsx")
+br = sol.at("Branch", 0)
+br[:3, col_index(sol.cols("Branch"), "Capacity[MVA]")] = 0.0   # 손으로 3개만 0 으로
+w = CH.loading_chart(APP.LIGHT, sol, 0)
+check("그래프로 그리나", isinstance(w, QChartView), True)
+if isinstance(w, QChartView):
+    t = w.chart().title()
+    print(f"    제목 — {t}")
+    check("제목이 3개를 뺐다고 말하나", "3개" in t, True)
+    ys = [a for a in w.chart().axes()
+          if a.__class__.__name__ == "QValueAxis" and a.alignment() == _Qt.AlignLeft]
+    check("세로축이 유한한가", bool(np.isfinite(float(ys[0].max()))), True)
 
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.stdout.flush()

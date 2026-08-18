@@ -641,17 +641,41 @@ def loading_chart(c, sol, t):
     #    MATPOWER 관례로 `rateA = 0` 은 「무제한」인데 엔진이 그 0 으로 나눈다.
     #    그대로 두면 아래 `load.max()` 가 `inf` 가 되어 세로축이 `[0 ~ inf]` 로 잡히고
     #    (Qt 로그: *Attempting to set invalid range for value axis*) **막대가 안 보인다.**
-    #    ⇒ 잴 수 없는 선로는 **0 으로 눕혀 그린다**. 몇 개가 그런지는 점검 탭이 말한다
-    #      (`checks.unrated_lines`) — 그래프에서 소리 없이 빼기만 하지 않는다.
+    #    ⇒ **잴 수 있는 선로**(부하율이 유한하고 용량이 0 보다 큼)만 값으로 쓰고
+    #      나머지는 0 으로 눕힌다.
+    measurable = np.isfinite(load)
     if "Capacity[MVA]" in cols:
         cap = np.asarray(br[:, cols.index("Capacity[MVA]")], dtype=float)
-        load = np.where(cap > 0, load, 0.0)
-    load = np.where(np.isfinite(load), load, 0.0)
+        measurable &= cap > 0
+    # 꺼진 선로는 **「못 잰 것」이 아니다** — 조류가 0 이라 부하율을 볼 일이 없다.
+    # 세는 데서만 빼고(안내 수가 부풀지 않게) 그리는 값은 0 그대로다.
+    # ⚠️ 한때 이 줄을 `measurable |= (st == 0)` 으로 써서 **꺼진 선로를 「잴 수 있음」으로
+    #    쳤다.** 그러면 case33_matpower(못 잼 32 + 꺼짐 5)에서 `measurable.any()` 가 참이
+    #    되어 아래 안내가 안 뜨고 **빈 그래프**가 그대로 나간다.
+    off = (np.asarray(br[:, cols.index("Status")], dtype=float) == 0
+           if "Status" in cols else np.zeros(len(load), dtype=bool))
+    n_bad = int((~measurable & ~off).sum())
+    # ⚠️ **하나도 못 재면 빈 그래프를 주지 않는다** (2026-08-18 사용자 지적
+    #    *"이거 막대그래프 아예 없는데 정상인거야?"*). 막대가 0 이면 화면은 그냥
+    #    비어 보이고, 보는 사람에겐 **앱이 고장 난 것**으로 읽힌다. 점검 탭에 안내를
+    #    달아 두긴 했지만 그래프를 보러 온 사람은 그 탭을 안 열어 봤을 수 있다.
+    #    ⇒ **그 자리에서 이유를 말한다.**
+    if not measurable.any():
+        n_say = n_bad or int((~measurable).sum())
+        return _note(c, f"선로 {n_say}개 모두 정격(용량)이 안 적혀 있어\n"
+                        f"부하율을 그릴 수 없습니다.\n\n"
+                        f"계통 데이터 탭의 rateA 열에 용량을 넣으면 그려집니다.")
+    load = np.where(measurable, load, 0.0)
     names = line_names(br)
     n = len(names)
     x = np.arange(1, n + 1)
 
-    ch = _new_chart(c, "선로 부하율  [%]")
+    # 일부만 못 재면 그 사실을 **제목에** 붙인다 — 나머지는 정상으로 그리되
+    # 몇 개가 빠졌는지 모른 채 읽지 않게 한다.
+    title = "선로 부하율  [%]"
+    if n_bad:
+        title += f"    ·    {n_bad}개는 정격이 없어 뺐습니다"
+    ch = _new_chart(c, title)
     ok = QBarSet("100% 이내")
     over = QBarSet("100% 초과")
     ok.setColor(QColor(DC_BLUE)); ok.setBorderColor(QColor(DC_BLUE))
