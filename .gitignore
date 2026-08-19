@@ -18,6 +18,12 @@ __pycache__/
 .venv/
 venv/
 
+# ── 설치본 만들기 (2026-08-19, §7 6단계) ──
+# PyInstaller 가 뱉는 것. `packaging/unigrid.spec` 은 **올린다** — 그게 설정이다.
+packaging/build/
+packaging/dist/
+*.spec.bak
+
 # ── 빌드 산출물 (크다) ──
 # 컴파일 엔진은 engine/<패키지이름>/ 의 .ctf 와 __init__.py 만 올린다.
 # MATLAB 이 만드는 설치본·재배포 묶음은 올리지 않는다.

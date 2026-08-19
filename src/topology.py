@@ -27,11 +27,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import paths
+
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-ICON_DIR = HERE.parent          # 아이콘 png 들이 있는 곳
-PLACES = HERE / ".topology_places.json"     # 끌어 옮긴 자리를 기억해 두는 파일
+# 🚨 끌어 옮긴 자리는 **사용자 폴더**에 쓴다 (2026-08-19, §7 6단계) — 얼린 번들 안은
+#    읽기 전용이고 여러 사람이 쓰면 섞인다. 자리는 `paths.places_file()` 이 정한다.
+#    (옛 `ICON_DIR` 은 **아무도 안 쓰고** 저장소 뿌리에 png 도 없어 지웠다.)
 
 # 기호는 png 를 쓰지 않고 코드로 직접 그린다 (symbols.py).
 # 그림 파일마다 투명 여백이 제각각(부하 아이콘은 가로의 63%가 빈칸)이라
@@ -546,19 +548,19 @@ def layered_layout(g):
 # ─────────────────────────────────────────── 옮긴 자리 기억하기
 def load_places(case_name):
     try:
-        return json.loads(PLACES.read_text(encoding="utf-8")).get(case_name, {})
+        return json.loads(paths.places_file().read_text(encoding="utf-8")).get(case_name, {})
     except Exception:
         return {}
 
 
 def save_places(case_name, places):
     try:
-        all_of = json.loads(PLACES.read_text(encoding="utf-8"))
+        all_of = json.loads(paths.places_file().read_text(encoding="utf-8"))
     except Exception:
         all_of = {}
     all_of[case_name] = places
     try:
-        PLACES.write_text(json.dumps(all_of, ensure_ascii=False), encoding="utf-8")
+        paths.places_file().write_text(json.dumps(all_of, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 

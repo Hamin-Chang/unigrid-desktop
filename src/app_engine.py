@@ -22,10 +22,13 @@ from typing import Any
 import numpy as np
 
 import engine_path
+import paths
 
 _HERE = Path(__file__).resolve().parent
 # 컴파일된 엔진은 저장소에 **한 자리**에만 둔다 (README 폴더 규칙 · PDR §4.2 규칙 3).
-_ENGINE_DIR = _HERE.parent / "engine"
+# 🚨 자리를 **값으로 굳히지 않는다** — 얼리면 `__file__` 이 번들 안을 가리킨다.
+#    윈도우는 이 폴더를 `sys.path` 에 넣어 엔진을 **같은 프로세스에서** 부르므로
+#    여기가 어긋나면 계산이 아예 안 된다 (`paths` 참조, 2026-08-19).
 
 # 결과 표의 열 이름 (result_columns.py 와 동일 · 폭으로 고른다)
 COLUMNS: dict[str, dict[int, list[str]]] = {
@@ -478,7 +481,7 @@ def curve_refusal(case: Any) -> str | None:
 
 def _curve_in_process(payload: dict[str, Any]) -> dict[str, Any]:
     import importlib
-    sys.path.insert(0, str(_ENGINE_DIR))
+    sys.path.insert(0, str(paths.engine_dir()))
     pkg = importlib.import_module("unigrid_app_win")
     import matlab
     app = pkg.initialize()
@@ -723,7 +726,7 @@ class _Worker:
         # 부르는 쪽(app.py)이 그것을 받아 안내 대화상자로 띄운다.
         self.exe = str(mwpython or engine_path.find_mwpython())
         self.proc = subprocess.Popen(
-            [self.exe, str(_HERE / "app_worker.py"), "--serve"],
+            [self.exe, str(paths.worker_py()), "--serve"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
         )
@@ -782,7 +785,7 @@ class _Worker:
 
 def _run_in_process(case: Any, method: str = "nr") -> dict[str, Any]:
     import importlib
-    sys.path.insert(0, str(_ENGINE_DIR))
+    sys.path.insert(0, str(paths.engine_dir()))
     pkg = importlib.import_module("unigrid_app_win")
     import matlab
     app = pkg.initialize()

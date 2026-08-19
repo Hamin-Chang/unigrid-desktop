@@ -147,12 +147,12 @@ GRID_TABLES = [
     ("AC_Bus_dat", "AC 버스"), ("DC_Bus_dat", "DC 버스"),
 ]
 
-RECENT_FILE = _HERE_RECENT = Path(__file__).resolve().parent / ".recent.json"
-
-
+# 🚨 **소스 폴더가 아니라 사용자 폴더에 쓴다** (2026-08-19, §7 6단계).
+#    얼린 번들 안은 읽기 전용이고, 여러 사람이 쓰면 서로 섞인다. `paths` 참조.
+#    자리를 값으로 굳히지 않고 **쓸 때마다 묻는다** — 시험이 흉내 낼 수 있어야 한다.
 def load_recent() -> list:
     try:
-        return json.loads(RECENT_FILE.read_text(encoding="utf-8"))[:6]
+        return json.loads(paths.recent_file().read_text(encoding="utf-8"))[:6]
     except Exception:
         return []
 
@@ -161,8 +161,8 @@ def save_recent(path: str, info: str) -> None:
     items = [x for x in load_recent() if x.get("path") != path]
     items.insert(0, {"path": path, "info": info})
     try:
-        RECENT_FILE.write_text(json.dumps(items[:6], ensure_ascii=False),
-                               encoding="utf-8")
+        paths.recent_file().write_text(json.dumps(items[:6], ensure_ascii=False),
+                                       encoding="utf-8")
     except Exception:
         pass
 
@@ -4370,7 +4370,7 @@ class Proto(QMainWindow):
     def do_import(self):
         # 파일 고르기 창이 처음 보여 줄 자리. 저장소의 검증용 케이스 폴더가 있으면 거기서
         # 시작한다(뼈대에서는 케이스가 널려 있던 v14 폴더였다).
-        cases = Path(__file__).resolve().parent.parent / "cases"
+        cases = paths.cases_dir()
         start = str(cases if cases.is_dir() else Path.home())
         path, _ = QFileDialog.getOpenFileName(
             self, "계통 파일 선택", start,
