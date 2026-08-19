@@ -11,7 +11,8 @@
        ⚠️ DC 위반이 있는 케이스로 봐야 한다. case24 는 DC 가 0곳이라 안 뜨는 게 맞고,
           그걸로 "DC 는 안 된다" 고 볼 뻔했다.
     3) AC 탭과 DC 탭이 **각자 제 계통 것만** 세나 (합쳐 세면 둘 다 4곳이 된다)
-    4) 위반이 없는 표에는 띠를 **안 만드나** (성한 계통에 군더더기를 남기지 않는다)
+    4) 위반이 없는 표에는 띠를 **안 보이나** (성한 계통에 군더더기를 남기지 않는다)
+       ⚠️ 띠는 정렬 때문에 **항상 만들어 둔다** — 그러니 '있나' 가 아니라 '보이나' 로 본다
     5) 다른 탭(선로 조류 등)에는 없나
     6) 띠가 표를 **가리지 않나** — 탭 줄과 표 사이에 들어가야 한다
     7) [자세히 보기] 가 점검 탭으로 보내나
@@ -82,7 +83,14 @@ def open_case(path):
 
 
 def tab_bar(name):
-    """그 탭의 띠 — 없으면 None."""
+    """그 탭에서 **보이는** 띠 — 없으면 None.
+
+    🚨 `findChildren` 만 쓰면 안 된다. 2026-08-18 정렬을 넣으면서 띠를
+    **항상 만들어 두고 보일 것이 없으면 숨기는** 방식으로 바꿨다
+    (`_fill_strip` — 정렬할 때마다 화면을 통째로 다시 그리지 않으려고).
+    그래서 숨은 띠도 `findChildren` 에 잡히고, 그러면 [4]·[5] 가
+    "성한 표에도 띠가 있다" 고 거짓 실패한다.
+    """
     tt = win._tabs
     for i in range(tt.count()):
         if tt.tabText(i) != name:
@@ -90,7 +98,7 @@ def tab_bar(name):
         tt.setCurrentIndex(i)
         pump(0.5)
         bars = [f for f in tt.currentWidget().findChildren(QFrame)
-                if f.objectName() == "violbar"]
+                if f.objectName() == "violbar" and f.isVisible()]
         return bars[0] if bars else None
     return None
 

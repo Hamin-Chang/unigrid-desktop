@@ -217,7 +217,7 @@ disp('DONE');
     # 새로 생긴 모양(조류 식의 행)은 손으로 틀리기 쉽다. 엔진의 `local_phase_jac` 를
     # **그대로 꺼내** 유한차분과 견준다(복붙하면 그 코드가 틀려도 못 잡는다).
     jac = subprocess.run(
-        [MATLAB, "-batch", f"run('{HERE / 'a1_phase_jac.m'}')"],
+        [MATLAB, "-batch", f"run('{HERE / 'a1_phase_jac_check.m'}')"],
         env={**os.environ, "V14DIR": str(V14), "CASEMAT": str(WORK / "case.mat")},
         capture_output=True, text=True, timeout=1200)
     tail = [ln for ln in jac.stdout.splitlines()

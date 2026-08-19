@@ -1,0 +1,12 @@
+# UNIGRID Desktop — 필요한 파이썬 패키지
+# 파이썬 3.12 에서 만들었고 3.12 로 시험한다.
+#
+#   python3.12 -m venv .venv
+#   .venv/bin/python -m pip install -r requirements.txt
+#
+# 계산 엔진(engine/)은 MATLAB Runtime 이 따로 있어야 돈다 — pip 로 안 깔린다.
+
+PySide6==6.11.1
+numpy
+pandas
+openpyxl

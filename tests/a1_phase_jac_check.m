@@ -98,15 +98,14 @@ function P = lp(L, i, Vm, Va, freq)
 end
 
 function [dP,dQ,dFV,dFth,dFp] = local_phase_jac_probe(L, Vm, Va, freq, i, live, n)
-    % 엔진의 local_phase_jac 를 **그대로** 꺼내 쓴다 (복붙하면 그 코드가 틀려도 못 잡는다)
-    src = fileread(fullfile(getenv('V14DIR'),'functions','solve_AC_newton_v4.m'));
-    j0 = strfind(src, 'function [dP_dp, dQ_dp, dF_dV, dF_dth, dF_dp] =');
-    body = src(j0:end);
-    body = strrep(body, 'local_phase_jac', 'probe_phase_jac');
-    p = tempname; mkdir(p);
-    fid = fopen(fullfile(p,'probe_phase_jac.m'),'w','n','UTF-8');
-    fwrite(fid, unicode2native(body,'UTF-8')); fclose(fid);
-    addpath(p);
-    [dP,dQ,dFV,dFth,dFp] = probe_phase_jac(L, Vm, Va, freq, i, live, n);
-    rmpath(p);
+    % 엔진이 쓰는 그 함수를 **그대로** 부른다 (복붙하면 그 코드가 틀려도 못 잡는다).
+    %
+    % 🚨 2026-08-19 고침. 예전에는 `solve_AC_newton_v4.m` 에서 local 함수
+    %    `local_phase_jac` 의 본문을 **글자로 꺼내** 임시 파일에 쓰고 불렀다.
+    %    남의 파일 local 함수는 못 부르기 때문이었다. 그런데 2026-08-17 A1 을
+    %    AC/DC 로 넓히면서 그 함수를 **`functions/a1_phase_jac.m` 로 떼어냈고**,
+    %    시험은 여전히 옛 파일을 뒤져 **아무것도 못 찾은 채** 빈 파일을 만들었다.
+    %    그래서 08-17 이후로 이 검사는 **한 번도 실제로 돌지 않았다**(계속 실패).
+    %    이제는 독립 파일이라 꺼낼 까닭이 없다 — 그냥 부른다.
+    [dP,dQ,dFV,dFth,dFp] = a1_phase_jac(L, Vm, Va, freq, i, live, n);
 end
