@@ -2,9 +2,19 @@
 """창을 줄일 수 있나 · 값을 고쳐도 보던 자리에 있나 (2026-08-13 사용자 지적 둘).
 
   1) 창 최소 높이가 **화면보다 작나** — 크면 아래가 잘린 채 줄일 수도 없다
-  2) 실제로 작게 줄여지나
+  2) 🚨 **어떤 화면에서든 창이 그 화면 안에 드나** (2026-08-19 에 바꿈)
+     예전에는 "세로 660px 아래로 줄어드나" 를 봤다. 그런데 창 최소는 **그래프
+     바닥값이 정하고**(창 최소 = 322 + 바닥값), 그 바닥값은 *세로축 숫자가 안
+     뭉개지는 크기*라 무턱대고 낮출 값이 아니다. ⇒ 잣대를 **화면에 드나**로 바꿨다.
+     이제 앱이 화면 크기를 읽어 바닥값을 맞춘다(`_screen_avail`·`_graph_floor`).
   3) 조정 칸을 하나 고쳐도 **가로 스크롤이 그 자리에 있나**
   4) 다음에 칠 칸이 **미리 골라져 있나** (오른쪽으로 다시 찾아가지 않게)
+  5) 🚨 **조작 줄이 길어도 창을 넓히지 않나** (2026-08-19 에 바꿈)
+     예전에는 "계통 데이터 탭을 열면 화면 나눔 비율이 바뀌나" 를 봤다. 2026-08-18
+     에 그 일은 **그래프 접기**가 맡게 됐고(`shot_graph_fold.py` [8] 이 지킨다),
+     이 자리에는 그 대신 **가로** 문제를 둔다 — 「표 고르기」 단추는 그 계통에 있는
+     표만큼 생겨서, 그 줄의 길이가 곧 창 최소 가로였다(71버스 AC/DC 는 1752px 이라
+     맥북 13" 에도 안 들어갔다).
 
 계기: 사용자 *"앱 창 크기를 우리가 맘대로 조절을 못해. 아래가 안보여"* ·
       *"숫자 하나를 넣을때마다 다시 가로 스크롤을 해서 다음 숫자 넣을곳을 찾아야한다"*
@@ -75,15 +85,27 @@ if mh >= SCREEN_H:
 else:
     print("    ✅ 든다")
 
-print("\n[2] 실제로 작게 줄여지나")
-win.resize(1000, 640)
-pump(0.3)
-print(f"    1000x640 으로 줄인 결과 {win.width()}x{win.height()}")
-if win.height() > 660:
-    print("    🚨 안 줄어든다")
-    fails.append("안 줄어듦")
-else:
-    print("    ✅ 줄어든다")
+print("\n[2] 어떤 화면에서든 그 화면 안에 드나")
+# 화면 크기를 흉내 내어 앱이 스스로 맞추는지 본다. 흔한 노트북 셋 + 지금 이 화면.
+_real_avail = APP.Proto._screen_avail
+SCREENS = [("맥북 13\"", 1440, 875), ("윈도우 보급형", 1366, 728),
+           ("작은 노트북", 1280, 760), ("FHD", 1920, 1040)]
+ok2 = True
+for nm, sw, sh in SCREENS:
+    APP.Proto._screen_avail = lambda self, _w=sw, _h=sh: (_w, _h)
+    win.rebuild()
+    pump(0.5)
+    m = win.minimumSizeHint()
+    fit = m.width() <= sw and m.height() <= sh
+    print(f"    {nm:<12} 화면 {sw}x{sh} · 바닥값 {win._graph_floor()}px "
+          f"· 창 최소 {m.width()}x{m.height()}  {'✅' if fit else '🚨 안 든다'}")
+    if not fit:
+        ok2 = False
+APP.Proto._screen_avail = _real_avail
+win.rebuild()
+pump(0.4)
+if not ok2:
+    fails.append("화면에 안 듦")
 
 win.resize(1400, 900)
 pump(0.3)
@@ -167,32 +189,37 @@ else:
 
         win.grab().save(str(OUT / "창크기_가로자리.png"))
 
-print("\n[5] 「계통 데이터」 탭을 열면 아래가 커지나 (결과 탭으로 가면 돌아오나)")
-win.resize(1900, 1050)
-pump(0.4)
-win.split_sizes = {}          # 손으로 끈 적 없는 상태에서 본다
+print("\n[5] 조작 줄이 길어도 창을 넓히지 않나")
+from PySide6.QtWidgets import QScrollArea                     # noqa: E402
+win.table_tab = "계통 데이터"
+win.rebuild()
+pump(0.5)
+# 🚨 `win.findChildren` 만 쓰면 **지워지기를 기다리는 옛 줄**까지 잡힌다
+#    (rebuild 를 여러 번 했으므로 10개가 잡혔다 — 위 `grid()` 주석과 같은 함정).
+#    지금 화면에 붙어 있는 탭 안에서, **보이는 것**만 센다.
+_page = win._tabs.currentWidget()
+bars = [w for w in _page.findChildren(QScrollArea)
+        if w.objectName() == "gridbar" and w.isVisible()]
+print(f"    조작 줄을 밀 수 있게 감쌌나 — {len(bars)}개")
+ok5 = len(bars) == 1
+if ok5:
+    need = bars[0].widget().sizeHint().width()
+    give = bars[0].minimumSizeHint().width()
+    wmin = win.minimumSizeHint().width()
+    print(f"    조작 줄이 요구하는 폭 {need}px · 그 줄이 창에 요구하는 폭 {give}px "
+          f"· 창 최소 가로 {wmin}px")
+    # 🚨 줄이 길어도 **그 길이를 창에 떠넘기면 안 된다** — 그게 71버스에서 창 최소를
+    #    1752px 로 만들어 맥북 13"(1440px)에도 안 들어가게 했다.
+    #    감싼 곳이 제 몫을 하면 창에 요구하는 폭은 줄 길이보다 훨씬 작다.
+    ok5 = give < need // 2
+    print(f"    {'✅ 줄 길이를 창에 떠넘기지 않는다' if ok5 else '🚨 창에 그대로 떠넘긴다'}")
+else:
+    print("    🚨 조작 줄을 감싼 곳을 못 찾았다")
+if not ok5:
+    fails.append("조작 줄이 창을 넓힘")
 win.table_tab = "AC 결과"
 win.rebuild()
 pump(0.4)
-# 🚨 옛 위젯을 집지 않도록 **앱이 들고 있는 것**을 쓴다 (위 grid() 와 같은 이유)
-sp = win._split
-tw = win._tabs
-res_bottom = sp.sizes()[1]
-print(f"    결과 탭일 때 아래 = {res_bottom}px")
-for i in range(tw.count()):
-    if tw.tabText(i).startswith("계통 데이터"):
-        tw.setCurrentIndex(i)
-        pump(0.35)
-grid_bottom = sp.sizes()[1]
-print(f"    계통 데이터 탭일 때 아래 = {grid_bottom}px")
-tw.setCurrentIndex(0)         # AC 결과 로 돌아간다
-pump(0.35)
-back = sp.sizes()[1]
-print(f"    결과 탭으로 돌아오면 = {back}px")
-ok5 = grid_bottom > res_bottom * 1.4 and abs(back - res_bottom) < 30
-print(f"    {'✅ 탭마다 자리가 다르다' if ok5 else '🚨 안 바뀐다'}")
-if not ok5:
-    fails.append("탭별 자리")
 
 print("\n[6] 오른쪽으로 밀어도 첫 열(선로 번호)이 남아 있나")
 # 🚨 창이 넓으면 19열이 다 들어와 **밀 것이 없다** — 그 상태로 "남아 있다" 는

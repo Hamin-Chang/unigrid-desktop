@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
@@ -1679,6 +1679,15 @@ class Proto(QMainWindow):
     #    `1... 1... ...` 로 통째로 죽는다).
     GRAPH_FLOOR = {1: 150, 2: 425}
     GRAPH_WANT = {1: 220, 2: 380}
+    # 그래프 말고 **나머지**가 요구하는 세로. 창 최소 = 이 값 + 그래프 바닥값이다
+    # (2026-08-19 실측: 바닥값 425 → 창 747 · 260 → 582 로 **1:1 로 따라온다**.
+    #  실제 몫은 322px 이고 케이스 넷에서 모두 같았다 — AC·AC/DC 가리지 않는다).
+    # 24px 을 얹어 둔다. 나중에 머리나 띠가 늘어도 바로 화면 밖으로 안 나가게.
+    NON_GRAPH_H = 346
+    # 이 아래로는 그래프를 줄이지 않는다 — 더 줄이면 그릴 것이 없다
+    GRAPH_FLOOR_MIN = {1: 110, 2: 260}
+    # 이 폭보다 좁은 화면이면 조작 줄을 **좁은 판**으로 (아래 `_narrow`)
+    NARROW_W = 1400
 
     # 점검 탭 표 — 한 줄 높이 · 머리글이 먹는 몫 · 몇 줄에서 끊나 (2026-08-18)
     #   한 줄 30px 은 `setDefaultSectionSize(30)` 으로 못박혀 있어 폰트와 무관하다.
@@ -1689,6 +1698,30 @@ class Proto(QMainWindow):
     CHECK_CHROME = 46
     CHECK_MAX_ROWS = 10
 
+    def _screen_avail(self):
+        """이 창이 놓인 화면에서 **실제로 쓸 수 있는** 크기 (작업표시줄·독을 뺀 것).
+
+        창을 못 띄운 상태(만드는 중)면 주 화면을 쓴다. 화면을 못 읽으면 넉넉한
+        값을 돌려 **지금까지와 똑같이** 굴게 한다 — 못 읽었다고 좁은 판으로 가면
+        큰 화면 쓰는 사람이 손해를 본다.
+        """
+        scr = self.screen() if self.isVisible() else None
+        scr = scr or QGuiApplication.primaryScreen()
+        if scr is None:
+            return 3840, 2160
+        g = scr.availableGeometry()
+        return g.width(), g.height()
+
+    def _narrow(self) -> bool:
+        """조작 줄을 좁은 판으로 써야 하는 화면인가.
+
+        🚨 2026-08-19 신설. 창 최소 가로 1392px 중 **1076px 이 「계통 데이터」 탭
+        하나**가 요구하는 값이었고(다른 탭은 88~322px), 그 안에서도 한 위젯이 아니라
+        **가로로 나란히 놓인 조작 줄의 합**이었다. 1366×768 노트북에서 가로가 26px
+        모자라 앱이 화면에 안 들어갔다.
+        """
+        return self._screen_avail()[0] < self.NARROW_W
+
     def _graph_floor(self) -> int:
         """그래프에 남겨 둘 **최소** 높이 — **읽을 수 있는 크기**다.
 
@@ -1698,7 +1731,16 @@ class Proto(QMainWindow):
         (2026-08-18 실측) 탭을 가릴 이유가 없어졌다. **어느 탭이든 읽을 수 있는
         크기가 바닥이고, 그걸 못 주면 접는다.**
         """
-        return self.GRAPH_FLOOR.get(self._graph_rows(), self.GRAPH_FLOOR[2])
+        rows = self._graph_rows()
+        want = self.GRAPH_FLOOR.get(rows, self.GRAPH_FLOOR[2])
+        # 🚨 **화면보다 큰 창은 만들지 않는다** (2026-08-19).
+        #    이 값은 그래프의 `setMinimumHeight` 로 들어가 **창 최소 세로를 그대로
+        #    끌어올린다**(창 최소 = NON_GRAPH_H + 이 값). 화면이 낮으면 창이 화면
+        #    밖으로 나가 버려 아예 못 쓴다 — 뭉개진 축이 안 뜨는 창보다 낫다.
+        cap = self._screen_avail()[1] - self.NON_GRAPH_H
+        if cap < want:
+            return max(self.GRAPH_FLOOR_MIN.get(rows, self.GRAPH_FLOOR_MIN[2]), cap)
+        return want
 
     def _room_for_graph(self) -> int:
         """위아래로 나눠 쓸 수 있는 높이. `_apply_split` 이 쓰는 셈과 같게 맞춘다."""
@@ -2564,7 +2606,8 @@ class Proto(QMainWindow):
         sl = QSlider(Qt.Horizontal)
         sl.setRange(50, 200)
         sl.setValue(int(round(now * 100)))
-        sl.setFixedWidth(150 if inline else 240)
+        # 좁은 화면에서는 더 줄인다 — 이 줄의 합이 창 최소 가로를 정한다(`_narrow`)
+        sl.setFixedWidth((110 if self._narrow() else 150) if inline else 240)
         sl.setTickPosition(QSlider.TicksBelow)
         sl.setTickInterval(25)
         n_t = self.load_times()
@@ -2674,7 +2717,38 @@ class Proto(QMainWindow):
         load = self.load_bar(inline=True)       # ② 부하 일괄 증감 — **같은 줄에**
         if load is not None:
             row.addWidget(load)
-        v.addLayout(row)
+
+        # 🚨 **이 줄은 넘치면 가로로 민다** (2026-08-19).
+        #    「표 고르기」 단추는 **그 계통에 있는 표만큼** 생긴다 — AC 전용은 서넛인데
+        #    AC/DC 는 여덟아홉이다. 그래서 **이 줄의 길이가 곧 창 최소 가로**가 됐고,
+        #    계통을 열기 전에는 알 수 없는 값이 창을 넓히고 있었다.
+        #    실측(2026-08-19) — 71버스 AC/DC 를 열면 창 최소 가로가 **1752px** 이라
+        #    **맥북 13"(1440px)에도 안 들어갔다.** 화면 크기와 무관한 문제라
+        #    「좁은 화면에서만」으로 가르면 안 된다.
+        #    ⇒ 줄을 접거나 단추를 감추지 않고 **넘치는 만큼만 밀리게** 한다.
+        #      넓은 화면에서는 막대가 아예 안 생겨 지금과 똑같아 보인다.
+        holder = QWidget()
+        holder.setLayout(row)
+        sa = QScrollArea()
+        sa.setObjectName("gridbar")          # 시험이 이 줄을 집을 이름
+        sa.setWidget(holder)
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        def fit_row():
+            # 막대가 뜰 때만 그 높이를 얹는다 — 세로는 아껴야 한다(표가 먹을 자리다)
+            try:
+                hb = sa.horizontalScrollBar()
+                sa.setFixedHeight(holder.sizeHint().height()
+                                  + (hb.sizeHint().height() if hb.isVisible() else 0))
+            except RuntimeError:
+                pass
+
+        sa.horizontalScrollBar().rangeChanged.connect(lambda *_: fit_row())
+        fit_row()
+        v.addWidget(sa)
 
         v.addWidget(self.grid_table_widget(), 1)
         return w
@@ -2714,9 +2788,10 @@ class Proto(QMainWindow):
         h.addWidget(lab)
 
         box = QLineEdit(self.grid_find or "")
-        box.setPlaceholderText("예: 38 39 40 (비우면 전부)" if inline
+        box.setPlaceholderText(("예: 38 39" if self._narrow() else
+                                "예: 38 39 40 (비우면 전부)") if inline
                               else "예: 38   ·   38 39 40   (비우면 전부)")
-        box.setFixedWidth(200 if inline else 260)
+        box.setFixedWidth((130 if self._narrow() else 200) if inline else 260)
         box.returnPressed.connect(lambda: self.set_find(box.text()))
         box.editingFinished.connect(lambda: self.set_find(box.text()))
         h.addWidget(box)
