@@ -27,7 +27,7 @@ RES="$APP/Contents/Resources"
 echo ""
 echo "[UNIGRID] 들어갔는지 확인"
 ok=1
-for f in "src/app_worker.py" "engine/unigrid_app_mac/unigrid_app_mac.ctf"; do
+for f in "src/app_worker.py" "engine/unigrid_app_mac/unigrid_app_mac.ctf" "EULA.txt"; do
     if [ -e "$RES/$f" ]; then echo "   ✅ $f"; else echo "   ❌ $f 없음"; ok=0; fi
 done
 n=$(ls "$RES/cases" 2>/dev/null | wc -l | tr -d ' ')

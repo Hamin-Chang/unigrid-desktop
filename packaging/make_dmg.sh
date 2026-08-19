@@ -20,7 +20,7 @@ STAGE="packaging/build/dmg_stage"
 # 🚨 **넣기 전에 속을 다시 본다.** .app 이 있다고 다 든 것이 아니다 —
 #    worker·engine 이 빠진 앱도 겉보기엔 멀쩡히 뜬다(계산만 안 된다).
 RES="$APP/Contents/Resources"
-for f in "src/app_worker.py" "engine/unigrid_app_mac/unigrid_app_mac.ctf"; do
+for f in "src/app_worker.py" "engine/unigrid_app_mac/unigrid_app_mac.ctf" "EULA.txt"; do
     [ -e "$RES/$f" ] || { echo "[UNIGRID] 앱 속에 없다: $f"; exit 1; }
 done
 
@@ -28,6 +28,7 @@ rm -rf "$STAGE" "$DMG"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"       # 끌어다 놓을 자리
+cp EULA.txt "$STAGE/"                           # 사용 조건 — 열기 전에 볼 수 있게
 
 # 처음 켤 때 막히는 것을 안내한다 — 서명을 안 했으므로 반드시 필요하다
 cat > "$STAGE/처음 켤 때 읽어 주세요.txt" <<'TXT'

@@ -71,7 +71,33 @@ for f in PKG.iterdir():
         ascii_ok = f.name.isascii()
         check(f"{f.name}", ascii_ok, True)
 
-print("\n[7] .iss 가 UTF-8 BOM 인가")
+print("\n[7] 🚨 라이선스 의무 — 지우면 배포 조건 위반")
+# MathWorks 소프트웨어 라이선스 계약이 요구하는 것
+#   3.26  앱에 사용 조건(EULA)이 있어야 배포할 수 있다
+#   23.3  그 조건이 MATLAB Runtime 조건(MCR_license.txt)을 포함·참조해야 한다
+#   205–210행  About 상자와 함께 배포하는 문서에 저작권 고지를 넣어야 한다
+eula = REPO / "EULA.txt"
+check("EULA.txt 가 있나", eula.is_file(), True)
+et = eula.read_text(encoding="utf-8") if eula.is_file() else ""
+check("MCR_license.txt 를 참조하나", "MCR_license.txt" in et, True)
+check("MathWorks 고지가 있나", "The MathWorks, Inc." in et, True)
+check("보증 안 함이 있나", "보증" in et, True)
+
+appsrc = (REPO / "src" / "app.py").read_text(encoding="utf-8")
+check("앱에 정보 창이 있나", "class AboutDialog" in appsrc, True)
+check("정보 창에 저작권 고지", "1984-2024 The MathWorks, Inc." in appsrc, True)
+# 🚨 고지에 **닿을 수 있어야** 뜻이 있다 — 시작 화면과 위쪽 줄 둘 다에서
+check("정보 단추가 두 곳에 있나", appsrc.count('AboutDialog(self, c).exec()'), 2)
+
+check("spec 이 EULA 를 넣나", "EULA.txt" in spec, True)
+for f, why in [("build_mac.sh", "맥 빌드"), ("build_win.bat", "윈도우 빌드"),
+               ("make_dmg.sh", "dmg")]:
+    t = (PKG / f).read_text(encoding="utf-8")
+    check(f"{why} 가 EULA 를 확인하나", "EULA.txt" in t, True)
+iss = (PKG / "unigrid.iss").read_bytes().decode("utf-8-sig")
+check("설치 중에 사용 조건을 띄우나", "LicenseFile" in iss, True)
+
+print("\n[8] .iss 가 UTF-8 BOM 인가")
 head = (PKG / "unigrid.iss").read_bytes()[:3]
 check("BOM", head == b"\xef\xbb\xbf", True)
 

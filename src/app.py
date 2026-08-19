@@ -17,8 +17,8 @@ import random
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QUrl
+from PySide6.QtGui import QColor, QGuiApplication, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 import json
 import app_engine as ENGINE
 import engine_path
+import paths
 import charts
 import checks
 from checks import (col_index, gen_limit_rows, real_violations,   # noqa: F401
@@ -513,6 +514,92 @@ class PlotBox(QFrame):
 
 
 # ─────────────────────────────────────────── 창들
+class AboutDialog(QDialog):
+    """판·저작권·사용 조건 (2026-08-19, §7 6단계).
+
+    🚨 **꾸미려고 만든 창이 아니다.** MathWorks 소프트웨어 라이선스 계약이
+    *"About Box, 또는 그와 비슷한 눈에 띄는 자리"* 와 함께 배포하는 문서에
+    저작권 고지를 넣으라고 요구한다(`license_agreement.txt` 205–210행).
+    그 고지가 **아래 `MATHWORKS` 한 줄**이다 — **지우면 배포 조건 위반**이다.
+    """
+
+    # 지우지 말 것 — 위 설명 참조. 연도는 엔진을 만든 MATLAB 판을 따른다.
+    MATHWORKS = "MATLAB®. © 1984-2024 The MathWorks, Inc."
+
+    def __init__(self, parent, c):
+        super().__init__(parent)
+        self.setWindowTitle("UNIGRID 정보")
+        self.setMinimumWidth(520)
+        self.setStyleSheet(parent.styleSheet())
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(11)
+
+        t = QLabel("UNIGRID")
+        t.setStyleSheet(f"color:{c['text']};font-size:23px;font-weight:800;"
+                        "letter-spacing:1.4px;")
+        v.addWidget(t)
+
+        sub = QLabel("AC/DC 조류계산")
+        sub.setStyleSheet(f"color:{c['muted']};font-size:13px;")
+        v.addWidget(sub)
+
+        # ── 무엇으로 만들어졌나 ──
+        rows = [("계산 엔진", f"MATLAB Compiler · Runtime {engine_path.REQUIRED_RELEASE}"),
+                ("화면", f"PySide6 (Qt) · Python {sys.version_info.major}."
+                         f"{sys.version_info.minor}"),
+                ("만든 곳", "중앙대학교 GML")]
+        box = QFrame()
+        box.setObjectName("card")
+        g = QVBoxLayout(box)
+        g.setContentsMargins(14, 12, 14, 12)
+        g.setSpacing(6)
+        for k, val in rows:
+            r = QHBoxLayout()
+            r.setSpacing(10)
+            a = QLabel(k)
+            a.setFixedWidth(70)
+            a.setStyleSheet(f"color:{c['muted']};font-size:13px;")
+            b = QLabel(val)
+            b.setStyleSheet(f"color:{c['text']};font-size:13px;")
+            b.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            r.addWidget(a)
+            r.addWidget(b)
+            r.addStretch()
+            g.addLayout(r)
+        v.addWidget(box)
+
+        # ── 저작권 고지 (배포 조건) ──
+        note = QLabel(self.MATHWORKS)
+        note.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
+        note.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        v.addWidget(note)
+
+        eula = paths.files_root() / "EULA.txt"
+        tail = QLabel(
+            "MATLAB 은 The MathWorks, Inc. 의 등록상표입니다.\n"
+            "MATLAB Runtime 의 사용 조건은 그 설치 폴더의 MCR_license.txt 를 따릅니다.\n"
+            + ("이 프로그램의 사용 조건은 함께 들어 있는 EULA.txt 에 있습니다."
+               if eula.is_file() else ""))
+        tail.setStyleSheet(f"color:{c['muted']};font-size:12px;line-height:150%;")
+        tail.setWordWrap(True)
+        v.addWidget(tail)
+
+        v.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        if eula.is_file():
+            b_e = QPushButton("사용 조건 보기")
+            b_e.clicked.connect(lambda: QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(eula))))
+            row.addWidget(b_e)
+        ok = QPushButton("닫기")
+        ok.setObjectName("accent")
+        ok.clicked.connect(self.accept)
+        row.addWidget(ok)
+        v.addLayout(row)
+
+
 class ConvertDialog(QDialog):
     def __init__(self, parent, c):
         super().__init__(parent)
@@ -1156,6 +1243,15 @@ class Proto(QMainWindow):
         for b in (b1, b2, b3):
             h.addWidget(b)
         h.addStretch()
+
+        # 🚨 **「정보」는 넣고 뺄 수 있는 것이 아니다** (2026-08-19).
+        #    MathWorks 라이선스가 *"About Box, 또는 그와 비슷한 눈에 띄는 자리"* 에
+        #    저작권 고지를 넣으라고 요구한다(license_agreement.txt 205–210행).
+        #    자주 누를 것이 아니므로 오른쪽 끝에 조용히 둔다.
+        info = QPushButton("정보")
+        info.setToolTip("판·저작권·사용 조건")
+        info.clicked.connect(lambda: AboutDialog(self, c).exec())
+        h.addWidget(info)
 
         # 🚨 여기 있던 「표시 모드 — 숫자만 / 그림 포함」 을 **없앴다** (2026-08-18 사용자
         #    지적 *"그래프 펼치기랑 숫자만/그림 포함 이게 좀 겹치는거 같은데"*).
@@ -1881,7 +1977,23 @@ class Proto(QMainWindow):
         sub.setAlignment(Qt.AlignCenter)
         sub.setStyleSheet(f"color:{c['muted']};font-size:16px;")
         v.addWidget(sub)
-        v.addSpacing(34)
+
+        # 🚨 **시작 화면에도 「정보」로 가는 길을 둔다** (2026-08-19).
+        #    위쪽 줄의 「정보」 단추는 **계통을 연 뒤에만** 뜬다. 그런데 저작권 고지는
+        #    거기에만 있으므로, 앱을 켜고 아무것도 안 연 사람은 닿을 길이 없었다.
+        #    MathWorks 라이선스가 요구하는 고지라 "닿을 수 있다" 가 중요하다.
+        ir = QHBoxLayout()
+        ir.addStretch()
+        about = QPushButton("정보")
+        about.setObjectName("seg_off")
+        about.setCursor(Qt.PointingHandCursor)
+        about.setToolTip("판·저작권·사용 조건")
+        about.clicked.connect(lambda: AboutDialog(self, c).exec())
+        ir.addWidget(about)
+        ir.addStretch()
+        v.addSpacing(10)
+        v.addLayout(ir)
+        v.addSpacing(24)
 
         # 파일 놓는 자리
         drop = QFrame()

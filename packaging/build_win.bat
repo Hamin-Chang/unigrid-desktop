@@ -37,7 +37,7 @@ if errorlevel 1 exit /b 1
 echo.
 echo [UNIGRID] 들어갔는지 확인
 set OK=1
-for %%F in ("src\app_worker.py" "engine\unigrid_app_win\unigrid_app_win.ctf") do (
+for %%F in ("src\app_worker.py" "engine\unigrid_app_win\unigrid_app_win.ctf" "EULA.txt") do (
     if exist "packaging\dist\UNIGRID\_internal\%%~F" (
         echo    [O] %%~F
     ) else (

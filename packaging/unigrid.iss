@@ -33,6 +33,9 @@ WizardStyle=modern
 ; 경로는 이 .iss 파일이 있는 폴더 기준이다. 그리고 파일 이름은 **영문으로** —
 ; 지난 윈도우 인계에서 한글 이름이 깨진 적이 있다.
 InfoBeforeFile=README_before_install.txt
+; 🚨 사용 조건을 설치 중에 띄운다 — MathWorks 라이선스가 앱과 함께 배포하는
+;    문서에 조건을 넣으라고 요구한다(3.26·23.3).
+LicenseFile=..\EULA.txt
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
