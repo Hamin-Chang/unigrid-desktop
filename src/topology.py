@@ -629,9 +629,15 @@ class TopologyView(QFrame):
 
     PAD = 30
 
+    # 확대·축소 (2026-08-19 사용자 요청). 한 번에 이만큼씩 · 이 안에서만.
+    ZOOM_STEP = 1.25
+    ZOOM_MIN = 0.5
+    ZOOM_MAX = 4.0
+
     def __init__(self, g, places, case_name, c, on_move=None,
                  show_violations=False, overlay=None,
-                 vstyle="badge", cstyle="badge", on_line_click=None):
+                 vstyle="badge", cstyle="badge", on_line_click=None,
+                 zoom=1.0, on_zoom=None):
         super().__init__()
         self.setObjectName("plot")
         self.g, self.c, self.case_name = g, c, case_name
@@ -647,6 +653,11 @@ class TopologyView(QFrame):
         # 변환기 한계 표시 방식: "recolor"(기호 색)·"badge"(삼각형)·"ring"(고리)
         self.vstyle = vstyle
         self.cstyle = cstyle
+        # 🚨 배율은 **앱이 들고 있다가 다시 넘겨준다** — 이 위젯은 계산할 때마다
+        #    새로 만들어지므로(`topology_view`), 여기에만 두면 계산 한 번에 1.0 으로
+        #    돌아가 버린다(그래프 접기·정렬을 앱 상태로 둔 것과 같은 까닭).
+        self.zoom = max(self.ZOOM_MIN, min(self.ZOOM_MAX, float(zoom)))
+        self.on_zoom = on_zoom
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
@@ -656,6 +667,31 @@ class TopologyView(QFrame):
                 self.pos[i] = places[key]
         self.drag = None
         self._fit()
+
+    def set_zoom(self, z, from_user=True):
+        """배율을 바꾼다. 그림만 다시 그리고 **화면을 통째로 다시 만들지 않는다**."""
+        z = max(self.ZOOM_MIN, min(self.ZOOM_MAX, float(z)))
+        if abs(z - self.zoom) < 1e-9:
+            return False
+        self.zoom = z
+        self._fit()
+        self.updateGeometry()
+        self.update()
+        if from_user and self.on_zoom is not None:
+            self.on_zoom(z)
+        return True
+
+    def wheelEvent(self, ev):
+        """Ctrl(맥은 ⌘)을 누른 채 굴리면 확대·축소. 그냥 굴리면 화면이 밀린다."""
+        mod = ev.modifiers()
+        if not (mod & Qt.ControlModifier or mod & Qt.MetaModifier):
+            ev.ignore()                  # 스크롤 상자가 받아 밀게 둔다
+            return
+        step = ev.angleDelta().y()
+        if step:
+            self.set_zoom(self.zoom * (self.ZOOM_STEP if step > 0
+                                       else 1 / self.ZOOM_STEP))
+        ev.accept()
 
     def _fit(self):
         """열·행 수만큼 최소 크기를 잡는다. 화면보다 크면 스크롤바가 생긴다.
@@ -704,7 +740,11 @@ class TopologyView(QFrame):
         실제 값: 12버스·CIGRE 25버스 = 30(상한) / 71버스 = 20.2 / 239버스부터 11(하한).
         """
         n = max(1, len(self.g.keys))
-        return max(11.0, min(30.0, 170.0 / np.sqrt(n)))
+        base = max(11.0, min(30.0, 170.0 / np.sqrt(n)))
+        # 배율은 **자동으로 정한 크기 위에** 얹는다. 이 값 하나가 기호 크기와
+        # `_fit()` 의 최소 크기를 함께 정하므로, 여기만 곱하면 그림 전체가 커진다
+        # (클릭·끌기도 같은 `_px()`·`unit()` 을 쓰므로 따라온다).
+        return base * getattr(self, "zoom", 1.0)
 
     def bar_h(self):
         return self.unit() * 1.25          # 버스 막대 길이
@@ -1397,7 +1437,7 @@ class TopologyView(QFrame):
 
 
 def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
-                  on_line_click=None):
+                  on_line_click=None, zoom=1.0, on_zoom=None):
     """계통도 위젯. 큰 계통은 화면보다 넓어지므로 스크롤 상자에 담아 준다.
 
     '위반 보기' 를 켜면 고른 시간대(t)의 부하율·전압위반·변환기한계를 계통도에
@@ -1412,7 +1452,8 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
     view = TopologyView(g, load_places(name), name, c,
                         on_move=lambda pl: save_places(name, pl),
                         show_violations=show_violations, overlay=overlay,
-                        on_line_click=on_line_click)
+                        on_line_click=on_line_click,
+                        zoom=zoom)
     box = QScrollArea()
     box.setObjectName("plot")
     box.setWidget(view)
@@ -1453,6 +1494,58 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
         leg.setStyleSheet(f"color:{c['muted']};font-size:12px;")
         bar.addSpacing(6); bar.addWidget(leg)
     bar.addStretch()
+
+    # ── 확대·축소 (2026-08-19 사용자 요청) ──
+    # 계통도는 버스가 많을수록 기호를 줄여 그리므로(`unit`), 큰 계통에서는 번호가
+    # 작아 읽기 어렵다. 배율을 손으로 올릴 수 있게 한다.
+    # ⚠️ **줄을 짧게 유지한다** — 이 줄은 그래프 칸 안에 있고, 표가 넓게 열리면
+    #    그 칸이 330px 까지 좁아진다(실측). 「확대」 글자와 「원래 크기」 단추를
+    #    넣었더니 곧바로 잘렸다 ⇒ 기호만 남기고 되돌리기는 앱이 이미 쓰는 `⟲` 로.
+    zwrap = QFrame(); zwrap.setObjectName("segwrap"); zwrap.setFixedHeight(32)
+    zwrap.setStyleSheet(f"#segwrap {{ background:{c['bg']};border:1px solid "
+                        f"{c['border']};border-radius:9px; }}")
+    zh = QHBoxLayout(zwrap); zh.setContentsMargins(3, 3, 3, 3); zh.setSpacing(3)
+
+    pct = QLabel()
+    pct.setAlignment(Qt.AlignCenter)
+    pct.setFixedWidth(46)
+    pct.setStyleSheet(f"color:{c['text']};font-size:13px;font-weight:600;")
+
+    def show_pct(_z=None):
+        pct.setText(f"{view.zoom * 100:.0f}%")
+
+    # 🚨 **배율이 바뀌는 길이 둘이다** — 단추와 Ctrl+마우스휠. 단추 쪽에서만 표시를
+    #    갈면 휠로 키웠을 때 숫자가 100% 에 멈춰 있다(실제로 그랬다).
+    #    ⇒ `set_zoom` 이 부르는 이 한 곳에서 표시도 갈고 앱에도 알린다.
+    def note_zoom(z):
+        show_pct()
+        if on_zoom is not None:
+            on_zoom(z)
+
+    def bump(factor):
+        view.set_zoom(view.zoom * factor if factor else 1.0)
+
+    HINT = "  (Ctrl 또는 ⌘ 을 누른 채 마우스를 굴려도 됩니다)"
+    for txt, fac, tip in [("−", 1 / TopologyView.ZOOM_STEP, "계통도를 줄인다"),
+                          (None, None, None),
+                          ("+", TopologyView.ZOOM_STEP, "계통도를 키운다"),
+                          ("⟲", None, "배율을 100% 로 되돌린다")]:
+        if txt is None:
+            zh.addWidget(pct)
+            continue
+        b = QPushButton(txt)
+        b.setObjectName("seg_off")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFixedWidth(32)
+        # 기호 하나뿐이라 기본 크기로는 너무 작아 보인다
+        b.setStyleSheet("font-size:15px;font-weight:600;")
+        b.setToolTip(tip + (HINT if fac else ""))
+        b.clicked.connect(lambda _, f=fac: bump(f))
+        zh.addWidget(b)
+    bar.addWidget(zwrap)
+    view.on_zoom = note_zoom          # 정의가 위젯보다 뒤라 여기서 물린다
+    show_pct()
+
     wv.addLayout(bar)
     wv.addWidget(box, 1)
     wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)

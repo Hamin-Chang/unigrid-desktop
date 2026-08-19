@@ -925,6 +925,9 @@ class Proto(QMainWindow):
         self.case_has_vsc = True      # AC-only 케이스면 False
         self.show_vsc = False
         self.show_violations = False  # 계통도 '위반 보기' 켜짐 여부
+        # 계통도 배율 (2026-08-19). 계통도 위젯은 계산할 때마다 새로 만들어지므로
+        # **여기에 들고 있다가 다시 넘긴다** — 안 그러면 계산 한 번에 100% 로 돌아간다.
+        self.topo_zoom = 1.0
         self.graph_tab = 0            # 보고 있던 그래프 탭 (재생성 때 되돌리려고)
         # 아래쪽 표 탭도 같이 기억한다. **번호가 아니라 이름**으로 — 모드·VSC 표시에 따라
         # 탭 개수가 달라지고, 이름에도 건수가 붙는다("점검 (3)"·"계통 데이터 (2)").
@@ -1407,7 +1410,9 @@ class Proto(QMainWindow):
                     # (한때 하나만 넘겨서 고른 버스가 아니라 늘 첫 버스를 그렸다)
                     real = charts.build(pname, c, self.sol, self.t, self.bus_row,
                                         self.show_violations, self.set_violations,
-                                        self.show_line_profile)
+                                        self.show_line_profile,
+                                        topo_zoom=self.topo_zoom,
+                                        on_topo_zoom=self.set_topo_zoom)
                     lay.addWidget(real if real is not None else PlotBox(pname, c))
                 gt.addTab(page, name)
             # 보고 있던 탭을 되살린다 — 위반 보기 토글 등이 rebuild() 로 화면을
@@ -3811,6 +3816,11 @@ class Proto(QMainWindow):
     def toggle_vsc(self):
         self.set_vsc(not self.show_vsc)
 
+    def set_topo_zoom(self, z):
+        """계통도가 배율을 바꿨다고 알려 온다. **다시 그리지 않는다** — 계통도가
+        스스로 그렸고, 여기서는 다음 계산 때 되살리려고 적어 두기만 한다."""
+        self.topo_zoom = float(z)
+
     def set_violations(self, on):
         """계통도 '위반 보기' 켜기/끄기. 계통도 토글 버튼이 부른다."""
         self.show_violations = bool(on)
@@ -4447,6 +4457,9 @@ class Proto(QMainWindow):
             # 있고(AC 단독 ↔ AC/DC), 앞 계통을 보던 눈이 새 계통에 그대로 걸려 있으면
             # 파일을 열자마자 영문 모를 순서로 늘어서 있다. 위 `graph_kept` 와 같은 계열.
             self.sort_by = {}
+            # 계통도 배율도 새로 — 버스 수가 달라지면 기호 크기가 자동으로 달라지는데
+            # (`unit`), 앞 계통에서 올려 둔 배율이 얹히면 엉뚱한 크기로 뜬다.
+            self.topo_zoom = 1.0
         # 해법 고르기가 볼 케이스 — 방금 푼 그것이다(조건을 바꿔 푼 것이면 그 케이스).
         # 이 값으로 `gs_refusal` 을 물어 Gauss-Seidel 을 흐리게 할지 정한다 (2026-08-12, G8).
         self._case_for_solver = (getattr(getattr(self, "thread", None), "case", None)
@@ -4552,7 +4565,13 @@ class Proto(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     w = Proto()
-    w.show()
+    # 🚨 **처음부터 화면에 꽉 채워 연다** (2026-08-19 사용자 확정).
+    #    이 앱은 표·그래프·계통도를 한 화면에서 같이 보는 도구라 자리가 넓을수록 낫고,
+    #    「표 고르기」 줄처럼 **넓으면 밀 일이 없어지는** 것도 있다.
+    #    ⚠️ 맥 전체화면(메뉴 막대까지 숨기는 것)이 아니라 **최대화**다 —
+    #      다른 창과 같이 쓸 수 있어야 한다.
+    #    창을 되돌리면 위 `__init__` 의 `resize` 크기로 간다.
+    w.showMaximized()
     sys.exit(app.exec())
 
 

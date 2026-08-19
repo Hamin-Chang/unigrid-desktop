@@ -1196,7 +1196,7 @@ def compare_chart(c, sol, item, axis, targets):
 
 
 def build(name, c, sol, t=0, bus_row=0, show_violations=False, on_toggle=None,
-          on_line_click=None):
+          on_line_click=None, topo_zoom=1.0, on_topo_zoom=None):
     """그래프 이름에 맞는 그림을 만든다. 아직 못 그리는 것은 None(자리만 표시).
 
     ⚠️ 이름만 앞부분으로 맞추면 안 된다 — 스냅샷의 "전압 … x축 = 버스" 와
@@ -1224,7 +1224,8 @@ def build(name, c, sol, t=0, bus_row=0, show_violations=False, on_toggle=None,
         if "단선도" in name or "토폴로지" in name:
             import topology
             return topology.topology_view(c, sol, t, show_violations, on_toggle,
-                                          on_line_click)
+                                          on_line_click,
+                                          zoom=topo_zoom, on_zoom=on_topo_zoom)
     except Exception as exc:          # 한 그래프가 죽어도 앱은 살아 있게
         print(f"[그래프] {name} 실패: {exc}")
     return None
