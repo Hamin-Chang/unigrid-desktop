@@ -14,7 +14,6 @@
 
        <뿌리>/src/app_worker.py
        <뿌리>/engine/unigrid_app_mac/   (윈도우는 unigrid_app_win)
-       <뿌리>/cases/                    예제 계통 — 「불러오기」가 여기서 시작한다
 """
 import sys
 from pathlib import Path
@@ -30,9 +29,33 @@ datas = [
     # 컴파일된 계산 엔진 (그 운영체제 것만)
     (str(REPO / "engine" / PKG), f"engine/{PKG}"),
 ]
-# 예제 계통 — 없으면 그냥 넘어간다(엔진만으로도 앱은 뜬다)
-if (REPO / "cases").is_dir():
-    datas.append((str(REPO / "cases"), "cases"))
+# ── 예제 계통 — 🚨 **넣지 않는다** (2026-08-20 사용자 결정) ──────
+# 사용자 지시: *"설치본에는 일단 계통은 다 빼"* — 지금은 교수님께 보여 드리는
+# 단계라 예제가 필요 없다. 고객에게 줄 때 다시 본다.
+#
+# ⚠️ 비어도 앱은 안 죽는다 — 「불러오기」가 그 폴더를 못 찾으면 **사용자 홈 폴더**
+#    에서 창을 연다(`src/app.py` 의 `do_import`: `... else Path.home()`).
+#
+# 되살리는 법 = 아래 목록에 이름을 다시 적는다(그 밑 배선은 그대로 두었다).
+# 빼기 전에 담던 12개와 그 까닭:
+#     ACDC_matacdc_case5.xlsx           가장 작다 (AC 5 · DC 3 · IC 3)
+#     ACDC_CIGRE_MVACMVDCLVDC.xlsx      작은데 AC·DC·IC·DC/DC 가 다 있다
+#     ACDC_case24_MatACDC.xlsx          논문 §4-A 검증 (AC 50 · IC 7)
+#     ACDC_71bus_3IC_parallel.xlsx      마이크로그리드 · 논문 §4-C
+#     ACDC_71bus_L2_genlim.xlsx         점검 탭이 실제로 걸린다 (발전기 한계)
+#     AConly_case14.xlsx                AC 전용 → Gauss-Seidel · PV·QV 곡선
+#     AConly_case118.xlsx               큰 AC — 찾기·정렬이 쓸모 있어지는 크기
+#     ACDC_case24_tapstep.xlsx          계산이 정하는 조정 (계단)
+#     DConly_21bus.xlsx                 DC 전용 (Mode 2)
+#     ACDC_CIGRE_MVACMVDCLVDC_24h.xlsx  24시간 → 다이나믹 · 비교
+#     psse_ieee14.raw                   남의 형식 그대로 열기
+#     matpower_ieee14.m                   〃  (셋 다 같은 IEEE 14 계통이다)
+EXAMPLES = []
+_missing = [n for n in EXAMPLES if not (REPO / "cases" / n).is_file()]
+# 🚨 조용히 빠지면 설치본을 열어 보기 전에는 모른다 — 여기서 멈춘다.
+assert not _missing, f"예제 계통이 없습니다: {_missing}"
+for _n in EXAMPLES:
+    datas.append((str(REPO / "cases" / _n), "cases"))
 # 🚨 사용 조건 — **넣고 빼고 할 것이 아니다.** MathWorks 라이선스가 앱과 함께
 #    배포하는 문서에 조건과 저작권 고지를 넣으라고 요구한다(3.26·23.3·205–210행).
 #    「정보」 창의 [사용 조건 보기] 가 이 파일을 연다.

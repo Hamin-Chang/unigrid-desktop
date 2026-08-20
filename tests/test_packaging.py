@@ -8,12 +8,13 @@
 
 보는 것
     1) 포장 설정·스크립트가 다 있나
-    2) 🚨 spec 이 **같이 넣는 것 셋**(app_worker.py · engine · cases)을 담나
+    2) 🚨 spec 이 **같이 넣는 것 둘**(app_worker.py · engine)을 담나 — 예제 계통은 일부러 뺐다
     3) 🚨 spec 이 `matlab`·엔진 패키지를 **일부러 빼나** (얼려 넣으면 판이 어긋난다)
     4) 앱이 실제로 쓰는 Qt 모듈이 **빼는 목록에 안 들었나** (빼면 앱이 안 뜬다)
     5) 윈도우 스크립트가 보는 자리가 PyInstaller 6 배치(`_internal/`)와 맞나
     6) 윈도우로 가는 파일은 **이름이 영문**인가 (지난 인계에서 한글이 깨졌다)
     7) `.iss` 가 UTF-8 BOM 인가 (Inno Setup 6 이 한글을 읽으려면)
+    8) 🚨 PySide6 판이 **핀과 같은가** (맥·윈도우가 갈리면 한쪽에서만 안 열린다)
 """
 import re
 import sys
@@ -39,9 +40,11 @@ for f in ("unigrid.spec", "build_mac.sh", "make_dmg.sh",
 
 spec = (PKG / "unigrid.spec").read_text(encoding="utf-8")
 
-print("\n[2] 🚨 같이 넣는 것 셋을 담나")
-for what in ("app_worker.py", '"engine" / PKG', '"cases"'):
+print("\n[2] 🚨 같이 넣는 것 둘을 담나")
+# 🚨 예제 계통은 **일부러 뺐다** (2026-08-20 사용자 결정) — spec 의 `EXAMPLES` 가 비어 있다.
+for what in ("app_worker.py", '"engine" / PKG'):
     check(f"spec 이 {what} 를 넣나", what in spec, True)
+check("spec 이 예제 계통을 안 넣나", "EXAMPLES = []" in spec, True)
 
 print("\n[3] 🚨 matlab·엔진 패키지를 일부러 빼나")
 # 이것들은 MATLAB Runtime 쪽에 있고 **돌 때 sys.path 로** 찾는다.
@@ -70,6 +73,19 @@ for f in PKG.iterdir():
     if f.suffix in (".bat", ".iss") or f.name.startswith("README"):
         ascii_ok = f.name.isascii()
         check(f"{f.name}", ascii_ok, True)
+
+# 🚨 2026-08-19 계기 — cmd.exe 는 UTF-8 한글을 CP949 로 잘못 읽고,
+#    LF 만 있는 줄에서 for/if 블록 파싱이 깨진다. 윈도우에서 .bat 이
+#    통째로 쓰레기를 뱉었다. .bat 은 ASCII + CRLF 여야 한다.
+#    .iss·InfoBeforeFile 은 한글을 쓰되 UTF-8 BOM + CRLF 여야 Inno 가 읽는다.
+bat = PKG / "build_win.bat"
+bb = bat.read_bytes()
+check("build_win.bat 이 ASCII 인가", bb.isascii(), True)
+check("build_win.bat 이 CRLF 인가", bb.count(b"\n") - bb.count(b"\r\n"), 0)
+for name in ("unigrid.iss", "README_before_install.txt"):
+    wb = (PKG / name).read_bytes()
+    check(f"{name} 이 CRLF 인가", wb.count(b"\n") - wb.count(b"\r\n"), 0)
+    check(f"{name} 이 BOM 인가", wb[:3] == b"\xef\xbb\xbf", True)
 
 print("\n[7] 🚨 라이선스 의무 — 지우면 배포 조건 위반")
 # MathWorks 소프트웨어 라이선스 계약이 요구하는 것
@@ -100,6 +116,23 @@ check("설치 중에 사용 조건을 띄우나", "LicenseFile" in iss, True)
 print("\n[8] .iss 가 UTF-8 BOM 인가")
 head = (PKG / "unigrid.iss").read_bytes()[:3]
 check("BOM", head == b"\xef\xbb\xbf", True)
+
+# 🚨 2026-08-19 계기 — 윈도우에서 PySide6 6.11.1 이 아예 안 열렸다(Qt6Core.dll 이 찾는
+#    ICU 함수가 wheel 에 없다). 6.9.1 로 내려 **맥·윈도우 같은 판**으로 맞췄는데,
+#    한쪽에서만 올리면 판이 조용히 갈리고 "맥에선 되는데 윈도우에선 안 된다"가 된다.
+#    ⇒ 핀과 실제로 깔린 판이 같은지 여기서 본다.
+print("\n[9] PySide6 판이 맥·윈도우에서 같은가")
+PIN = "6.9.1"
+req = (REPO / "requirements.txt").read_text(encoding="utf-8")
+m = re.search(r"^PySide6==(\S+)", req, re.M)
+check("requirements.txt 가 판을 박아 두나", bool(m), True)
+if m:
+    check(f"박아 둔 판이 {PIN} 인가", m.group(1), PIN)
+    try:
+        import PySide6
+        check("지금 깔린 판이 핀과 같은가", PySide6.__version__, m.group(1))
+    except ImportError:
+        check("PySide6 를 부를 수 있나", False, True)
 
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.exit(1 if fails else 0)
