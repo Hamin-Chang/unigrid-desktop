@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import io
 import json
 import platform
 import subprocess
@@ -479,6 +480,28 @@ def curve_refusal(case: Any) -> str | None:
     return None
 
 
+def _mat_streams() -> tuple[Any, Any]:
+    """MATLAB 함수에 넘길 stdout·stderr 자리.
+
+    🚨 **얼린 윈도우 앱에서는 이걸 반드시 넘겨야 한다** (2026-08-20).
+       MATLAB Runtime 이 만든 파이썬 패키지는 이 둘을 안 주면 `sys.stdout` 을
+       쓰는데, PyInstaller 로 `console=False` 로 얼린 윈도우 앱에서는 그게
+       **`None`** 이다. 그러면 계산이 끝나고 출력을 비우는 자리에서 죽고,
+       사용자에게는 이렇게 뜬다 —
+
+           An error occurred when evaluating the result from a function.
+           Details: 플러시에서 오류가 발생했습니다.
+
+       ⚠️ 맥에서는 안 나온다 — 맥은 계산을 `mwpython` **별도 프로세스**로 돌려
+          그쪽 stdout 이 살아 있다. 윈도우만 같은 프로세스에서 부른다.
+          그래서 이 길은 맥에서 한 번도 밟히지 않는다.
+
+    돌려주는 것은 버리는 자리다. 담긴 글은 MATLAB 이 찍은 진행 메시지라
+    사용자에게 보일 것이 아니고, 계산이 죽으면 예외 쪽에 문구가 따로 온다.
+    """
+    return io.StringIO(), io.StringIO()
+
+
 def _curve_in_process(payload: dict[str, Any]) -> dict[str, Any]:
     import importlib
     sys.path.insert(0, str(paths.engine_dir()))
@@ -495,9 +518,11 @@ def _curve_in_process(payload: dict[str, Any]) -> dict[str, Any]:
         def row(v):
             return matlab.double([[float(x) for x in v]]) if v else matlab.double([])
 
+        _so, _se = _mat_streams()
         res = app.runCPF_app(payload["case_name"], payload["mode"], *args,
                              row(cpf.get("load_buses")), row(cpf.get("curve_buses")),
-                             matlab.double([]), nargout=1)
+                             matlab.double([]), nargout=1,
+                             stdout=_so, stderr=_se)
     finally:
         app.terminate()
     return {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in res.items()}
@@ -797,16 +822,19 @@ def _run_in_process(case: Any, method: str = "nr") -> dict[str, Any]:
                  "DC_PLoad_dat")
         args = [matlab.double(payload["tables"][k]) if payload["tables"][k]
                 else matlab.double([]) for k in order]
+        _so, _se = _mat_streams()
         if method == "gs":
             gs_order = ("Base_dat", "AC_Bus_dat", "AC_Line_dat", "AC_gen_dat",
                         "AC_3wtrans_dat", "AC_PLoad_dat", "AC_QLoad_dat")
             gs_args = [matlab.double(payload["tables"][k]) if payload["tables"][k]
                        else matlab.double([]) for k in gs_order]
             res = app.runpfGS_app(payload["case_name"], payload["mode"],
-                                  *gs_args, nargout=1)
+                                  *gs_args, nargout=1,
+                                  stdout=_so, stderr=_se)
         else:
             res = app.runpf_unigrid_app(payload["case_name"], payload["mode"],
-                                        *args, nargout=1)
+                                        *args, nargout=1,
+                                        stdout=_so, stderr=_se)
     finally:
         app.terminate()
     return {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in res.items()}

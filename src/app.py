@@ -11,6 +11,23 @@
 import os
 import sys
 import time
+
+# ── 🚨 얼린 윈도우 앱에는 `sys.stdout` 이 없다 (2026-08-20) ───────────
+# PyInstaller 로 `console=False` 로 얼리면 윈도우에서 `sys.stdout`·`sys.stderr`
+# 가 **`None`** 이 된다. 그러면 `print()` 한 줄에도 앱이 죽고, MATLAB Runtime 이
+# 만든 파이썬 패키지는 계산을 마치고 출력을 비우는 자리에서 죽는다 —
+#     "An error occurred when evaluating the result from a function.
+#      Details: 플러시에서 오류가 발생했습니다."
+# ⚠️ 맥에서는 안 드러난다(맥은 계산을 별도 프로세스로 돌리고 그쪽 stdout 이 산다).
+# 버릴 자리를 하나 끼워 둔다. 진짜 원인은 `app_engine._mat_streams` 쪽에서
+# 함수마다 따로 넘기고, 이건 그 밖의 모든 `print` 를 위한 안전망이다.
+if sys.stdout is None or sys.stderr is None:
+    import io as _io
+    if sys.stdout is None:
+        sys.stdout = _io.StringIO()
+    if sys.stderr is None:
+        sys.stderr = _io.StringIO()
+
 import math
 import re
 import random
@@ -42,8 +59,14 @@ import exporter
 # 남의 컴퓨터에서는 앱이 떠도 파일을 하나도 못 열었다 — 공개 배포가 안 되는 구조였다.
 try:
     from load_case import load_case
-except Exception:                      # 그래도 앱은 뜨게 (무엇이 없는지는 불러올 때 알린다)
+    _LOAD_CASE_ERR = ""
+except Exception as _exc:              # 그래도 앱은 뜨게 — 대신 **왜** 못 불렀는지 붙든다
+    # 🚨 2026-08-20: 윈도우 설치본에서 이게 걸렸는데 **원인이 안 보였다.**
+    #    `load_case` 는 pandas 를 부르는데, 그 판 venv 에 pandas 가 없어 얼릴 때
+    #    같이 안 들어갔다. 앱은 "못 찾았습니다" 한 줄만 띄워서, 무엇이 없는지
+    #    알아내려고 소스로 따로 돌려 봐야 했다. ⇒ 예외 문구를 그대로 보여 준다.
     load_case = None
+    _LOAD_CASE_ERR = f"{type(_exc).__name__}: {_exc}"
 
 import scenario as SC          # 계통 조건 바꾸기 (PDR §7 2단계)
 
@@ -4490,8 +4513,12 @@ class Proto(QMainWindow):
         if not path:
             return
         if load_case is None:
-            QMessageBox.warning(self, "불러오기",
-                                "케이스 읽기 모듈(load_case)을 찾지 못했습니다.")
+            QMessageBox.warning(
+                self, "불러오기",
+                "케이스 읽기 모듈(load_case)을 불러오지 못했습니다.\n\n"
+                f"원인 — {_LOAD_CASE_ERR or '알 수 없음'}\n\n"
+                "필요한 것이 빠진 채로 앱이 만들어졌습니다. 만든 쪽에서\n"
+                "`pip install -r requirements.txt` 뒤에 다시 만들어야 합니다.")
             return
 
         self._start_solve(path)
