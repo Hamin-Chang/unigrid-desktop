@@ -1,4 +1,4 @@
-UNIGRID — 설치하기 전에
+﻿UNIGRID — 설치하기 전에
 
 ■ 무엇이 더 필요한가
   계산을 하려면 MATLAB Runtime R2024b 가 있어야 합니다.

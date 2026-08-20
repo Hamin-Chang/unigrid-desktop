@@ -38,7 +38,7 @@ AC 계통, DC 계통, 그리고 **둘이 변환기로 이어진 AC/DC 혼합 계
 |---|---|---|
 | 파이썬 | **3.12** | 엔진은 3.9~3.12 를 받지만 3.12 로 시험한다 |
 | **MATLAB Runtime** | **R2024b (24.2)** | 무료다. 계산 엔진이 이것 위에서 돈다 |
-| 파이썬 패키지 | `requirements.txt` | PySide6 6.11.1 · numpy · pandas · openpyxl |
+| 파이썬 패키지 | `requirements.txt` | PySide6 **6.9.1** · numpy · pandas · openpyxl |
 
 MATLAB 본체는 **필요 없다.** Runtime 만 있으면 된다.
 Runtime 이 없으면 앱은 뜨되 **어디에 무엇을 깔아야 하는지 알려 주는 화면**을 띄운다.

@@ -22,6 +22,9 @@ venv/
 # PyInstaller 가 뱉는 것. `packaging/unigrid.spec` 은 **올린다** — 그게 설정이다.
 packaging/build/
 packaging/dist/
+# import 진단 probe 산출물 (2026-08-20) — `packaging/diag_win.bat` 이 만든다
+packaging/probe_build/
+packaging/probe_dist/
 *.spec.bak
 
 # ── 빌드 산출물 (크다) ──
@@ -45,3 +48,9 @@ results/
 # ── 맥 · iCloud ──
 .DS_Store
 *.icloud
+
+# 작업 산출물 — 저장소에 담지 않는다 (2026-08-20)
+# 화면 캡처 50장(7.8M)은 소개 자료(PPT·Artifact)에 이미 들어갔다. 만드는 법은
+# `tests/shot_all.py` 에 있으므로 언제든 다시 뽑을 수 있다.
+shots_*/
+_backup_*.bat
