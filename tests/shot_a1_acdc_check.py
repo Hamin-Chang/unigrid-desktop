@@ -24,7 +24,7 @@ import app_engine
 from load_case import load_case
 
 CASES = [("ACDC_case24_tapctrl", "탭"), ("ACDC_case24_phasectrl", "위상"),
-         ("ACDC_case24_svc", "SVC"), ("ACDC_case24_tapstep", "탭")]
+         ("ACDC_case24_shuntctrl", "SVC"), ("ACDC_case24_tapstep", "탭")]
 
 class Fake:
     def __init__(s, c): s.loaded_case = c; s.case = None
