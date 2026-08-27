@@ -90,20 +90,30 @@ tb = win._grid_tb
 off = win._grid_off
 typed = [(13, 2), (15, TARGET), (16, -20), (17, 20), (18, 0)]   # Ctrl Bus 는 안 친다
 for col, val in typed:
-    it = QTableWidgetItem(f"{val:g}")
-    tb.setItem(ROW, col + off, it)
-    win.grid_edited("AC_Line_dat", it, off, {})
+    win.adj_typed("AC_Line_dat", ROW, col, str(val))
     pump(0.15)
     tb, off = win._grid_tb, win._grid_off
     if col == 13:
-        nxt = (tb.currentRow(), tb.currentColumn())
-        want = (ROW, 15 + off)
-        print(f"\n[2] Ctrl Mode 에 2 를 친 뒤 골라진 칸 = {nxt} "
-              f"(바라는 것 {want} = Ctrl Target)")
-        ok2 = nxt == want
-        print(f"    {'✅ Ctrl Bus 를 건너뛴다' if ok2 else '🚨 안 건너뛴다'}")
+        # 🚨 옛 판은 **표에서** 다음 칸을 고를 때 Ctrl Bus 를 건너뛰는지 봤다.
+        #    2026-08-27 부터 고치는 곳이 패널이라 「다음 칸」이라는 것이 없다 —
+        #    대신 **패널이 그 칸을 아예 안 내주는지**를 본다.
+        import adjust_panel as ADJ
+        from PySide6.QtWidgets import QLabel as _QL
+        win.grid_key = ADJ.KEY
+        win.rebuild()
+        pump(0.4)
+        pan = win.grid_table_widget()
+        txts = [w.text() for w in pan.findChildren(_QL)]
+        ok2 = "이 선로 자신" in txts
+        print(f"\n[2] 모드 2 일 때 패널의 「맞추는 곳」 = "
+              f"{[x for x in txts if '선로' in x or '버스' in x]}")
+        print(f"    {'✅ 버스를 안 묻고 「이 선로 자신」이라 말한다' if ok2 else '🚨 아니다'}")
         if not ok2:
-            fails.append("Ctrl Bus 안 건너뜀")
+            fails.append("패널이 Ctrl Bus 를 안 감춤")
+        win.grid_key = "AC_Line_dat"
+        win.rebuild()
+        pump(0.3)
+        tb, off = win._grid_tb, win._grid_off
 print(f"\n    바꾼 것 {len(win.changes)}건")
 for ch in win.changes:
     print(f"      · {ch.label}")
@@ -156,12 +166,13 @@ tb2, off2 = win._grid_tb, win._grid_off
 bus_cell = tb2.item(ROW, 14 + off2)          # 위상을 건 8번 줄
 other = tb2.item(0, 14 + off2)               # 조정을 안 건 1번 줄
 locked = not (bus_cell.flags() & Qt.ItemIsEditable)
+other_locked = not (other.flags() & Qt.ItemIsEditable)
 print(f"    위상 건 줄  값 {bus_cell.text()!r} · 잠김 {locked}")
-print(f"    안 건 줄    값 {other.text()!r} · 고칠 수 있나 "
-      f"{bool(other.flags() & Qt.ItemIsEditable)}")
-ok5 = (bus_cell.text() == "—" and locked
-       and bool(other.flags() & Qt.ItemIsEditable))
-print(f"    {'✅ 모드 2 에서만 잠긴다' if ok5 else '🚨 아니다'}")
+print(f"    안 건 줄    값 {other.text()!r} · 잠김 {other_locked}")
+# 🚨 2026-08-27 — 이제 **두 줄 다 잠긴다**(표는 읽는 곳이다). 모드 2 인 줄은
+#    「—」로 *그 칸을 안 쓴다*는 것까지 말해 준다.
+ok5 = bus_cell.text() == "—" and locked and other_locked
+print(f"    {'✅ 표에서는 다 잠기고, 모드 2 는 「—」로 안 쓴다고 말한다' if ok5 else '🚨 아니다'}")
 if not ok5:
     fails.append("Ctrl Bus 잠금")
 win.grab().save(str(OUT / "A1_위상_CtrlBus잠김.png"))

@@ -82,18 +82,18 @@ bare = [h.split("[")[0].strip() for h in heads]
 ok1 = "Shunt Ctrl Mode" in bare and "Shunt Step Size" in bare
 cell = tb.item(ROW, 17 + off)
 editable = bool(cell.flags() & Qt.ItemIsEditable)
-print(f"    버스 {BUS} 의 Shunt Ctrl Mode 칸: 값 {cell.text()!r} · 고칠 수 있나 {editable}")
-ok1 = ok1 and editable
+print(f"    버스 {BUS} 의 Shunt Ctrl Mode 칸: 값 {cell.text()!r} · 표에서 고칠 수 있나 {editable}")
+# 🚨 2026-08-27 부터 **표에서는 잠긴다** — 고치는 곳은 [⚙ AC 조정] 패널 하나다.
+#    값은 그대로 보여야 한다(엑셀에 있는 칸이라 감추지 않는다).
+ok1 = ok1 and not editable and "조정" in (cell.toolTip() or "")
 print(f"    {'✅ 보이고 고칠 수 있다' if ok1 else '🚨 아니다'}")
 if not ok1:
-    fails.append("칸이 안 보임")
+    fails.append("칸이 안 보이거나 표에서 안 잠김")
 
 print("\n[2] 고치면 '바꾼 것' 에 얹히나")
 typed = [(17, 2), (18, TARGET), (19, -50), (20, 50), (21, 0)]
 for col, val in typed:
-    it = QTableWidgetItem(f"{val:g}")
-    tb.setItem(ROW, col + off, it)
-    win.grid_edited("AC_Bus_dat", it, off, {})
+    win.adj_typed("AC_Bus_dat", ROW, col, str(val))
     pump(0.15)
     tb, off = win._grid_tb, win._grid_off
 print(f"    바꾼 것 {len(win.changes)}건")

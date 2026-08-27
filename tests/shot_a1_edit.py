@@ -89,16 +89,18 @@ else:
     off = win._grid_off
     cell = tb.item(ROW, 13 + off)
     editable = bool(cell.flags() & Qt.ItemIsEditable)
-    print(f"    9번 줄 Ctrl Mode 칸: 값 {cell.text()!r} · 고칠 수 있나 {editable}")
-    if not editable:
-        fails.append("Ctrl Mode 를 못 고침")
+    # 🚨 2026-08-27 부터 **표에서는 잠긴다** — 고치는 곳은 [⚙ AC 조정] 패널 하나다.
+    #    값은 그대로 보여야 한다(엑셀에 있는 칸이라 감추지 않는다).
+    print(f"    9번 줄 Ctrl Mode 칸: 값 {cell.text()!r} · 표에서 고칠 수 있나 {editable}")
+    if editable:
+        fails.append("표에서 잠겨야 하는데 고쳐진다")
+    if "조정" not in (cell.toolTip() or ""):
+        fails.append("어디서 고치는지 안 알려 준다")
 
 print("\n[2] 고치면 '바꾼 것' 에 얹히나")
 off = win._grid_off
 for col, val in ((13, 1), (14, BUS), (15, TARGET), (16, 0.9), (17, 1.1), (18, 0)):
-    it = QTableWidgetItem(f"{val:g}")
-    tb.setItem(ROW, col + off, it)          # 사람이 친 것과 같은 길
-    win.grid_edited("AC_Line_dat", it, off, {})
+    win.adj_typed("AC_Line_dat", ROW, col, f"{val:g}")   # 패널에서 친 것과 같은 길
     tb, heads = grid()                      # rebuild 로 표가 새로 만들어진다
 print(f"    바꾼 것 {len(win.changes)}건")
 for ch in win.changes:

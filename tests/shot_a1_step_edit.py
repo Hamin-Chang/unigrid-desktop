@@ -85,20 +85,19 @@ print(f"    오른쪽 끝 머리글 {heads[-6:]}")
 ok1 = "Ctrl Mode" in heads and "Ctrl Step Size" in heads
 cell = tb.item(ROW, 18 + off)                    # 19열(1부터) = Ctrl Step Size
 editable = bool(cell.flags() & Qt.ItemIsEditable)
-print(f"    9번 선로의 Ctrl Step Size 칸: 값 {cell.text()!r} · 고칠 수 있나 {editable}")
-ok1 = ok1 and editable
+print(f"    9번 선로의 Ctrl Step Size 칸: 값 {cell.text()!r} · 표에서 고칠 수 있나 {editable}")
+# 🚨 2026-08-27 부터 **표에서는 잠긴다** — 고치는 곳은 [⚙ AC 조정] 패널 하나다.
+#    값은 그대로 보여야 한다(엑셀에 있는 칸이라 감추지 않는다).
+ok1 = ok1 and not editable and "조정" in (cell.toolTip() or "")
 print(f"    {'✅ 보이고 고칠 수 있다' if ok1 else '🚨 아니다'}")
 if not ok1:
-    fails.append("칸이 안 보임")
+    fails.append("칸이 안 보이거나 표에서 안 잠김")
 
 print("\n[2] 조정 + 한 단 크기를 치면 '바꾼 것' 에 얹히나")
 typed = [(13, 1), (14, CTRL_BUS), (15, TARGET), (16, TMIN), (17, TMAX), (18, STEP)]
 for col, val in typed:
-    it = QTableWidgetItem(f"{val:g}")
-    tb.setItem(ROW, col + off, it)
-    win.grid_edited("AC_Line_dat", it, off, {})
+    win.adj_typed("AC_Line_dat", ROW, col, f"{val:g}")   # 패널에서 친 것과 같은 길
     pump(0.15)
-    tb, off = win._grid_tb, win._grid_off
 print(f"    바꾼 것 {len(win.changes)}건")
 for ch in win.changes:
     print(f"      · {ch.label}")
@@ -162,9 +161,7 @@ win.grid_key = "AC_Line_dat"
 win.rebuild()
 pump(0.3)
 tb2, off2 = win._grid_tb, win._grid_off
-it = QTableWidgetItem("")                       # 지워서 비운다 = 연속
-tb2.setItem(ROW, 18 + off2, it)
-win.grid_edited("AC_Line_dat", it, off2, {})
+win.adj_typed("AC_Line_dat", ROW, 18, "")       # 지워서 비운다 = 연속
 pump(0.2)
 c3 = SC.apply(win.base_case, win.applied + win.changes)
 sol3 = app_engine.solve(c3)
@@ -184,11 +181,8 @@ win.rebuild()
 pump(0.3)
 tb3, off3 = win._grid_tb, win._grid_off
 for cc in (16, 17):                              # Ctrl Min · Ctrl Max
-    it = QTableWidgetItem("")
-    tb3.setItem(ROW, cc + off3, it)
-    win.grid_edited("AC_Line_dat", it, off3, {})
+    win.adj_typed("AC_Line_dat", ROW, cc, "")
     pump(0.15)
-    tb3, off3 = win._grid_tb, win._grid_off
 c4 = SC.apply(win.base_case, win.applied + win.changes)
 sol4 = app_engine.solve(c4)
 tap4 = np.asarray(sol4.tap_ctrl, dtype=float)

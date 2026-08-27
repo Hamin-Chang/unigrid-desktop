@@ -68,7 +68,8 @@ except Exception as _exc:              # 그래도 앱은 뜨게 — 대신 **�
     load_case = None
     _LOAD_CASE_ERR = f"{type(_exc).__name__}: {_exc}"
 
-import scenario as SC          # 계통 조건 바꾸기 (PDR §7 2단계)
+import scenario as SC
+import adjust_panel as ADJ          # 계통 조건 바꾸기 (PDR §7 2단계)
 
 
 def _grid_headers():
@@ -130,9 +131,11 @@ GRID_SCALES = _grid_scales()
 # A1 조정 열(14~19)은 옛 파일에 없다 — 안 보여 주면 켤 방법이 없다.
 GRID_PAD_TO_HEADERS = {"AC_Line_dat", "AC_Bus_dat"}
 
+# 🚨 **A1 조정 칸은 여기 없다** (2026-08-27). 엑셀에는 있는 칸이고 표에 **값도 그대로
+#    보여 주지만**, 고치는 곳은 `⚙ AC 조정` 패널 하나다 — 표 안에서도 고칠 수 있게 두면
+#    같은 값을 고치는 자리가 둘이 되고, 표 쪽은 19칸 중 14~19번째라 화면 밖이다.
+#    아래 `GRID_PANEL_COLS` 가 그 칸을 「패널에서 고친다」고 알려 준다.
 GRID_EDITABLE = {
-    "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # A1 조정 — Mode·Bus·Target·Min·Max·Steps
-    "AC_Bus_dat": {17, 18, 19, 20, 21},        # A1 ④ SVC — Shunt Mode·Target·Bmin·Bmax·Steps
     "AC_gen_dat": {2, 3, 4, 7},        # 운전모드 · P-f droop · Q-V droop · 지정전압
     "DC_gen_dat": {2, 3, 5},           # 운전모드 · P-Vdc droop · 지정전압
     "IC_dat": {2, 3, 4, 5, 6, 7, 8},   # AC/DC 제어모드 · droop 셋 · P·Q 동작점
@@ -147,7 +150,11 @@ GRID_EDITABLE = {
 #      하는지 먼저 확인하고 여기 더한다.
 #   계기: 계단을 켠 뒤 한계를 다시 비워 자동(0.9~1.1)으로 돌리려는데 **방법이 없었다** —
 #         `float("")` 이 걸려 "숫자가 아닙니다" 로 되돌아갔다.
-GRID_CLEARABLE = {
+GRID_CLEARABLE: dict[str, set[int]] = {}   # 조정 칸이 패널로 옮겨 가며 비었다 (2026-08-27)
+
+# 표에서는 **읽기만** 하고 `⚙ AC 조정` 패널에서 고치는 칸. 회색으로 두되 칸을 짚으면
+# 어디서 고치는지 말해 준다 — 안 그러면 "왜 안 고쳐지지" 로 끝난다.
+GRID_PANEL_COLS = {
     "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # Ctrl Mode·Bus·Target·Min·Max·Step Size
     "AC_Bus_dat": {17, 18, 19, 20, 21},        # Shunt Ctrl Mode·Target·Bmin·Bmax·Step Size
 }
@@ -2831,7 +2838,7 @@ class Proto(QMainWindow):
         if not picks:
             v.addWidget(QLabel("보여 줄 표가 없습니다."))
             return w
-        if self.grid_key not in [k for k, _, _ in picks]:
+        if self.grid_key != ADJ.KEY and self.grid_key not in [k for k, _, _ in picks]:
             self.grid_key = picks[0][0]
 
         row = QHBoxLayout()
@@ -2842,10 +2849,20 @@ class Proto(QMainWindow):
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, k=key: self.set_grid_table(k))
             row.addWidget(b)
+        # 자동 조정은 **표가 아니라 패널**이다 — 넷이 두 표에 갈려 있고 흰 칸이
+        # 화면 밖이라 따로 뺐다 (2026-08-27, `adjust_panel.py` 머리말 참조).
+        ab = QPushButton(f"\u2699 AC 조정 {ADJ.count(self)}")
+        ab.setObjectName("seg_on" if self.grid_key == ADJ.KEY else "seg_off")
+        ab.setCursor(Qt.PointingHandCursor)
+        ab.clicked.connect(lambda: self.set_grid_table(ADJ.KEY))
+        row.addWidget(ab)
         # 찾기 칸을 **같은 줄에** 붙인다. 따로 한 줄을 쓰면 바가 셋이 되어
         # (표 고르기·부하·찾기) 표에 줄이 한 줄도 안 남는다(2026-08-13 실측).
         row.addSpacing(10)
-        row.addWidget(self.find_bar(inline=True))
+        if self.grid_key != ADJ.KEY:
+            # 「조정」은 표가 아니다 — 버스 번호로 좁힐 것도, 셀 줄도 없다
+            # (넣어 두면 「0줄」이 찍힌다).
+            row.addWidget(self.find_bar(inline=True))
         row.addStretch(1)
         # 안내는 **글줄로 두지 않고** 표 고르기 단추의 설명으로 옮겼다 — 그 자리에
         # 부하 슬라이더를 들여야 한 줄이 준다.
@@ -2854,7 +2871,8 @@ class Proto(QMainWindow):
             if isinstance(wd, QPushButton):
                 wd.setToolTip("켜고 끄기는 바로 계산하지 않습니다 — "
                               "다 바꾼 뒤 위의 [이 조건으로 계산] 을 누르세요.")
-        load = self.load_bar(inline=True)       # ② 부하 일괄 증감 — **같은 줄에**
+        load = (self.load_bar(inline=True)      # ② 부하 일괄 증감 — **같은 줄에**
+                if self.grid_key != ADJ.KEY else None)
         if load is not None:
             row.addWidget(load)
 
@@ -2963,12 +2981,15 @@ class Proto(QMainWindow):
         self.rebuild()
 
     def grid_table_widget(self):
-        """지금 고른 표 하나를 그린다.
+        """지금 고른 표 하나를 그린다 (「조정」이면 표가 아니라 패널이다).
 
         · 켤 수 있는 표면 첫 칸이 스위치
         · **화면 단위로 바꿔서** 보여 준다 (엔진은 W, 화면은 MW — 머리글이 [MW] 니까)
         · ③ 운전 조건 칸만 고칠 수 있고, 나머지는 회색이다
+        · 자동 조정 칸도 회색이다 — 값은 보이되 고치는 곳은 [⚙ AC 조정] 패널이다
         """
+        if self.grid_key == ADJ.KEY:
+            return ADJ.panel(self)
         c = self.c
         key = self.grid_key
         sw = SC.SWITCHES.get(key)
@@ -3020,6 +3041,8 @@ class Proto(QMainWindow):
             else:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
+                if j in GRID_PANEL_COLS.get(key, set()):
+                    it.setToolTip("자동 조정 값입니다 — 위의 [⚙ AC 조정] 에서 고칩니다")
             if (r, j) in touched:
                 it.setForeground(QColor(c["warn"]))
             return it
@@ -3175,6 +3198,50 @@ class Proto(QMainWindow):
             nxt = [x for x in nxt if x != 14]
         self._grid_focus = (item.row(), (nxt[0] if nxt else col) + off)
         self.rebuild()
+
+    # ── 자동 조정 패널이 값을 쓰는 길 (2026-08-27) ───────────────────
+    #   🚨 표를 고치는 것과 **똑같이** `SC.Cell` 하나를 얹는다. 패널은 화면일 뿐이고
+    #      데이터가 흐르는 길은 하나여야 [이 조건으로 계산]·시나리오·되돌리기·비교가
+    #      손대지 않고 그대로 돈다.
+
+    def adj_set(self, table, row, col, value):
+        """조정 칸 하나를 값으로 쓴다 (`value` 가 NaN 이면 「안 적음」)."""
+        cur = SC._values(SC.apply(self.base_case, self.applied + self.changes), table)
+        before = float(cur[row, col]) if col < cur.shape[1] else float("nan")
+        if np.isnan(before) and np.isnan(value):
+            return
+        if not np.isnan(before) and not np.isnan(value) and before == value:
+            return
+        head = GRID_HEADERS.get(table, [])
+        name = head[col] if col < len(head) else f"{col + 1}열"
+        self.changes = [ch for ch in self.changes
+                        if not (isinstance(ch, SC.Cell) and ch.table == table
+                                and ch.row == row and ch.col == col)]
+        self.changes.append(SC.Cell(
+            table=table, row=row, col=col, value=value,
+            label=(f"{SC.describe_row(self.base_case, table, row)} {name} → "
+                   + ("(비움)" if np.isnan(value) else f"{value:g}")),
+            mark=SC.row_mark(self.base_case, table, row)))
+        self.rebuild()
+
+    def adj_typed(self, table, row, col, text):
+        """패널의 숫자 칸에 친 것. 비우면 「안 적음」이다."""
+        txt = (text or "").strip().replace(",", "")
+        if txt == "":
+            self.adj_set(table, row, col, float("nan"))
+            return
+        try:
+            self.adj_set(table, row, col, float(txt))
+        except ValueError:
+            QMessageBox.information(self, "숫자를 넣어 주세요",
+                                    f"'{text}' 는 숫자가 아닙니다.")
+            self.rebuild()
+
+    def adj_remove(self, table, row):
+        """그 조정을 통째로 지운다 — 여섯 칸을 다 비워야 흔적이 안 남는다."""
+        for col in ADJ._cols(table):
+            if col is not None:
+                self.adj_set(table, row, col, float("nan"))
 
     def set_grid_table(self, key):
         self.grid_key = key
