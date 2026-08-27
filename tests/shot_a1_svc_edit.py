@@ -145,17 +145,22 @@ else:
         fails.append("카드 내용")
     win.grab().save(str(OUT / "A1_SVC_손으로입력.png"))
 
-print("\n[5] 조정 칸이 아닌 곳은 여전히 못 고치나")
+print("\n[5] 값 칸은 열려 있고, 션트 조정 칸은 패널이 가져갔나")
+# 🚨 2026-08-27 부터 **값 칸은 연다**. V_min 은 열려야 하고, 잠기는 것은 션트 조정 칸이다.
 win.table_tab = "계통 데이터"
 win.grid_key = "AC_Bus_dat"
 win.rebuild()
 pump(0.3)
 tb2, off2 = win._grid_tb, win._grid_off
 vmin = tb2.item(ROW, 14 + off2)          # V_min [pu]
-locked = not (vmin.flags() & Qt.ItemIsEditable)
-print(f"    V_min 칸 잠김 {locked} {'✅' if locked else '🚨 열려 있다'}")
-if not locked:
-    fails.append("V_min 이 열림")
+shunt = tb2.item(ROW, 17 + off2)         # Shunt Ctrl Mode — 패널이 가져갔다
+v_open = bool(vmin.flags() & Qt.ItemIsEditable)
+s_locked = not (shunt.flags() & Qt.ItemIsEditable)
+print(f"    V_min 열림 {v_open} · Shunt Ctrl Mode 잠김 {s_locked}")
+if not v_open:
+    fails.append("V_min 이 안 열림")
+if not s_locked:
+    fails.append("Shunt Ctrl Mode 가 안 잠김")
 
 print("\n" + ("🚨 실패 " + ", ".join(fails) if fails else "✅ 전부 통과"))
 sys.stdout.flush()

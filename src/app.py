@@ -69,7 +69,8 @@ except Exception as _exc:              # 그래도 앱은 뜨게 — 대신 **�
     _LOAD_CASE_ERR = f"{type(_exc).__name__}: {_exc}"
 
 import scenario as SC
-import adjust_panel as ADJ          # 계통 조건 바꾸기 (PDR §7 2단계)
+import adjust_panel as ADJ
+import cell_rules as RULES          # 계통 조건 바꾸기 (PDR §7 2단계)
 
 
 def _grid_headers():
@@ -171,6 +172,30 @@ SCENARIO_ROWS = 4
 SCENARIO_ROW_H = 42   # 실측 줄 간격(렌더에서 잼 — sizeHint 증가분 25 와 다르다)
 
 # 계통 데이터 탭에 보여 줄 표 (차례대로). 켜고 끌 수 있는 것이 앞에 온다.
+def _col_name(key, col):
+    h = GRID_HEADERS.get(key, [])
+    return h[col] if col < len(h) else f"{col + 1}열"
+
+
+def _cell_tip(key, col):
+    """고칠 수 있는 칸에 붙는 설명 — 무엇을 받는지까지 말해 준다."""
+    tip = ("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
+           "위의 [이 조건으로 계산] 을 눌러야 풉니다")
+    rule = RULES.RULES.get(key, {}).get(col)
+    if rule in (RULES.BUS_AC, RULES.BUS_DC):
+        tip += ("\n\n계통에 있는 "
+                + ("AC" if rule == RULES.BUS_AC else "DC") + " 버스 번호여야 합니다.")
+    elif rule == RULES.FLAG:
+        tip += "\n\n0(끔) 아니면 1(켬) 입니다."
+    elif rule == RULES.SHARE:
+        tip += "\n\n0 과 1 사이입니다 (부하 나눔 비율)."
+    elif rule == RULES.POS:
+        tip += "\n\n0 보다 커야 합니다."
+    elif rule == RULES.NONNEG:
+        tip += "\n\n0 이상이어야 합니다."
+    return tip
+
+
 GRID_TABLES = [
     ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
     ("DC_Line_dat", "DC 선로"), ("DC_gen_dat", "DC 발전기"),
@@ -3016,7 +3041,9 @@ class Proto(QMainWindow):
         sw = SC.SWITCHES.get(key)
         heads = GRID_HEADERS.get(key, [])
         scales = GRID_SCALES.get(key, {})
-        editable = GRID_EDITABLE.get(key, set())
+        # 운전 조건(③)에 더해 **값 칸도 연다** (2026-08-27 사용자 지시 — PDR §4.3 ④ 뒤집기).
+        # 어디까지 여는지와 무엇을 받는지는 `cell_rules.py` 가 갖는다.
+        editable = GRID_EDITABLE.get(key, set()) | RULES.editable(key)
         eff = self.applied + self.changes      # 화면에 보이는 조건 = 푼 것 + 얹은 것
         arr = SC._values(SC.apply(self.base_case, eff), key)
         if key in GRID_PAD_TO_HEADERS and heads and arr.shape[1] < len(heads):
@@ -3057,8 +3084,15 @@ class Proto(QMainWindow):
             if j > 0:
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             if j in editable:
-                it.setToolTip("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
-                              "위의 [이 조건으로 계산] 을 눌러야 풉니다")
+                tip = _cell_tip(key, j)
+                # 🚨 **막지 않고 알려만 준다** — 두 칸을 차례로 고치는 동안엔
+                #    중간에 반드시 어긋난다(Qmax 를 낮추려면 한 번은 뒤집힌다).
+                #    막으면 고칠 방법이 없어지므로, 글자를 물들이고 까닭을 붙인다.
+                note = RULES.warn(arr, key, r, j, val if np.isnan(val) else arr[r, j])
+                if note:
+                    it.setForeground(QColor(c["warn"]))
+                    tip = f"⚠️ {note}\n\n{tip}"
+                it.setToolTip(tip)
             else:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
@@ -3167,7 +3201,9 @@ class Proto(QMainWindow):
         if getattr(self, "_grid_loading", False):
             return
         col = item.column() - off
-        if col < 0 or col not in GRID_EDITABLE.get(key, set()):
+        # 🚨 **그리는 쪽과 같은 목록을 봐야 한다** (2026-08-27). 여기만 옛 목록을 보면
+        #    새로 연 칸이 **조용히 반려**된다 — 화면은 흰 칸인데 쳐도 아무 일이 안 난다.
+        if col < 0 or col not in (GRID_EDITABLE.get(key, set()) | RULES.editable(key)):
             return
         txt = item.text().strip().replace(",", "")
         if txt == "":
@@ -3190,6 +3226,15 @@ class Proto(QMainWindow):
                 return
             scale = scales.get(col, 1.0)
             value = shown * (1.0 / scale) if scale != 1.0 else shown
+        # 🚨 **넣기 전에 따진다** (2026-08-27). 값 칸을 열면서 같이 들어왔다 —
+        #    `From` 을 없는 버스로 고치면 계통이 끊어지고, 정격이 음수면 부하율이 뒤집힌다.
+        eff0 = SC.apply(self.base_case, self.applied + self.changes)
+        bad = RULES.check(eff0, key, col, value)
+        if bad:
+            QMessageBox.information(
+                self, f"{_col_name(key, col)} — 넣을 수 없는 값입니다", bad)
+            self.rebuild()
+            return
         # 찾기로 좁혀 놓았으면 화면 줄 ≠ 진짜 줄
         seen = getattr(self, "_grid_rows", None)
         row = seen[item.row()] if seen and item.row() < len(seen) else item.row()
