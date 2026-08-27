@@ -1676,8 +1676,13 @@ class Proto(QMainWindow):
             head.addWidget(self._find_clear)
             self._find_clear.setVisible(bool(self.res_find))
 
+        # 🚨 「열 선택」은 **결과 표에만** 뜻이 있다 (2026-08-27).
+        #    점검·수렴·계통 데이터 탭에도 보였는데 눌러도 아무 일이 안 났다 —
+        #    `TABLE_SPECS` 에 그 이름이 없어 `KeyError` 가 나고 Qt 가 삼켰다.
+        #    죽은 단추를 두느니 그 탭에서는 안 보이게 한다.
         cb = QPushButton("열 선택")
         cb.clicked.connect(self.pick_columns)
+        cb.setVisible(_tab_base(self.table_tab) in TABLE_SPECS)
         head.addWidget(cb)
 
         tt = QTabWidget()
@@ -1691,6 +1696,22 @@ class Proto(QMainWindow):
                                 self.show_vsc and self.case_has_vsc)
             bad = self.violating_buses()
             for name, cols, arr in specs:
+                # 🚨 **「열 선택」을 여기서 걸러야 한다** (2026-08-27). 여태 이 자리가
+                #    엔진이 준 열을 통째로 그려서, 열을 골라 [적용] 해도 화면이 안 바뀌었다
+                #    (`self.visible` 을 쓰는 곳은 **결과가 없을 때의 뼈대 표**뿐이었다).
+                #    ⚠️ 거르면 **열 자리가 밀린다** — 버스 번호는 원래 0열이고 위반 표시·
+                #       정수 표기가 그 자리를 쓴다. 그래서 **원래 자리(`keep`)를 들고 다닌다.**
+                want = self.visible.get(name)
+                keep = ([i for i, n in enumerate(cols) if n in want] if want
+                        else list(range(len(cols))))
+                if not keep:                      # 아는 열이 하나도 안 겹치면 다 보여 준다
+                    keep = list(range(len(cols)))
+                # 위반 표시는 **거르기 전** 버스 번호로 정한다 (0열이 꺼져 있을 수 있다)
+                flags = [name in ("AC 결과", "DC 결과")
+                         and (name[:2], int(arr[r, 0])) in bad
+                         for r in range(arr.shape[0])]
+                cols = [cols[i] for i in keep]
+                arr = arr[:, keep]
                 t = QTableWidget(arr.shape[0], len(cols))
                 t.setHorizontalHeaderLabels(cols)
                 t.verticalHeader().setVisible(False)
@@ -1699,11 +1720,11 @@ class Proto(QMainWindow):
                 t.setAlternatingRowColors(True)
                 warn = QColor(self.c["warn"])
                 for r in range(arr.shape[0]):
-                    flag = name in ("AC 결과", "DC 결과") and \
-                        (name[:2], int(arr[r, 0])) in bad
+                    flag = flags[r]
                     for cc in range(len(cols)):
                         val = arr[r, cc]
-                        txt = f"{val:.0f}" if cc == 0 and float(val).is_integer() \
+                        # 정수로 찍는 것은 **원래 0열(버스 번호)** 일 때만이다
+                        txt = f"{val:.0f}" if keep[cc] == 0 and float(val).is_integer() \
                             else f"{val:,.4f}".rstrip("0").rstrip(".")
                         it = NumItem(txt, val)
                         if cc > 0:
@@ -4063,7 +4084,11 @@ class Proto(QMainWindow):
         d.exec()
 
     def pick_columns(self):
-        name = self._tabs.tabText(self._tabs.currentIndex())
+        # 🚨 탭 글자에는 개수 꼬리가 붙는다(「점검 (25)」) — `_tab_base` 로 뗀다.
+        #    안 떼면 그 표에 열 목록을 나중에 붙여도 이름이 안 맞아 또 안 열린다.
+        name = _tab_base(self._tabs.tabText(self._tabs.currentIndex()))
+        if name not in TABLE_SPECS:      # 단추가 안 보이는 탭 — 눌릴 일이 없다
+            return
         d = QDialog(self)
         d.setWindowTitle(f"열 선택 — {name}")
         d.setStyleSheet(self.styleSheet())
@@ -4075,7 +4100,24 @@ class Proto(QMainWindow):
         info.setStyleSheet(f"color:{self.c['muted']};font-size:13px;")
         v.addWidget(info)
         boxes = []
-        for col, _ in TABLE_SPECS[name]:
+        # 열이 열셋까지 있어 하나씩 누르면 손이 아프다 (2026-08-27 사용자 요청).
+        #   「처음대로」의 기준은 `TABLE_SPECS` 의 `always` — 표를 처음 열 때 켜져 있던 것이다.
+        bulk = QHBoxLayout()
+        bulk.setSpacing(6)
+        for label, pick in (
+                ("전부 켜기", lambda col, always: True),
+                ("전부 끄기", lambda col, always: False),
+                ("처음대로", lambda col, always: bool(always))):
+            bb = QPushButton(label)
+            bb.setCursor(Qt.PointingHandCursor)
+            bb.clicked.connect(
+                lambda _=False, f=pick: [b.setChecked(f(c0, a0))
+                                         for (c0, a0), (_c, b) in zip(
+                                             TABLE_SPECS[name], boxes)])
+            bulk.addWidget(bb)
+        bulk.addStretch(1)
+        v.addLayout(bulk)
+        for col, _always in TABLE_SPECS[name]:
             b = QCheckBox(col)
             b.setChecked(col in self.visible[name])
             v.addWidget(b)
@@ -4092,9 +4134,14 @@ class Proto(QMainWindow):
         v.addLayout(row)
         if d.exec():
             picked = {col for col, b in boxes if b.isChecked()}
-            if picked:
-                self.visible[name] = picked
-                self.rebuild()
+            if not picked:
+                # 열이 하나도 없으면 표가 사라진다. 조용히 무시하면 "적용이 안 되네" 로 끝난다.
+                QMessageBox.information(
+                    self, "열을 하나는 켜 주세요",
+                    "열을 전부 끄면 표가 빈칸이 됩니다.\n하나 이상 골라 주세요.")
+                return
+            self.visible[name] = picked
+            self.rebuild()
 
     def compare_area(self):
         c = self.c
