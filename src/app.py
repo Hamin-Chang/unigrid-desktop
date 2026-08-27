@@ -70,7 +70,8 @@ except Exception as _exc:              # 그래도 앱은 뜨게 — 대신 **�
 
 import scenario as SC
 import adjust_panel as ADJ
-import cell_rules as RULES          # 계통 조건 바꾸기 (PDR §7 2단계)
+import cell_rules as RULES
+import compare_items as CI          # 계통 조건 바꾸기 (PDR §7 2단계)
 
 
 def _grid_headers():
@@ -445,10 +446,10 @@ def real_tables(sol, mode, t, show_vsc):
     return out
 
 
-COMPARE_ITEMS = [
-    ("전압 크기", True), ("위상각", True),
-    ("주파수", False), ("손실", False),      # False = 시간끼리 비교에서만
-]
+# 🚨 **항목 목록은 `compare_items.py` 가 갖는다** (2026-08-27). 여기엔 이름과
+#    「늘 보이나」 두 값밖에 못 담아서, 어느 표 어느 열인지가 코드 세 군데에 글자로
+#    흩어져 있었다. 늘리려면 그 셋을 다 고쳐야 했다 — 그래서 넷에서 멈춰 있었다.
+COMPARE_ITEMS = [(s[0], s[6] == "all") for s in CI.SPECS]
 
 
 def fake(col, row):
@@ -1470,11 +1471,19 @@ class Proto(QMainWindow):
                 v.addStretch(1)
                 return sb
 
-            lb2 = QLabel("비교할 " + ("버스" if self.compare_axis == "버스끼리" else "시간"))
+            # 🚨 고른 항목이 **무엇마다 있는 값이냐**에 따라 골라 달라는 것이 다르다
+            #    (버스 · 선로 · IC). 「버스」로 박아 두면 선로 부하율을 고르고도
+            #    버스 번호를 적게 된다.
+            kinds = CI.kinds_needed(self.picked, self.compare_axis)
+            what = (" · ".join(CI.UNIT_NAME[k] for k in kinds) or "버스") \
+                if self.compare_axis == "버스끼리" else "시간"
+            hint = (("  ".join(CI.HINT[k] for k in kinds) or "예: 3 7 12")
+                    if self.compare_axis == "버스끼리" else "예: 1 5 12")
+            lb2 = QLabel(f"비교할 {what}")
             lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
             v.addWidget(lb2)
             le = QLineEdit(self.compare_targets)
-            le.setPlaceholderText("예: 3, 7, 12   (최대 50개)")
+            le.setPlaceholderText(f"{hint}   (최대 50개)")
             le.textChanged.connect(self.set_targets)
             v.addWidget(le)
             n = QLabel("최대 50개 · 한 그래프에 겹쳐 그립니다")
@@ -1486,16 +1495,24 @@ class Proto(QMainWindow):
             lb3 = QLabel("볼 항목")
             lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
             v.addWidget(lb3)
-            for name, always in COMPARE_ITEMS:
-                usable = always or self.compare_axis == "시간끼리"
+            for name in CI.NAMES:
+                why = ""
+                usable = CI.shown_in(name, self.compare_axis)
+                if not usable:
+                    why = ("   시나리오끼리 비교에서만"
+                           if CI.by(name) == "ic" else "   시간끼리 비교에서만")
+                elif self.sol is not None:
+                    gone = CI.available(self.sol, name)
+                    if gone:
+                        usable, why = False, f"   {gone}"
                 cb = QCheckBox(name)
                 cb.setChecked(name in self.picked and usable)
                 cb.setEnabled(usable)
                 cb.stateChanged.connect(
                     lambda st, n2=name: self.toggle_item(n2, st))
                 v.addWidget(cb)
-                if not usable:
-                    w = QLabel("   시간끼리 비교에서만")
+                if why:
+                    w = QLabel(why)
                     w.setStyleSheet(f"color:{c['warn']};font-size:12px;")
                     v.addWidget(w)
             # 비교 그림 저장은 위쪽 "내보내기"와 **따로** 둔다(사용자 요청).
@@ -3392,19 +3409,23 @@ class Proto(QMainWindow):
 
     def scenario_table(self, item, pairs):
         """겹쳐 그린 시나리오의 요약 표 — 최저·최고·원본 대비."""
-        if item in ("주파수", "손실") or not pairs:
+        s = CI.spec(item)
+        if s is None or s[5] == "system" or not pairs:
             return None
-        col = {"전압 크기": "VM[pu]", "위상각": "Angle[deg]"}.get(item)
-        if col is None:
-            return None
+        col = s[2]
+        # 전압 크기만 AC·DC 를 함께 본다 — 나머지는 그 항목이 사는 표 하나만
+        kinds = ("AC", "DC") if item == "전압 크기" else (s[1],)
         rows = []
         base_lo = None
         for name, sol in pairs:
             vals = []
-            for kind in ("AC", "DC"):
-                arr = sol.at(kind, self.t)
+            for kind in kinds:
+                arr = sol.at(kind, self.t) if getattr(sol, kind, None) is not None \
+                    and getattr(sol, kind).ndim == 3 else getattr(sol, kind, None)
+                if arr is None or not getattr(arr, "size", 0):
+                    continue
                 cols = sol.cols(kind)
-                if arr.size and col in cols:
+                if col in cols:
                     vals.append(np.asarray(arr[:, cols.index(col)], dtype=float))
             if not vals:
                 continue
@@ -4191,8 +4212,9 @@ class Proto(QMainWindow):
     def compare_area(self):
         c = self.c
         wide = self.compare_axis in ("시간끼리", "시나리오끼리")
-        picked = [n for n, always in COMPARE_ITEMS
-                  if n in self.picked and (always or wide)]
+        picked = [n for n in CI.NAMES
+                  if n in self.picked and CI.shown_in(n, self.compare_axis)
+                  and not (self.sol is not None and CI.available(self.sol, n))]
         tabs = QTabWidget()
         if not picked:
             page = QWidget()
@@ -4271,8 +4293,13 @@ class Proto(QMainWindow):
         sol = self.sol
         if sol is None or not targets or not sol.AC.size:
             return None
-        col = {"전압 크기": "VM[pu]", "위상각": "Angle[deg]"}.get(item)
-        if col is None or col not in sol.cols("AC"):
+        s = CI.spec(item)
+        # ⚠️ 표로 뽑는 것은 **AC 버스별 항목**까지다. 선로·IC 는 x 축이 버스가 아니라
+        #    이 표 얼개(줄=시간·열=버스)에 안 맞는다 — 그림으로는 볼 수 있다.
+        if s is None or s[5] != "bus" or s[1] != "AC":
+            return None
+        col = s[2]
+        if col not in sol.cols("AC"):
             return None
         ci = sol.cols("AC").index(col)
         bus_ids = [int(b) for b in sol.AC[:, 0, 0]]
