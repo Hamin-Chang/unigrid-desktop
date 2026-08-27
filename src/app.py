@@ -4353,14 +4353,25 @@ class Proto(QMainWindow):
         return bar
 
     def _restore_tab(self, tt):
-        """다시 그린 뒤 보고 있던 표 탭으로 되돌린다. 그 탭이 사라졌으면 첫 탭."""
-        want = getattr(self, "table_tab", None)
-        if not want:
+        """다시 그린 뒤 보고 있던 표 탭으로 되돌린다. 그 탭이 사라졌으면 첫 탭.
+
+        🚨 **못 찾았을 때 아무것도 안 하고 나가면 안 된다** (2026-08-27). 화면은
+           저절로 0번 탭에 앉는데 `table_tab` 만 옛 이름으로 남아, 보고 있는 탭과
+           앱이 기억하는 탭이 갈린다. 계통을 바꾸면 실제로 그렇게 된다 —
+           AC/DC 에서 `DC 결과` 를 보다가 AC 전용을 열면 그 탭이 통째로 사라진다.
+           `table_tab` 을 보고 정하는 것들(「열 선택」 단추 감추기·나눔 자리·찾기 딱지)이
+           그때부터 엉뚱한 탭 것을 쓴다.
+        """
+        if tt.count() == 0:
             return
+        want = getattr(self, "table_tab", None)
         for i in range(tt.count()):
             if _tab_base(tt.tabText(i)) == want:
                 tt.setCurrentIndex(i)
                 return
+        # 그 탭이 사라졌다 — 첫 탭으로 가고 **기억도 같이 맞춘다**
+        tt.setCurrentIndex(0)
+        self.table_tab = _tab_base(tt.tabText(0))
 
     def go_check(self):
         """상태바의 위반 건수 → 점검 탭으로."""

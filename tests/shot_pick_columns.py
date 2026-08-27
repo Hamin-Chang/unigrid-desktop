@@ -124,6 +124,32 @@ QDialog.exec = lambda self: [b.setChecked(True) for b in self.findChildren(QChec
 win.pick_columns(); pump(0.5)
 chk("전부 켜면 엔진이 준 열이 다 나오나", len(cols_now()), 13)
 
+print("[5] 계통을 바꿔도 「보는 탭」과 「기억하는 탭」이 안 갈리나")
+def open_case(f):
+    win._start_solve(str(REPO/"cases"/f))
+    e = time.time()+240
+    while time.time() < e:
+        qapp.processEvents()
+        if win.thread.isFinished(): break
+        time.sleep(0.02)
+    pump(0.9)
+
+def cur_tab():
+    return APP._tab_base(win._tabs.tabText(win._tabs.currentIndex()))
+
+# 🚨 AC/DC 의 `DC 결과` 는 AC 전용에서 **통째로 사라지는 탭**이다 — 그때 기록만 남았다
+open_case("ACDC_case24_tapctrl.xlsx")
+for i in range(win._tabs.count()):
+    if APP._tab_base(win._tabs.tabText(i)) == "DC 결과":
+        win._tabs.setCurrentIndex(i); break
+pump(0.4)
+chk("AC/DC 에서 DC 결과 를 보고 있나", (cur_tab(), win.table_tab), ("DC 결과", "DC 결과"))
+open_case("AConly_case118.xlsx")
+chk("AC 전용을 열면 둘이 같은가", win.table_tab, cur_tab())
+chk("첫 탭으로 갔나", cur_tab(), "AC 결과")
+chk("그 탭에서 단추가 보이나",
+    any(b.text() == "열 선택" and b.isVisible() for b in win.findChildren(QPushButton)), True)
+
 print("═"*56)
 print(f"  통과 {ok[0]} · 실패 {len(bad)}")
 for b in bad: print(f"    ❌ {b}")
