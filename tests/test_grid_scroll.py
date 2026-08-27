@@ -7,8 +7,11 @@
      바닥값이 정하고**(창 최소 = 322 + 바닥값), 그 바닥값은 *세로축 숫자가 안
      뭉개지는 크기*라 무턱대고 낮출 값이 아니다. ⇒ 잣대를 **화면에 드나**로 바꿨다.
      이제 앱이 화면 크기를 읽어 바닥값을 맞춘다(`_screen_avail`·`_graph_floor`).
-  3) 조정 칸을 하나 고쳐도 **가로 스크롤이 그 자리에 있나**
-  4) 다음에 칠 칸이 **미리 골라져 있나** (오른쪽으로 다시 찾아가지 않게)
+  3) 오른쪽 끝 값 칸을 고쳐도 **가로 스크롤이 그 자리에 있나**
+     (2026-08-27 에 바꿈 — 조정 칸은 「AC 자동 조정」 패널로 나가 표에서 잠겼다.
+      옛 시험은 Ctrl Mode 를 표에서 쳤는데, 이제 그 편집은 문지기가 거절한다.)
+  4) 고친 칸이 **다시 골라져 있나** (다시 그린 뒤에도 보던 자리를 잃지 않게 —
+     조정 여섯 칸 연속 입력은 패널이 맡으므로 「다음 칸 이동」은 볼 것이 없어졌다)
   5) 🚨 **조작 줄이 길어도 창을 넓히지 않나** (2026-08-19 에 바꿈)
      예전에는 "계통 데이터 탭을 열면 화면 나눔 비율이 바뀌나" 를 봤다. 2026-08-18
      에 그 일은 **그래프 접기**가 맡게 됐고(`shot_graph_fold.py` [8] 이 지킨다),
@@ -163,8 +166,9 @@ else:
     else:
         # 화면 열 = 데이터 열 + off (첫 번호 열을 왼쪽에 고정하면서 달라진다)
         off = win._grid_off
-        it = QTableWidgetItem("1")
-        tb.setItem(ROW, 13 + off, it)          # Ctrl Mode = 1
+        COL = 9                                 # rateB [MVA] — 열린 값 칸 중 오른쪽
+        it = QTableWidgetItem("123.5")
+        tb.setItem(ROW, COL + off, it)          # rateB = 123.5
         win.grid_edited("AC_Line_dat", it, off, {})
         pump(0.4)                               # 되돌리기는 화면을 한 번 그린 뒤에 돈다
         tb2 = grid()
@@ -176,16 +180,16 @@ else:
         else:
             print("    ✅ 그 자리에 있다")
 
-        print("\n[4] 다음에 칠 칸이 미리 골라져 있나 (Ctrl Mode 다음 = Ctrl Bus)")
+        print("\n[4] 고친 칸이 다시 골라져 있나 (다시 그려도 보던 자리 유지)")
         cur_c = tb2.currentColumn()
         cur_r = tb2.currentRow()
-        want = 14 + off
+        want = COL + off
         print(f"    골라진 칸 = 줄 {cur_r} · 열 {cur_c} (바라는 것 줄 {ROW} · 열 {want})")
         if (cur_r, cur_c) != (ROW, want):
-            print("    🚨 안 골라졌다")
-            fails.append("다음 칸")
+            print("    🚨 자리를 잃었다")
+            fails.append("고친 칸 재선택")
         else:
-            print("    ✅ 바로 숫자를 치면 된다")
+            print("    ✅ 보던 자리 그대로다")
 
         win.grab().save(str(OUT / "창크기_가로자리.png"))
 
