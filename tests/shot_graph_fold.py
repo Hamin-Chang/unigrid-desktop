@@ -142,19 +142,36 @@ pump()
 from PySide6.QtWidgets import QTabWidget, QPushButton   # noqa: E402
 corner = [w.cornerWidget() for w in win.findChildren(QTabWidget)
           if w.cornerWidget() is not None]
-names = [w.text() for w in corner if isinstance(w, QPushButton)]
+# ⚠️ 구석에 **단추가 하나뿐이라고 보면 안 된다** (2026-08-28). 전압·위상 탭에
+#    [전압|위상각] 전환 단추가 생기며 구석이 「묶음 위젯」이 됐다. 예전 방식이면
+#    [그래프 접기] 를 통째로 놓친다.
+names = []
+for w in corner:
+    if isinstance(w, QPushButton):
+        names.append(w.text())
+    else:
+        names += [b.text() for b in w.findChildren(QPushButton)]
 print(f"    그래프 탭 구석의 단추 {names}")
 check("접기 단추", any("접기" in n for n in names), True)
 if any("접기" in n for n in names):
-    btn = next(w for w in corner if isinstance(w, QPushButton) and "접기" in w.text())
+    # 위 `names` 와 같은 이유로 **묶음 안까지** 뒤진다 (2026-08-28)
+    def _all_btns():
+        for w in corner:
+            if isinstance(w, QPushButton):
+                yield w
+            else:
+                yield from w.findChildren(QPushButton)
+    btn = next(w for w in _all_btns() if "접기" in w.text())
     btn.click()
     pump()
     check("눌렀더니 접혔나", win.numbers, True)
 
 print("\n[8] 🚨 표를 고치는 탭에서는 그래프를 접고 표에 자리를 다 주나 (2026-08-18)")
-# 까닭 — 계통 데이터 탭은 표에 66% 를 주기로 돼 있어 그래프에 남는 것이 34%(271px)뿐이다.
-# 두 줄짜리 그래프는 **425px 이 있어야 세로축 숫자가 나온다**(실측). 271px 로 붙들어 두면
-# 표도 좁고 그래프도 못 읽는다. 접으면 표가 전부 갖는다.
+# 까닭 — 값을 고치러 들어온 자리이므로 **표에 자리를 다 준다**. 그래프는 결과 탭에서 본다.
+# ⚠️ 2026-08-28 에 근거가 바뀌었다. 예전에는 「그래프 최소 높이(두 장 쌓기 425)가 표 몫을
+#    뺀 나머지(34%·271px)에 안 들어간다」는 셈이었는데, 같은 날 전압·위상을 한 장씩 보이게
+#    바꾸자 그 최소가 150 으로 내려가 셈이 뒤집혀 **표가 23줄 → 14줄로 줄었다**.
+#    ⇒ 이제 자리를 재지 않고 **탭이 하는 일**로 접는다(`_graph_fits`).
 open_case(CASE)                                   # 결과 탭에서 시작 (그래프 펼침)
 check("결과 탭 — 펼쳐져 있나", win.numbers, False)
 h_res = table_h()
@@ -185,7 +202,10 @@ check("여전히 접혀 있나", win.numbers, True)
 print("\n[11] 🚨 어느 탭에서 펼쳐도 읽을 수 있는 크기를 주나 (2026-08-18)")
 # 예전에는 이 우선권이 계통 데이터 탭에만 걸려 있어, 결과 탭에서 펼치면 393px 밖에
 # 못 받아 **펼쳐 놓고도 세로축이 뭉개졌다.**
-floor2 = APP.Proto.GRAPH_FLOOR[2]
+# ⚠️ 잣대가 425 에서 **평소 높이**로 바뀌었다 (2026-08-28). 425 는 전압·위상을
+#    **두 장 쌓았을 때** 세로축이 안 뭉개지는 값이었는데, 그날 한 장씩 보이게
+#    바꾸면서 한 장이 그만큼을 통째로 쓴다. 이제 잣대는 「한 장짜리 평소 높이」다.
+floor2 = APP.Proto.GRAPH_WANT[1]
 for tab in ("AC 결과", "점검", "계통 데이터"):
     open_case(CASE, tab)
     calc(3)                                       # 조건을 바꿔 자동으로 접히게
