@@ -1072,6 +1072,11 @@ class Proto(QMainWindow):
         # **여기에 들고 있다가 다시 넘긴다** — 안 그러면 계산 한 번에 100% 로 돌아간다.
         self.topo_zoom = 1.0
         self.graph_tab = 0            # 보고 있던 그래프 탭 (재생성 때 되돌리려고)
+        # 차트를 여럿 위아래로 쌓는 탭(전압·위상)에서 **몇 번째를 보고 있나** (2026-08-28).
+        #   쌓아 두면 한 장이 절반씩 나눠 가져 그래프 최소 높이가 425 로 뛰고, 그만큼
+        #   표가 깎인다(창 1440px 아래에서는 표가 늘 제 몫을 못 받았다). ⇒ **한 장씩
+        #   보이고 탭 줄 구석 단추로 고른다.** 탭은 「전압·위상」 하나로 그대로 둔다.
+        self.plot_pick = 0
         # 아래쪽 표 탭도 같이 기억한다. **번호가 아니라 이름**으로 — 모드·VSC 표시에 따라
         # 탭 개수가 달라지고, 이름에도 건수가 붙는다("점검 (3)"·"계통 데이터 (2)").
         self.table_tab = "AC 결과"
@@ -1572,7 +1577,15 @@ class Proto(QMainWindow):
                 lay = QHBoxLayout(page) if layout == "h" else QVBoxLayout(page)
                 lay.setContentsMargins(10, 10, 10, 10)
                 lay.setSpacing(9)
-                for pname in plots:
+                # 🚨 **위아래로 쌓지 않고 한 장만 그린다** (2026-08-28 사용자 확정 —
+                #    *"탭은 전압이랑 위상각을 두개 갖고 있는걸로 하되, 전압만 기본적으로
+                #    뜨게 하고, 버튼으로 고를 수 있게"*). 쌓으면 한 장이 절반씩 나눠 가져
+                #    그래프 최소 높이가 425 로 뛰고 그만큼 표가 깎였다.
+                #    ⚠️ 옆으로 놓는 탭(조류 P·Q)은 그대로 둘 다 그린다 — 세로를 안 나눈다.
+                shown = plots
+                if layout == "v" and len(plots) > 1:
+                    shown = [plots[min(self.plot_pick, len(plots) - 1)]]
+                for pname in shown:
                     # 시간과 버스를 둘 다 넘긴다 — 어느 쪽을 쓸지는 그래프가
                     # 이름(x축이 버스냐 시간이냐)을 보고 고른다.
                     # (한때 하나만 넘겨서 고른 버스가 아니라 늘 첫 버스를 그렸다)
@@ -1587,8 +1600,16 @@ class Proto(QMainWindow):
             # 다시 만드는데, 안 되살리면 늘 0번(전압·위상)으로 튀어 버렸다
             # (토폴로지에서 토글을 누르면 전압 그래프로 넘어가던 버그).
             gt.setCurrentIndex(min(self.graph_tab, gt.count() - 1))
-            gt.currentChanged.connect(
-                lambda i: setattr(self, "graph_tab", int(i)))
+            # ⚠️ 아래 처리기가 이 둘을 붙잡으므로 **여기서 먼저** 만든다.
+            stack_of = {i: pl for i, (_n, pl, lo) in enumerate(GRAPHS[self.mode])
+                        if lo == "v" and len(pl) > 1}
+            self._plot_seg = None
+
+            def _on_graph_tab(i, _stack=stack_of):
+                self.graph_tab = int(i)
+                if self._plot_seg is not None:
+                    self._plot_seg.setVisible(int(i) in _stack)
+            gt.currentChanged.connect(_on_graph_tab)
             # 그래프가 낮으면 QtCharts 가 x축 글자를 "..." 로 줄여 버린다. 그래서
             # **평소 높이**(아래 setSizes 620)는 넉넉히 준다. 다만 이걸 최소치로
             # 잡아 두면 창을 화면보다 작게 못 만든다 — 470 + 표 579 로 창 최소가
@@ -1615,7 +1636,51 @@ class Proto(QMainWindow):
             fold.setToolTip("그래프를 접고 표를 넓게 씁니다.")
             fold.setCursor(Qt.PointingHandCursor)
             fold.clicked.connect(lambda: self.set_numbers(True))
-            gt.setCornerWidget(fold, Qt.TopRightCorner)
+
+            # 어느 것을 볼지 고르는 단추 — 차트를 여럿 가진 탭에만 뜬다.
+            # 자리는 탭 줄 구석이라 **세로를 안 먹는다**(접기 단추와 같은 수법).
+            corner = fold
+            if stack_of:
+                cur = min(self.graph_tab, gt.count() - 1)
+                names = stack_of.get(cur) or next(iter(stack_of.values()))
+                seg = QFrame()
+                seg.setObjectName("segwrap")
+                # 🚨 **34 로 두면 한글이 세로로 잘린다** (2026-08-28 화면 캡처로 확인).
+                #    QSS 의 `padding:8px 14px` 이 위아래로 16px 을 먹어 글자에 10px 밖에
+                #    안 남고, 잘린 윗부분 때문에 「전압」이 **「선압」**, 「위상각」이
+                #    **「뷔상삭」** 으로 보였다(ㅈ 의 윗줄·ㄱ 의 윗줄이 사라진다).
+                #    VSC 표의 [ON|OFF] 는 같은 34 인데 라틴 대문자라 티가 안 났다.
+                seg.setFixedHeight(40)
+                seg.setStyleSheet(
+                    f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
+                    f"border-radius:9px; }}")
+                sh = QHBoxLayout(seg)
+                sh.setContentsMargins(3, 3, 3, 3)
+                sh.setSpacing(3)
+                # 🚨 **폭을 글자에서 재서 준다.** 그냥 두면 「전압」이 53px 로 나와
+                #    QSS 안쪽 여백(14px x 2)을 빼면 글자에 25px 밖에 안 남아
+                #    **「선압」·「위상삭」 처럼 잘려 보인다**(2026-08-28 실측·확대해서 확인).
+                #    sizeHint 가 QSS padding 을 안 세는 탓이라 여기서 직접 더한다.
+                fm = self.fontMetrics()
+                for i, pname in enumerate(names):
+                    # 이름은 축 표기를 뗀 앞부분만 — "전압  [pu] · x축 = 버스" → "전압"
+                    txt = pname.split("[")[0].strip()
+                    b = QPushButton(txt)
+                    b.setObjectName("seg_on" if i == self.plot_pick else "seg_off")
+                    b.setCursor(Qt.PointingHandCursor)
+                    b.setMinimumWidth(fm.horizontalAdvance(txt) + 36)
+                    b.setFixedHeight(34)
+                    b.clicked.connect(lambda _, x=i: self.set_plot_pick(x))
+                    sh.addWidget(b)
+                seg.setVisible(cur in stack_of)
+                self._plot_seg = seg
+                corner = QWidget()
+                ch = QHBoxLayout(corner)
+                ch.setContentsMargins(0, 0, 0, 0)
+                ch.setSpacing(10)
+                ch.addWidget(seg)
+                ch.addWidget(fold)
+            gt.setCornerWidget(corner, Qt.TopRightCorner)
             split.addWidget(gt)
         else:
             note = QFrame()
@@ -1856,11 +1921,14 @@ class Proto(QMainWindow):
 
     def _graph_rows(self) -> int:
         """지금 그래프 탭에서 차트가 **몇 줄로 쌓이나**. 옆으로 놓는 탭은 한 줄이다."""
+        # ⚠️ 2026-08-28 부터 **위아래로 쌓지 않는다** — 여럿이면 한 장씩 골라 본다
+        #    (`plot_pick`). 옆으로 놓는 탭(조류 P·Q)도 원래 한 줄이라, 지금은 어느
+        #    탭이든 한 줄이다. 쌓는 탭이 다시 생길 때를 대비해 셈은 남겨 둔다.
         try:
             _name, plots, layout = GRAPHS[self.mode][self.graph_tab]
         except (KeyError, IndexError):
-            return 2                      # 모르면 넉넉한 쪽으로
-        return len(plots) if layout == "v" else 1
+            return 1
+        return 1 if (layout != "v" or len(plots) > 1) else len(plots)
 
     # 그래프 높이 두 가지 — **다시 실측했다**(2026-08-18, 50버스 · 창 950px).
     # 🚨 2026-08-15 에 적어 둔 *"320 → 제대로 나온다"* 는 **틀렸다.** 두 줄짜리 탭에서
@@ -1953,10 +2021,15 @@ class Proto(QMainWindow):
         **표도 좁고 그래프도 못 읽는다.** 접으면 표가 전부 갖는다.
         """
         tab = self.table_tab if tab is None else tab
-        if self._split_slot(tab) != "grid":
-            return True          # 결과 탭은 그래프 쪽에 62% 를 주므로 늘 넉넉하다
-        room = self._room_for_graph()
-        return self._graph_floor() <= room - int(room * 0.66)
+        # 🚨 **표를 고치는 탭은 자리가 있어도 접는다** (2026-08-28 사용자 확정).
+        #    ⚠️ 예전에는 「그래프 최소 높이(두 장 쌓기 425)가 표 몫을 뺀 나머지에
+        #       안 들어간다」는 셈으로 접었다. 같은 날 전압·위상을 **한 장씩** 보이게
+        #       바꾸자 그 최소가 150 으로 내려가 셈이 뒤집혔고, 계통 데이터 탭의 표가
+        #       **23줄 → 14줄로 줄었다**(창 1920x1080 실측). 결과 탭에서 4줄 얻고
+        #       여기서 9줄을 잃은 셈이라 되돌린다.
+        #    ⇒ 접는 근거는 **자리가 아니라 그 탭이 하는 일**이다. 값을 고치러 들어온
+        #       자리에는 표를 다 준다. 그래프는 결과 탭에서 본다.
+        return self._split_slot(tab) != "grid"
 
     def _fold_for_room(self, tab=None) -> bool:
         """자리 때문에 접거나 펴야 하면 상태를 바꾸고 True. 부르는 쪽이 다시 그린다.
@@ -1989,6 +2062,17 @@ class Proto(QMainWindow):
     #    보면 431px 이 나오지만, 표 셋(전압 위반·과부하 선로·발전기 한계)이 352px 에
     #    들어가질 않아 **한 표도 온전히 안 보였다**(실측: 다 보이는 표 0개 → 접으면 2개).
     #    그래서 여기 목록에 넣어 같은 길을 타게 한다.
+    # 표에 주는 몫 (2026-08-28 사용자 확정).
+    #   예전에는 **결과 탭 0.38 · 계통 데이터/점검 0.66** 으로 갈랐다. 그런데
+    #   **계산 결과를 읽는 자리가 데이터를 고치는 자리보다 표를 적게 받는 것**이
+    #   앞뒤가 안 맞았다 — 결과 표는 14줄짜리인데 8줄만 보였다.
+    # 🚨 이 값을 올려도 **그래프는 안 뭉개진다** — 아래 `keep`(=`_graph_floor`)이 하한이라
+    #    그래프가 최소 높이 밑으로는 안 깎인다. 실측으로 확인: 억지로 [325, 423] 을 줘도
+    #    Qt 가 [425, 323] 으로 되돌린다.
+    # ⚠️ 그래서 **창이 작으면 이 값을 올려도 표가 별로 안 는다**. 전압·위상 탭은
+    #    그래프를 두 장 쌓아 최소 높이가 425 라, 작은 화면에서는 이 값과 무관하게 잠긴다.
+    TABLE_SHARE = 0.66
+
     TABLE_FIRST = ("계통 데이터", "점검")
 
     def _split_slot(self, tab=None):
@@ -2022,7 +2106,7 @@ class Proto(QMainWindow):
             split.setSizes([self._graph_want(), 200])
             return
         # 데이터 고칠 땐 아래를 크게, 결과 볼 땐 그래프를 크게.
-        share = 0.66 if slot == "grid" else 0.38
+        share = self.TABLE_SHARE
         # 그래프에 남겨 둘 최소치. **위 `gt.setMinimumHeight` 과 같은 값이어야 한다** —
         # 어긋나면 그래프 최소를 낮춰 놓고도 여기서 도로 깎아 표가 안 넓어진다(2026-08-15).
         keep = self._graph_floor()
@@ -4104,6 +4188,14 @@ class Proto(QMainWindow):
 
     def toggle_vsc(self):
         self.set_vsc(not self.show_vsc)
+
+    def set_plot_pick(self, i):
+        """전압·위상 탭에서 어느 차트를 볼지 고른다 (2026-08-28)."""
+        i = int(i)
+        if i == self.plot_pick:
+            return
+        self.plot_pick = i
+        self.rebuild()
 
     def set_topo_zoom(self, z):
         """계통도가 배율을 바꿨다고 알려 온다. **다시 그리지 않는다** — 계통도가
