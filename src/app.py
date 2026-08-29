@@ -1429,6 +1429,13 @@ class Proto(QMainWindow):
             wn.setWordWrap(True)
             wn.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             v.addWidget(wn)
+        # 「무엇을 할까」와 그 아래를 가르는 선 (2026-08-29 사용자 확정 · 안 가-1).
+        # 위 = 무엇을 할까 / 아래 = 그 작업 안에서 어떻게 볼까.
+        # 셋(케이스·할 일·보기)이 같은 꼴이라 나란한 설정처럼 읽혔는데, 실은
+        # 「PV·QV 곡선」을 고르면 아래가 통째로 바뀐다(이 함수가 거기서 return 한다).
+        # ⚠️ 두 갈래 **앞**에 둔다 — 곡선 쪽 입력들도 「무엇을 할까」의 아래다.
+        v.addSpacing(10)
+        v.addWidget(hline_soft(c))
         v.addSpacing(12)
 
         if self.task == "PV·QV 곡선":
