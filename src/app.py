@@ -1526,29 +1526,10 @@ class Proto(QMainWindow):
             v.addWidget(n)
             v.addSpacing(10)
 
-            lb3 = QLabel("볼 항목")
-            lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
-            v.addWidget(lb3)
-            for name in CI.NAMES:
-                why = ""
-                usable = CI.shown_in(name, self.compare_axis)
-                if not usable:
-                    why = ("   시나리오끼리 비교에서만"
-                           if CI.by(name) == "ic" else "   시간끼리 비교에서만")
-                elif self.sol is not None:
-                    gone = CI.available(self.sol, name)
-                    if gone:
-                        usable, why = False, f"   {gone}"
-                cb = QCheckBox(name)
-                cb.setChecked(name in self.picked and usable)
-                cb.setEnabled(usable)
-                cb.stateChanged.connect(
-                    lambda st, n2=name: self.toggle_item(n2, st))
-                v.addWidget(cb)
-                if why:
-                    w = QLabel(why)
-                    w.setStyleSheet(f"color:{c['warn']};font-size:12px;")
-                    v.addWidget(w)
+            # 🚨 「볼 항목」 24개 목록은 **비교 탭 줄 구석의 칩**으로 옮겼다
+            #    (2026-08-29 사용자 확정, `item_chip()`·`open_item_pick()`).
+            #    고른 것이 곧 오른쪽 탭이 되므로 **같은 것을 두 번 말하고 있었고**,
+            #    그 목록 하나가 사이드바의 3분의 2(1543px 중 약 1090px)를 썼다.
             # 비교 그림 저장은 위쪽 "내보내기"와 **따로** 둔다(사용자 요청).
             # 원본 앱도 비교는 별도 버튼이었다(ExportComparisonButtonPushed).
             # ⚠️ 이름을 sb 로 쓰면 안 된다 — 이 함수의 sb 는 사이드바 자체다.
@@ -4330,6 +4311,79 @@ class Proto(QMainWindow):
             self.visible[name] = picked
             self.rebuild()
 
+    def usable_items(self):
+        """지금 축에서 고를 수 있는 항목과, 못 고르는 까닭."""
+        out = []
+        for name in CI.NAMES:
+            why = ""
+            usable = CI.shown_in(name, self.compare_axis)
+            if not usable:
+                why = ("시나리오끼리 비교에서만"
+                       if CI.by(name) == "ic" else "시간끼리 비교에서만")
+            elif self.sol is not None:
+                gone = CI.available(self.sol, name)
+                if gone:
+                    usable, why = False, gone
+            out.append((name, usable, why))
+        return out
+
+    def item_chip(self, tabs):
+        """비교 탭 줄 구석 — 「볼 항목 N」. 누르면 고르는 판이 열린다."""
+        c = self.c
+        n = sum(1 for nm, ok, _ in self.usable_items() if ok and nm in self.picked)
+        b = QPushButton(f"볼 항목 {n}" if n else "볼 항목")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip("고른 항목이 왼쪽 탭으로 나옵니다")
+        b.clicked.connect(lambda: self.open_item_pick(b))
+        tabs.setCornerWidget(b, Qt.TopRightCorner)
+        return tabs
+
+    def open_item_pick(self, near):
+        """항목 고르는 판 — 여럿 고르고 닫으면 그때 한 번 다시 그린다.
+
+        ⚠️ 고를 때마다 `rebuild()` 를 하면 **이 판이 그리는 도중에 사라진다**.
+           그래서 고르는 동안은 `self.picked` 만 고치고, 닫힐 때 한 번만 다시 그린다.
+        """
+        c = self.c
+        pop = QFrame(self, Qt.Popup)
+        pop.setObjectName("card")
+        pv = QVBoxLayout(pop)
+        pv.setContentsMargins(14, 12, 14, 12)
+        pv.setSpacing(6)
+        inner = QWidget()
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(5)
+        for name, usable, why in self.usable_items():
+            cb = QCheckBox(name)
+            cb.setChecked(name in self.picked and usable)
+            cb.setEnabled(usable)
+            cb.stateChanged.connect(
+                lambda st, n2=name: (self.picked.add(n2) if st
+                                     else self.picked.discard(n2)))
+            iv.addWidget(cb)
+            if why:
+                w = QLabel(f"   {why}")
+                w.setStyleSheet(f"color:{c['warn']};font-size:12px;")
+                iv.addWidget(w)
+        sa = QScrollArea()
+        sa.setWidget(inner)
+        sa.setWidgetResizable(True)
+        sa.setFixedSize(240, min(520, inner.sizeHint().height() + 8))
+        pv.addWidget(sa)
+        pop.hide_done = False
+
+        def done(_e=None):
+            if not pop.hide_done:
+                pop.hide_done = True
+                self.rebuild()
+        pop.hideEvent = lambda e: done(e)
+        pop.adjustSize()
+        g = near.mapToGlobal(near.rect().bottomRight())
+        pop.move(g.x() - pop.width(), g.y() + 6)
+        pop.show()
+        self._item_pop = pop
+
     def compare_area(self):
         c = self.c
         wide = self.compare_axis in ("시간끼리", "시나리오끼리")
@@ -4345,9 +4399,9 @@ class Proto(QMainWindow):
             lb.setStyleSheet(f"color:{c['muted']};font-size:16px;")
             pv.addWidget(lb)
             tabs.addTab(page, "결과")
-            return tabs
+            return self.item_chip(tabs)
         if self.compare_axis == "시나리오끼리":
-            return self.compare_scenarios_area(picked)
+            return self.item_chip(self.compare_scenarios_area(picked))
         targets = [t.strip() for t in self.compare_targets.split(",") if t.strip()]
         unit = "버스" if self.compare_axis == "버스끼리" else "시간"
         for name in picked:
@@ -4364,7 +4418,7 @@ class Proto(QMainWindow):
             if tb is not None:
                 pv.addWidget(tb, 1)
             tabs.addTab(page, name)
-        return tabs
+        return self.item_chip(tabs)
 
     def save_compare_figures(self):
         """지금 보고 있는 비교 그림들을 그대로 파일로. (일반 내보내기와 따로)"""

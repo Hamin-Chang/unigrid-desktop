@@ -114,6 +114,49 @@ win.picked = {"선로 부하율", "IC 손실"}
 win.rebuild(); pump(1.2)
 win.grab().save(str(OUT/"02_시나리오끼리_새항목.png"))
 
+# ── 「볼 항목」 칩과 고르는 판 (2026-08-29) ──────────────────────────
+# 목록을 사이드바에서 탭 줄 구석으로 옮겼다. 보는 것 넷:
+#   ① 칩이 탭 줄 구석에 있고 개수를 말하나
+#   ② 사이드바에 목록이 **없나** (옮긴 것이지 복사한 게 아니다)
+#   ③ 판이 열리고 24개가 다 들어 있나
+#   ④ 🚨 판이 닫힐 때 **한 번만** 다시 그리나 — 고를 때마다 다시 그리면
+#      그리는 도중에 판이 사라진다. 그래서 고르는 동안은 picked 만 고친다.
+from PySide6.QtWidgets import QPushButton as _QPB, QCheckBox as _QCB, QFrame
+win.mode = "비교"; win.compare_axis = "버스끼리"
+win.picked = {"전압 크기", "위상각"}
+win.rebuild(); pump(1.2)
+
+chips = [b for b in win.findChildren(_QPB)
+         if b.isVisible() and b.text().startswith("볼 항목")]
+chk("칩이 하나 있나", len(chips), 1)
+chk("칩이 개수를 말하나", chips[0].text(), "볼 항목 2")
+
+sb = [f for f in win.findChildren(QFrame)
+      if f.objectName() == "sidebar" and f.isVisible()]
+side_items = [c for c in sb[0].findChildren(_QCB)
+              if c.text() in CI.NAMES] if sb else []
+chk("사이드바에 목록이 없나", len(side_items), 0)
+
+win.open_item_pick(chips[0]); pump(0.8)
+pop = win._item_pop
+chk("판이 열렸나", pop.isVisible(), True)
+chk("판에 24개가 다 있나",
+    len([c for c in pop.findChildren(_QCB) if c.text() in CI.NAMES]), len(CI.NAMES))
+
+drew = [0]
+_old_rebuild = win.rebuild
+win.rebuild = lambda *a, **k: (drew.__setitem__(0, drew[0] + 1),
+                               _old_rebuild(*a, **k))[1]
+for cb in pop.findChildren(_QCB):
+    if cb.text() == "선로 부하율":
+        cb.setChecked(True)
+pump(0.4)
+chk("고르는 동안은 안 그리나", drew[0], 0)
+chk("고른 것이 담겼나", "선로 부하율" in win.picked, True)
+pop.hide(); pump(0.6)
+chk("닫힐 때 한 번만 그리나", drew[0], 1)
+win.rebuild = _old_rebuild
+
 print("═"*56)
 print(f"  통과 {ok[0]} · 실패 {len(bad)}")
 for b in bad: print(f"    ❌ {b}")
