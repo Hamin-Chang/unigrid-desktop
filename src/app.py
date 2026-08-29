@@ -1305,6 +1305,19 @@ class Proto(QMainWindow):
             h.addWidget(b)
         h.addStretch()
 
+        # 「지금 무엇을 보고 있나」 — 시간 · 버스 (2026-08-29 사용자 확정).
+        # 사이드바에 있던 것을 여기로 옮겼다. 사이드바에는 *한 번 정하면 한동안
+        # 안 바꾸는 것*(케이스 · 무엇을 할까 · 보기)만 남긴다.
+        # ⚠️ **그래프 탭 줄이 아니라 맨 위 줄인 까닭** — 「계통 데이터」·「점검」 탭은
+        #    그래프를 무조건 접어(2026-08-28) 그 줄이 **통째로 없다**. 거기 두면 그
+        #    두 탭에서 시간을 못 고른다. 맨 위 줄은 어느 탭에서나 있다.
+        # 📌 앱 스스로 *"그래프와 **표**가 이 시간을 같이 따라갑니다"* 라고 말한다 —
+        #    그래프만의 것이 아니라 화면 전체가 따라가는 것이라 그래프 줄보다 위가 맞다.
+        pick = self.view_picker()
+        if pick is not None:
+            h.addWidget(pick)
+        h.addStretch()
+
         # 🚨 **「정보」는 넣고 뺄 수 있는 것이 아니다** (2026-08-19).
         #    MathWorks 라이선스가 *"About Box, 또는 그와 비슷한 눈에 띄는 자리"* 에
         #    저작권 고지를 넣으라고 요구한다(license_agreement.txt 205–210행).
@@ -1328,6 +1341,51 @@ class Proto(QMainWindow):
         #       놨는데 툴팁만 옛 문구를 달고 남아 있었다.
 
         return bar
+
+    def view_picker(self):
+        """맨 위 줄 가운데 — 지금 무엇을 보고 있나 (시간 · 버스).
+
+        비교 모드는 **아직 여기 없다** — 「볼 항목」은 24개짜리라 칩+패널이 필요하고,
+        그것은 따로 정한다(2026-08-29). 그때까지 비교는 사이드바에 그대로 둔다.
+        """
+        if self.sol is None or self.mode not in ("스냅샷", "다이나믹"):
+            return None
+        c = self.c
+        if self.mode == "스냅샷":
+            cap = "시간"
+            n_t = self.sol.n_time
+            items = [f"{i} H" for i in range(1, n_t + 1)]
+            idx, slot = min(self.t, n_t - 1), self.set_time
+        else:
+            cap = "버스"
+            if self.sol.AC.size:
+                items = [f"AC {int(b)}" for b in self.sol.AC[:, 0, 0]]
+                if self.sol.DC.size:
+                    items += [f"DC {int(b)}" for b in self.sol.DC[:, 0, 0]]
+            else:
+                items = [f"AC {i}" for i in range(1, 15)]
+            idx, slot = min(self.bus_row, len(items) - 1), self.set_bus
+
+        w = QWidget()
+        w.setObjectName("viewpick")
+        # 🚨 안 주면 **자기 배경(흰색)을 칠해** 맨 위 줄에 흰 덩어리가 생긴다
+        #    (2026-08-29 확대해서 확인).
+        w.setStyleSheet("#viewpick { background: transparent; }")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lb = QLabel(cap)
+        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        lay.addWidget(lb)
+        cb = QComboBox()
+        cb.addItems(items)
+        cb.setCurrentIndex(max(0, idx))
+        cb.setMinimumWidth(118)
+        cb.currentIndexChanged.connect(slot)
+        cb.setToolTip("그래프와 표가 이것을 같이 따라갑니다")
+        lay.addWidget(cb)
+        self._view_pick = cb
+        return w
 
     # ── 좌측 ──
     def sidebar(self):
@@ -1399,42 +1457,13 @@ class Proto(QMainWindow):
         v.addWidget(seg)
         v.addSpacing(12)
 
+        # 🚨 「시간 선택」·「버스 선택」은 **맨 위 줄로 옮겼다** (2026-08-29 사용자 확정).
+        #    `view_picker()` 참조. 사이드바에는 *한 번 정하면 한동안 안 바꾸는 것*만 남긴다.
         if self.mode == "스냅샷":
-            lb = QLabel("시간 선택")
-            lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
-            v.addWidget(lb)
-            cb = QComboBox()
-            n_t = self.sol.n_time if self.sol is not None else 24
-            cb.addItems([f"{i} H" for i in range(1, n_t + 1)])
-            cb.setCurrentIndex(min(self.t, n_t - 1))
-            cb.currentIndexChanged.connect(self.set_time)
-            v.addWidget(cb)
-            n = QLabel("그래프와 표가 이 시간을 같이 따라갑니다")
-            n.setWordWrap(True)
-            n.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-            v.addWidget(n)
-            v.addSpacing(14)
-            v.addWidget(self.freq_card())
+            v.addWidget(self.freq_card())      # 이건 고르개가 아니라 **읽는 값**이라 남는다
 
         elif self.mode == "다이나믹":
-            lb = QLabel("버스 선택")
-            lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
-            v.addWidget(lb)
-            cb = QComboBox()
-            if self.sol is not None and self.sol.AC.size:
-                buses = [f"AC {int(b)}" for b in self.sol.AC[:, 0, 0]]
-                if self.sol.DC.size:
-                    buses += [f"DC {int(b)}" for b in self.sol.DC[:, 0, 0]]
-            else:
-                buses = [f"AC {i}" for i in range(1, 15)]
-            cb.addItems(buses)
-            cb.setCurrentIndex(min(self.bus_row, len(buses) - 1))
-            cb.currentIndexChanged.connect(self.set_bus)
-            v.addWidget(cb)
-            n = QLabel("그래프와 표가 이 버스를 같이 따라갑니다")
-            n.setWordWrap(True)
-            n.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-            v.addWidget(n)
+            pass                                # 버스 고르개는 맨 위 줄에 있다
 
         else:  # 비교
             lb = QLabel("무엇끼리 비교")
