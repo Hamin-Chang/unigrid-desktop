@@ -110,7 +110,7 @@ class Solution:
     seconds: float = 0.0        # 파일 읽기 + 계산까지 걸린 전체 시간
     warm_start: bool = True     # 계산 엔진이 이미 켜져 있었나 (아니면 기동 시간이 섞임)
     freq_nominal: float = 60.0  # 이 계통의 기준 주파수 (60 Hz / 50 Hz) — 케이스마다 다름
-    freq_db: float = 0.0        # 주파수 데드밴드 [Hz] — 이 폭 밖에서만 발전기가 응동
+    freq_db: float = 0.0        # 주파수 데드밴드 [Hz] — 이 폭 밖에서만 droop 이 동작
     # 계통도를 그리려면 '결과'가 아니라 '입력'이 필요하다
     # (어느 선로가 변압기인지·발전기 종류가 뭔지는 결과에 안 담긴다)
     case_tables: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -176,14 +176,14 @@ def _nominal_freq(case: Any) -> float:
 
 
 def _freq_deadband(case: Any) -> float:
-    """주파수 데드밴드 [Hz]. 이 폭 **안**에서는 발전기가 주파수에 응동하지 않는다.
+    """주파수 데드밴드 [Hz]. 이 폭 **안**에서는 droop 이 동작하지 않는다.
 
     Base_dat 7열 — 케이스 엑셀 `Sbase,frequency` 시트의 "freq_deadband(±) [Hz]" 칸.
     MATLAB 은 freq_base 로 나눠 pu 로 쓰지만(preprocess_AC_network.m 32줄)
     화면엔 Hz 로 보여 주므로 여기서는 그대로 쓴다.
     쓰임새: 편차가 이 폭을 넘은 만큼만 droop 출력을 더한다
     (solve_ACDC_newton.m 295줄·371~374줄).
-    **0 이면 데드밴드가 없다**는 뜻 — 아무리 작은 편차에도 바로 응동한다.
+    **0 이면 데드밴드가 없다**는 뜻 — 아무리 작은 편차에도 바로 동작한다.
     실제 값: 12버스·CIGRE·matacdc case5 = 0.036 / 71버스·울산 = 0.
     """
     try:

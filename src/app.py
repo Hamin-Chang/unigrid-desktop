@@ -1467,7 +1467,7 @@ class Proto(QMainWindow):
         # 🚨 「시간 선택」·「버스 선택」은 **맨 위 줄로 옮겼다** (2026-08-29 사용자 확정).
         #    `view_picker()` 참조. 사이드바에는 *한 번 정하면 한동안 안 바꾸는 것*만 남긴다.
         if self.mode == "스냅샷":
-            v.addWidget(self.freq_card())      # 이건 고르개가 아니라 **읽는 값**이라 남는다
+            pass                                # 주파수는 맨 아래 상태바에 있다
 
         elif self.mode == "다이나믹":
             pass                                # 버스 고르개는 맨 위 줄에 있다
@@ -2439,53 +2439,30 @@ class Proto(QMainWindow):
             v.addLayout(cr)
         return box
 
-    def freq_card(self):
-        """시스템 주파수 — 계통 전체에 하나뿐인 값이라 크게 보여준다."""
-        c = self.c
-        if self.sol is not None and self.sol.freq.size:
-            f = float(self.sol.freq[min(self.t, self.sol.freq.size - 1)])
-        else:
-            f = 60.02
+    def freq_text(self):
+        """상태바에 넣을 주파수 한 줄. 값이 없으면 None (2026-08-30 사이드바 카드에서 옮김).
+
+        ⚠️ **스냅샷에서만 부른다** — 값이 `self.t`(지금 보는 시각)에 묶여 있어
+        다이나믹·비교에는 「지금 시각」이라는 것이 아예 없다.
+        """
+        if self.sol is None or not self.sol.freq.size:
+            return None
+        f = float(self.sol.freq[min(self.t, self.sol.freq.size - 1)])
         # 기준 주파수는 케이스마다 다르다 (60 Hz / 50 Hz) — 못 박으면 안 된다
-        nominal = self.sol.freq_nominal if self.sol is not None else 60.0
+        nominal = self.sol.freq_nominal
         # 데드밴드도 케이스 파일에서 읽는다. 예전엔 ±0.05 Hz 라고 내가 정한 값을
         # 썼는데, 실제 값은 0.036 Hz 이거나 아예 0 이다(app_engine._freq_deadband).
-        db = self.sol.freq_db if self.sol is not None else 0.0
-        dev = f - nominal
-        box = QFrame()
-        box.setObjectName("card")
-        v = QVBoxLayout(box)
-        v.setContentsMargins(14, 11, 14, 13)
-        v.setSpacing(3)
-        t = QLabel("시스템 주파수")
-        t.setStyleSheet(f"color:{c['muted']};font-size:12px;font-weight:600;")
-        v.addWidget(t)
-        row = QHBoxLayout()
-        row.setSpacing(5)
-        big = QLabel(f"{f:.2f}")
-        big.setStyleSheet(f"color:{c['text']};font-size:30px;font-weight:800;")
-        row.addWidget(big)
-        unit = QLabel("Hz")
-        unit.setStyleSheet(f"color:{c['muted']};font-size:14px;")
-        unit.setAlignment(Qt.AlignBottom)
-        row.addWidget(unit)
-        row.addStretch()
-        v.addLayout(row)
-        d = QLabel(f"기준 {nominal:.0f} Hz 대비 {dev:+.2f} Hz")
-        d.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-        v.addWidget(d)
-        # 데드밴드는 "발전기가 주파수에 응동하기 시작하는 폭"이다. 밖에 있다고
-        # 잘못된 상태가 아니라 **발전기가 응동 중**이라는 뜻이라 경고색을 안 쓴다.
-        # 진짜 위반(전압·과부하·변환기 한계)은 상태바와 점검 탭이 따로 센다.
-        if db > 0:
-            where = "안 — 발전기 응동 없음" if abs(dev) <= db else "밖 — 발전기 응동 중"
-            txt = f"데드밴드 ±{db:g} Hz {where}"
+        db = self.sol.freq_db
+        # 데드밴드는 "이 폭 밖에서만 droop 이 동작한다"는 폭이다. 밖에 있다고
+        # 잘못된 상태가 아니라 **droop 이 동작 중**이라는 뜻이라 경고색을 안 쓴다.
+        # 진짜 위반(전압·과부하·변환기 한계)은 상태바 왼쪽과 점검 탭이 따로 센다.
+        if db <= 0:
+            where = "droop 동작"           # 데드밴드가 없으면 늘 동작한다
+        elif abs(f - nominal) <= db:
+            where = "droop 멈춤"
         else:
-            txt = "데드밴드 없음 — 작은 편차에도 발전기가 응동"
-        s = QLabel(txt)
-        s.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-        v.addWidget(s)
-        return box
+            where = "droop 동작 중"
+        return f"{f:.2f} Hz · {where}"
 
     def viol(self):
         """지금 화면의 위반 목록 (실제 결과가 있으면 실제값)."""
@@ -4589,6 +4566,13 @@ class Proto(QMainWindow):
             f"font-size:14px;font-weight:700;padding:0;text-align:left;")
         vb.clicked.connect(self.go_check)
         h.addWidget(vb)
+
+        # 주파수는 계통 전체에 하나뿐인 값이라 여기 둔다 (2026-08-30 사이드바에서 옮김).
+        # 스냅샷에서만 — 다이나믹·비교에는 「지금 시각」이 없어 값이 성립을 안 한다.
+        if self.mode == "스냅샷":
+            ft = self.freq_text()
+            if ft is not None:
+                h.addLayout(item("주파수", ft))
 
         if sol is not None:
             h.addLayout(item("수렴", "성공" if sol.converged else "실패",
