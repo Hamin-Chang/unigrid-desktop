@@ -1518,16 +1518,18 @@ class Proto(QMainWindow):
             kinds = CI.kinds_needed(self.picked, self.compare_axis)
             what = (" · ".join(CI.UNIT_NAME[k] for k in kinds) or "버스") \
                 if self.compare_axis == "버스끼리" else "시간"
-            hint = (("  ".join(CI.HINT[k] for k in kinds) or "예: 3 7 12")
-                    if self.compare_axis == "버스끼리" else "예: 1 5 12")
             lb2 = QLabel(f"비교할 {what}")
             lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
             v.addWidget(lb2)
-            le = QLineEdit(self.compare_targets)
-            le.setPlaceholderText(f"{hint}   (최대 50개)")
-            le.textChanged.connect(self.set_targets)
-            v.addWidget(le)
-            n = QLabel("최대 50개 · 한 그래프에 겹쳐 그립니다")
+            # 🚨 **타이핑 칸이었다** (2026-08-30 사용자 확정으로 고르개가 됐다).
+            #    타이핑 칸일 때 네 가지가 조용히 어긋났다 —
+            #      ① 기본값 `3, 7, 12` 가 12버스 계통에서 3 하나만 맞았다(7·12 는 DC)
+            #      ② 없는 번호(999)를 아무 말 없이 버렸다
+            #      ③ 빈 칸 안내가 `예: 106 107`(쉼표 없음)인데 쉼표가 없으면 통째로 버렸다
+            #      ④ 같은 번호를 여러 번 받아 같은 선을 겹쳐 그렸다
+            #    **있는 것만 고르게** 하면 넷이 한꺼번에 사라진다.
+            v.addWidget(self.target_button())
+            n = QLabel("누르면 이 계통에 있는 것 중에서 고릅니다 · 최대 50개")
             n.setWordWrap(True)
             n.setStyleSheet(f"color:{c['muted']};font-size:13px;")
             v.addWidget(n)
@@ -4295,6 +4297,141 @@ class Proto(QMainWindow):
             self.visible[name] = picked
             self.rebuild()
 
+    def target_options(self):
+        """지금 고를 수 있는 것들 — [(보일 글자, 넣을 값)]. 없으면 빈 목록.
+
+        **계통에 실제로 있는 것만** 담는다. 예전 타이핑 칸은 없는 번호도 받아 놓고
+        조용히 버렸다(12버스 계통에서 기본값 `3, 7, 12` 가 3 하나만 맞았다).
+
+        고르는 것이 무엇이냐는 **고른 항목**이 정한다 (`CI.kinds_needed`) —
+        선로 부하율을 보면서 버스 번호를 고르면 아무것도 안 나온다.
+        """
+        sol = self.sol
+        if sol is None:
+            return []
+        if self.compare_axis == "시간끼리":
+            return [(f"{i} H", str(i)) for i in range(1, sol.n_time + 1)]
+
+        out, seen = [], set()
+        for k in (CI.kinds_needed(self.picked, self.compare_axis) or ["bus"]):
+            if k == "bus":
+                # 🚨 AC·DC 를 함께 담는다 — 전압 크기는 AC 표, DC 전압은 DC 표를
+                #    보므로 한쪽만 담으면 다른 항목에서 고를 것이 없어진다.
+                for which in ("AC", "DC"):
+                    arr = getattr(sol, which, None)
+                    if arr is None or not getattr(arr, "size", 0) or arr.ndim != 3:
+                        continue
+                    for b in arr[:, 0, 0]:
+                        val = str(int(b))
+                        if val not in seen:
+                            seen.add(val)
+                            out.append((f"{which} {val}", val))
+            else:
+                # 선로·IC 는 **두 번호**로 고른다 (`charts._pick_rows` 와 같은 꼴)
+                which = "Branch" if k == "branch" else "VSC_bus"
+                arr = getattr(sol, which, None)
+                if arr is None or not getattr(arr, "size", 0):
+                    continue
+                a2 = arr[:, :, 0] if arr.ndim == 3 else arr
+                for r in a2:
+                    val = f"{int(r[0])}-{int(r[1])}"
+                    if val not in seen:
+                        seen.add(val)
+                        out.append((f"{CI.UNIT_NAME[k]} {int(r[0])}–{int(r[1])}", val))
+        return out
+
+    def target_values(self):
+        """지금 고른 것들. 계통에 **없는 것은 뺀다** — 케이스를 갈아 열면 남아 있다."""
+        ok = {v for _, v in self.target_options()}
+        out = []
+        for t in (self.compare_targets or "").replace(";", ",").split(","):
+            t = t.strip()
+            if t in ok and t not in out:     # 중복도 여기서 걸린다 (옛 결함 ④)
+                out.append(t)
+        return out
+
+    def target_button(self):
+        c = self.c
+        opts = self.target_options()
+        got = self.target_values()
+        if not opts:
+            b = QPushButton("고를 것이 없습니다")
+            b.setEnabled(False)
+            return b
+        # 적으면 고른 것을 그대로 보여준다 — 한 번 더 눌러 확인할 일이 없게
+        txt = ", ".join(got) if 0 < len(got) <= 6 else (
+            f"{len(got)}개 고름" if got else "고르기")
+        b = QPushButton(txt)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip(f"이 계통에 있는 {len(opts)}개 중에서 고릅니다")
+        b.clicked.connect(lambda: self.open_target_pick(b))
+        return b
+
+    def open_target_pick(self, near):
+        """찾는 칸이 붙은 고르개.
+
+        ⚠️ **찾는 칸이 있어야 한다** — 가장 큰 케이스가 버스 25,000개다
+        (`AConly_25k_v2.xlsx`). 목록만 내밀면 아무도 못 찾는다.
+
+        ⚠️ 고를 때마다 `rebuild()` 하면 **이 판이 그리는 도중에 사라진다**.
+           그래서 고르는 동안은 값만 고치고, 닫힐 때 한 번만 다시 그린다
+           (「볼 항목」 고르개와 같은 약속).
+        """
+        opts = self.target_options()
+        chosen = list(self.target_values())
+        c = self.c
+        pop = QFrame(self, Qt.Popup)
+        pop.setObjectName("card")
+        outer = QVBoxLayout(pop)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        find = QLineEdit()
+        find.setPlaceholderText(f"찾기 — {len(opts)}개 중에서")
+        outer.addWidget(find)
+
+        inner = QWidget()
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(2)
+        boxes = []
+        for label, val in opts:
+            cb = QCheckBox(label)
+            cb.setChecked(val in chosen)
+            cb.stateChanged.connect(
+                lambda st, x=val: (x not in chosen and chosen.append(x)) if st
+                else (x in chosen and chosen.remove(x)))
+            iv.addWidget(cb)
+            boxes.append((cb, label))
+        sa = QScrollArea()
+        sa.setWidget(inner)
+        sa.setWidgetResizable(True)
+        sa.setFixedSize(250, min(430, inner.sizeHint().height() + 8))
+        outer.addWidget(sa)
+
+        def filt(t):
+            t = t.strip().lower()
+            for cb, label in boxes:
+                cb.setVisible(not t or t in label.lower())
+        find.textChanged.connect(filt)
+
+        pop.hide_done = False
+
+        def done(_e=None):
+            if pop.hide_done:
+                return
+            pop.hide_done = True
+            self.compare_targets = ", ".join(chosen[:50])
+            self.rebuild()
+        pop.hideEvent = lambda e: done(e)
+
+        pop.adjustSize()
+        g = near.mapToGlobal(near.rect().bottomLeft())
+        pop.move(g.x(), g.y() + 6)
+        pop.show()
+        find.setFocus()
+        self._target_pop = pop
+
     def usable_items(self):
         """지금 축에서 고를 수 있는 항목과, 못 고르는 까닭."""
         out = []
@@ -4946,6 +5083,11 @@ class Proto(QMainWindow):
             # 새 계통을 열면 곡선은 버린다 — **앞 계통의 곡선**이라 지금 화면과 상관없다.
             self.cur = None
             self.curve_err = ""
+            # 비교 대상도 같은 이유로 다시 잡는다. 기본값이 `3, 7, 12` 로 박혀 있어
+            # 12버스 계통에서 AC 는 3 하나만 맞았다(7·12 는 DC 버스라 AC 표에 없다)
+            # — 비교 화면이 선 하나로 열렸다. ⚠️ 여기(새 파일)에서만 한다.
+            # 조건을 바꿔 다시 풀 때 하면 골라 놓은 것이 매번 날아간다.
+            self._retarget = True
             # 🚨 큰 계통은 **그래프를 접은 채로 연다** (2026-08-06 사용자 확정).
             #    버스가 수천이면 점이 겹쳐 빨간 덩어리가 되어 읽을 수가 없다.
             #    보고 싶으면 [그래프 펼치기] 를 누르면 된다.
@@ -4967,6 +5109,10 @@ class Proto(QMainWindow):
         self._case_for_solver = (getattr(getattr(self, "thread", None), "case", None)
                                  or loaded or getattr(self, "base_case", None))
         self.sol = sol
+        if getattr(self, "_retarget", False):
+            self._retarget = False
+            self.compare_targets = ", ".join(
+                v for _, v in self.target_options()[:3])
         # 🚨 곡선은 **AC 단독 계통에서만** 그린다(2026-08-12 사용자 확정 — 넓히지 않는다).
         #    곡선 화면에 있는 채로 AC/DC 파일을 열면 갈래가 곡선에 머물러 있는데
         #    그 버튼은 흐려져 있어 **죽은 화면에 앉게 된다** ⇒ 조류계산으로 되돌린다.
