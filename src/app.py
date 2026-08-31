@@ -2491,7 +2491,7 @@ class Proto(QMainWindow):
         if keep is None:
             return 0, 0
         table, cols = keep
-        want = {int(x) for x in re.findall(r"\d+", self.res_find or "")}
+        want = self._find_numbers()
         idc = [i for i, cn in enumerate(cols) if cn in self.RES_ID_COLS]
         n = table.rowCount()
         if not want or not idc:
@@ -2514,6 +2514,15 @@ class Proto(QMainWindow):
             table.setRowHidden(r, not hit)
             shown += int(hit)
         return n, shown
+
+    def _find_numbers(self):
+        """찾기 칸에서 뽑아낸 버스 번호들. **글자만 쳤으면 빈 집합**이다.
+
+        빈 집합은 「비우면 전부」와 셈이 같아 `_apply_find` 가 전부 보여 준다 —
+        그래서 라벨까지 같으면 사용자는 *안 먹은 건지 전부인 건지* 알 수 없다
+        (2026-08-31 전수 조사). 가르는 일은 `_update_find_label` 이 한다.
+        """
+        return {int(x) for x in re.findall(r"\d+", self.res_find or "")}
 
     def set_res_find(self, text):
         """찾는 번호가 바뀌었다 — **화면을 다시 그리지 않고** 줄만 걸러 낸다."""
@@ -2539,7 +2548,12 @@ class Proto(QMainWindow):
             return
         n, shown = self._apply_find(nm)
         c = self.c
-        if self.res_find and shown != n:
+        if self.res_find and not self._find_numbers():
+            # 🚨 친 것에 숫자가 하나도 없다 — 예전에는 빈칸과 **똑같이** 「14줄」 이라
+            #    아무 일도 안 난 것처럼 보였다(2026-08-31). 번호를 달라고 말한다.
+            lb.setText("번호를 넣어 주세요")
+            lb.setStyleSheet(f"color:{c['warn']};font-size:12px;font-weight:600;")
+        elif self.res_find and shown != n:
             lb.setText(f"{n:,}줄 중 {shown:,}줄")
             lb.setStyleSheet(f"color:{c['accent']};font-size:12px;font-weight:600;")
         else:
