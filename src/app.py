@@ -1066,6 +1066,9 @@ class Proto(QMainWindow):
         self.t = 0                    # 보고 있는 시간대 (0부터)
         self.bus_row = 0              # 다이나믹에서 고른 버스 (행 번호)
         self.case_has_vsc = True      # AC-only 케이스면 False
+        # 변환기를 이상적으로 보았나 (2026-08-31). None=변환기 자체가 없다.
+        # 「없음」 칩이 무엇 때문에 없는지 가르는 데 쓴다.
+        self.vsc_ideal = None
         self.show_vsc = False
         self.show_violations = False  # 계통도 '위반 보기' 켜짐 여부
         # 계통도 배율 (2026-08-19). 계통도 위젯은 계산할 때마다 새로 만들어지므로
@@ -1761,7 +1764,16 @@ class Proto(QMainWindow):
             off.setStyleSheet(
                 f"background:{c['bg']};color:{c['muted']};border:1px solid "
                 f"{c['border']};border-radius:7px;padding:5px 4px;font-size:12px;")
-            off.setToolTip("이 케이스에는 변환기(VSC)가 없습니다")
+            # 🚨 **없는 까닭이 둘이다** (2026-08-31 전수 조사). 예전에는 둘 다
+            #    "변환기가 없습니다" 라고 말해, IC 가 3 개인 CIGRE 케이스에서도
+            #    변환기가 없다고 우겼다.
+            #      변환기 자체가 없다  → `vsc_ideal is None`
+            #      이상적 변환기다      → `vsc_ideal is True` (내부 회로가 없어 VSC 버스가 없다)
+            if self.vsc_ideal:
+                off.setToolTip("변환기를 이상적으로 보는 계통이라 내부 회로"
+                               "(변압기·필터·리액터)가 없습니다 — VSC 버스 표도 없습니다")
+            else:
+                off.setToolTip("이 계통에는 변환기(VSC)가 없습니다")
             head.addWidget(off)
         else:
             seg = QFrame()
@@ -5154,6 +5166,7 @@ class Proto(QMainWindow):
         self.case = (Path(sol.case_name).name or "case",
                      f"{sol.mode_name} · AC {sol.AC.shape[0]} / DC {sol.DC.shape[0]}")
         self.case_has_vsc = sol.VSC_bus is not None and sol.VSC_bus.size > 0
+        self.vsc_ideal = getattr(sol, "vsc_ideal", None)
         save_recent(str(getattr(self, "_last_path", sol.case_name)), self.case[1])
         if not self.case_has_vsc:
             self.show_vsc = False

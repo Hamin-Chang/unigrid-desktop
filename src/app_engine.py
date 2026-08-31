@@ -66,6 +66,16 @@ COLUMNS: dict[str, dict[int, list[str]]] = {
 }
 
 
+def _as_flag(v):
+    """MATLAB 논리값 → True/False. 값이 아예 없으면 None 그대로 돌려준다."""
+    if v is None:
+        return None
+    try:
+        return bool(float(v))
+    except (TypeError, ValueError):
+        return bool(v)
+
+
 @dataclass
 class Solution:
     """계산 결과 한 벌 — 전 시간대를 통째로 들고 있는다."""
@@ -95,6 +105,14 @@ class Solution:
     gen_limit: np.ndarray = field(default_factory=lambda: np.empty((0, 11)))
     # 무효출력 한계를 실제로 걸었는지. AC 전용 경로에서 한계를 걸면 수렴하지 못하는
     # 계통이 있는데, 그때는 한계를 적용하지 않은 값을 돌려주므로 반드시 화면에 밝혀야 한다.
+    # 변환기를 **이상적으로** 보았나 (2026-08-31). 셋을 갈라야 한다 —
+    #   None  = 계통에 변환기가 아예 없다(엔진이 이 값을 안 준다)
+    #   True  = 변환기는 있는데 내부 회로(변압기·필터·리액터)를 안 둔다 → VSC 버스가 없다
+    #   False = 내부 회로가 있다 → `VSC_bus` 표가 나온다
+    # ⚠️ **기본값이 있으므로 기본값 없는 칸보다 뒤에 둔다** — 위(`converged` 앞)에
+    #    두었다가 `non-default argument 'converged' follows default argument` 로
+    #    앱이 통째로 안 떴다(2026-08-31).
+    vsc_ideal: bool | None = None
     qlim_enforced: bool = True
     qlim_message: str = ""
     # 무효출력 한계로 묶인 발전기 (2026-08-12, §7.6 G8). 묶는 것 자체는 정상이지만
@@ -979,6 +997,7 @@ def _build(raw: dict[str, Any], seconds: float) -> Solution:
         loss=_fix_loss_percent(_arr(raw, "total_loss_table"), mode),
         freq=np.asarray(_flat(raw, "freq_all"), dtype=float),
         VSC_bus=(_arr(raw, "VSC_bus") if "VSC_bus" in raw else None),
+        vsc_ideal=_as_flag(raw.get("isVSC_ideal")),
         converged=bool(float(raw.get("converged", 0))),
         iters=int(float(raw.get("iter_count", 0))),
         threshold=float(raw.get("threshold", 0.0)),
