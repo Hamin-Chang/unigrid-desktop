@@ -1159,6 +1159,12 @@ class Proto(QMainWindow):
         QPushButton:hover {{ border-color:{c['accent']}; }}
         QPushButton#primary {{ background:{c['accent']}; color:#ffffff;
             border:none; font-weight:600; }}
+        /* 🚨 잠긴 단추가 **잠겨 보이게** (2026-08-31). 이 규칙이 없어 `setEnabled(False)`
+           를 걸어도 파란색 그대로였다 — 눌러도 아무 일 없는 파란 단추가 된다. */
+        QPushButton:disabled {{ background:{c['bg']}; color:{c['muted']};
+            border:1px solid {c['border']}; }}
+        QPushButton#primary:disabled {{ background:{c['bg']}; color:{c['muted']};
+            border:1px solid {c['border']}; font-weight:600; }}
         QPushButton#seg_on {{ background:{c['accent']}; color:#ffffff;
             border:none; font-weight:700; font-size:14px;
             border-radius:8px; padding:8px 14px; }}
@@ -4849,9 +4855,16 @@ class Proto(QMainWindow):
         v.addWidget(seg)
         v.addSpacing(14)
 
+        # 🚨 **못 그리는 계통이면 잠근다** (2026-08-31 전수 조사).
+        #    AC/DC 혼합 케이스에서 오른쪽은 "곡선을 그릴 수 없습니다" 라고 말하는데
+        #    이 단추만 파랗게 살아 있었고, 눌러도 **아무 일도 안 났다**(경고창도 없다).
+        #    까닭은 `curve_why()` 가 이미 알고 있으니 그대로 풍선말로 붙인다.
+        why = self.curve_why()
         run = QPushButton("곡선 그리기" if not self.curve_busy else "그리는 중…")
         run.setObjectName("primary")
-        run.setEnabled(not self.curve_busy)
+        run.setEnabled(not self.curve_busy and not why)
+        if why:
+            run.setToolTip(why)
         run.clicked.connect(self.run_curve)
         v.addWidget(run)
         n2 = QLabel("버스가 많으면 몇 분 걸립니다")
@@ -4875,6 +4888,8 @@ class Proto(QMainWindow):
     def run_curve(self):
         case = self.curve_case()
         if case is None or self.curve_busy:
+            return
+        if self.curve_why():        # 못 그리는 계통 — 단추도 잠겨 있지만 여기서도 막는다
             return
         self.curve_busy = True
         self.curve_err = ""
