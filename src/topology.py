@@ -1477,7 +1477,10 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
     cap = QLabel("위반 보기")
     cap.setStyleSheet(f"color:{c['muted']};font-size:13px;")
     bar.addWidget(cap)
-    seg = QFrame(); seg.setObjectName("segwrap"); seg.setFixedHeight(32)
+    # 🚨 32 로 두면 글자 위가 잘린다 — QSS 의 `padding:8px` 이 위아래 16px 을 먹어
+    #    「ON」이 「UN」, 「OFF」가 「Jㅏ」 처럼 보였다(2026-08-31 전수 조사에서 확대로 확인).
+    #    전압/위상각 전환 단추(app.py, 08-28)와 같은 결함·같은 처방 — 틀 40 + 단추 34.
+    seg = QFrame(); seg.setObjectName("segwrap"); seg.setFixedHeight(40)
     seg.setStyleSheet(f"#segwrap {{ background:{c['bg']};border:1px solid "
                       f"{c['border']};border-radius:9px; }}")
     sh = QHBoxLayout(seg); sh.setContentsMargins(3, 3, 3, 3); sh.setSpacing(3)
@@ -1486,6 +1489,9 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
         b.setObjectName("seg_on" if show_violations == val else "seg_off")
         b.setCursor(Qt.PointingHandCursor)
         b.setFixedWidth(48)
+        b.setFixedHeight(34)
+        # 폭 48 에 QSS 여백(14x2)이 걸리면 글자에 20px 만 남아 「OFF」의 O 가 눌린다
+        b.setStyleSheet("padding:0px;")
         if on_toggle is not None:
             b.clicked.connect(lambda _, x=val: on_toggle(x))
         sh.addWidget(b)
@@ -1503,7 +1509,7 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
     # ⚠️ **줄을 짧게 유지한다** — 이 줄은 그래프 칸 안에 있고, 표가 넓게 열리면
     #    그 칸이 330px 까지 좁아진다(실측). 「확대」 글자와 「원래 크기」 단추를
     #    넣었더니 곧바로 잘렸다 ⇒ 기호만 남기고 되돌리기는 앱이 이미 쓰는 `⟲` 로.
-    zwrap = QFrame(); zwrap.setObjectName("segwrap"); zwrap.setFixedHeight(32)
+    zwrap = QFrame(); zwrap.setObjectName("segwrap"); zwrap.setFixedHeight(40)   # 32 는 「⟲」를 「c」로 자른다
     zwrap.setStyleSheet(f"#segwrap {{ background:{c['bg']};border:1px solid "
                         f"{c['border']};border-radius:9px; }}")
     zh = QHBoxLayout(zwrap); zh.setContentsMargins(3, 3, 3, 3); zh.setSpacing(3)
@@ -1539,8 +1545,11 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
         b.setObjectName("seg_off")
         b.setCursor(Qt.PointingHandCursor)
         b.setFixedWidth(32)
-        # 기호 하나뿐이라 기본 크기로는 너무 작아 보인다
-        b.setStyleSheet("font-size:15px;font-weight:600;")
+        b.setFixedHeight(34)
+        # 기호 하나뿐이라 기본 크기로는 너무 작아 보인다.
+        # 🚨 여백을 0 으로 — QSS 의 `padding:8px 14px` 이 그대로 걸리면 폭 32px 에서
+        #    글자에 4px 만 남아 「⟲」가 「c」로 잘렸다(2026-08-31 확대로 확인).
+        b.setStyleSheet("font-size:15px;font-weight:600;padding:0px;")
         b.setToolTip(tip + (HINT if fac else ""))
         b.clicked.connect(lambda _, f=fac: bump(f))
         zh.addWidget(b)
