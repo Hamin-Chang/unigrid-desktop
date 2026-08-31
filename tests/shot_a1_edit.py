@@ -89,16 +89,18 @@ else:
     off = win._grid_off
     cell = tb.item(ROW, 13 + off)
     editable = bool(cell.flags() & Qt.ItemIsEditable)
-    print(f"    9번 줄 Ctrl Mode 칸: 값 {cell.text()!r} · 고칠 수 있나 {editable}")
-    if not editable:
-        fails.append("Ctrl Mode 를 못 고침")
+    # 🚨 2026-08-27 부터 **표에서는 잠긴다** — 고치는 곳은 [⚙ AC 조정] 패널 하나다.
+    #    값은 그대로 보여야 한다(엑셀에 있는 칸이라 감추지 않는다).
+    print(f"    9번 줄 Ctrl Mode 칸: 값 {cell.text()!r} · 표에서 고칠 수 있나 {editable}")
+    if editable:
+        fails.append("표에서 잠겨야 하는데 고쳐진다")
+    if "조정" not in (cell.toolTip() or ""):
+        fails.append("어디서 고치는지 안 알려 준다")
 
 print("\n[2] 고치면 '바꾼 것' 에 얹히나")
 off = win._grid_off
 for col, val in ((13, 1), (14, BUS), (15, TARGET), (16, 0.9), (17, 1.1), (18, 0)):
-    it = QTableWidgetItem(f"{val:g}")
-    tb.setItem(ROW, col + off, it)          # 사람이 친 것과 같은 길
-    win.grid_edited("AC_Line_dat", it, off, {})
+    win.adj_typed("AC_Line_dat", ROW, col, f"{val:g}")   # 패널에서 친 것과 같은 길
     tb, heads = grid()                      # rebuild 로 표가 새로 만들어진다
 print(f"    바꾼 것 {len(win.changes)}건")
 for ch in win.changes:
@@ -121,13 +123,22 @@ print(f"    {'✅ 화면에서 켠 것이 계산까지 갔다' if ok3 else '🚨
 if not ok3:
     fails.append("계산까지 안 감")
 
-print("\n[4] 조정 칸이 아닌 곳은 여전히 못 고치나")
+print("\n[4] 값 칸은 열려 있고, 뜻을 모르는 칸은 잠겨 있나")
+# 🚨 2026-08-27 부터 **값 칸은 연다**(사용자 지시 — PDR §4.3 ④ 뒤집기). R 은 열려야 하고,
+#    잠기는 것은 ⓐ⚙ 패널이 가져간 조정 칸 ⓑ 뜻을 모르는 칸 넷뿐이다.
+import cell_rules as _R
 tb, heads = grid()
 r_cell = tb.item(ROW, 3 + off)              # 4열 = R
-locked = not (r_cell.flags() & Qt.ItemIsEditable)
-print(f"    R 칸 잠김 {locked} {'✅' if locked else '🚨 열려 있다'}")
-if not locked:
-    fails.append("R 칸이 열림")
+r_open = bool(r_cell.flags() & Qt.ItemIsEditable)
+ctrl = tb.item(ROW, 13 + off)               # Ctrl Mode — 패널이 가져갔다
+ctrl_locked = not (ctrl.flags() & Qt.ItemIsEditable)
+print(f"    R 열림 {r_open} · Ctrl Mode 잠김 {ctrl_locked}")
+if not r_open:
+    fails.append("R 칸이 안 열림")
+if not ctrl_locked:
+    fails.append("Ctrl Mode 가 안 잠김")
+if 3 not in _R.editable("AC_Line_dat"):
+    fails.append("규칙에 R 이 없음")
 
 # ⚠️ 표를 다시 그린 직후에 바로 찍으면 **빈 화면**이 나온다(2026-08-13 실측).
 #    「계통 데이터」 탭을 열고 이벤트를 한 번 돌린 뒤에 찍는다.

@@ -802,6 +802,80 @@ def _fmt(top):
     return "%.2e"
 
 
+import compare_items as CI                                        # noqa: E402
+
+
+def _pick_rows(sol, item, targets):
+    """고른 것들이 결과 표의 몇 번째 줄인가 — (which, [(라벨, 줄)…], 뺀 것들).
+
+    버스는 번호 하나(`107`), 선로·IC 는 **두 번호**(`106-110`·`301-3`)로 고른다.
+    🚨 전압 크기는 AC·DC 를 함께 봐야 하므로 버스만 표를 두 개 훑는다.
+    """
+    s = CI.spec(item)
+    if s is None:
+        return None, [], []
+    kind = s[5]
+    got, skipped = [], []
+    if kind == "bus":
+        which = s[1]
+        arr = getattr(sol, which, None)
+        ids = ([int(b) for b in arr[:, 0, 0]] if arr is not None
+               and getattr(arr, "size", 0) and arr.ndim == 3 else [])
+        for no in targets:
+            n = int(no) if float(no).is_integer() else None
+            if n is not None and n in ids:
+                got.append((f"버스 {n}", ids.index(n)))
+            else:
+                skipped.append(f"{no:g}(없음)")
+        return which, got, skipped
+    # 선로·IC — 두 번호로 고른다
+    which = s[1]
+    arr = getattr(sol, which, None)
+    if arr is None or not getattr(arr, "size", 0):
+        return which, [], []
+    a2 = arr[:, :, 0] if arr.ndim == 3 else arr
+    pairs = [(int(r[0]), int(r[1])) for r in a2]
+    for f, to in targets:
+        key = (int(f), int(to))
+        if key in pairs:
+            got.append((f"{key[0]}–{key[1]}", pairs.index(key)))
+        elif (key[1], key[0]) in pairs:                 # 반대로 적어도 받는다
+            got.append((f"{key[0]}–{key[1]}", pairs.index((key[1], key[0]))))
+        else:
+            skipped.append(f"{key[0]}-{key[1]}(없음)")
+    return which, got, skipped
+
+
+def _series_or_point(sol, which, col_i, row):
+    """그 줄의 시간 변화. **시간 축이 없는 표**(VSC_bus)면 값 하나를 돌려준다."""
+    arr = getattr(sol, which)
+    if arr.ndim == 3:
+        return np.asarray(arr[row, col_i, :], dtype=float)
+    return np.asarray([arr[row, col_i]], dtype=float)
+
+
+def _pairs_of(targets):
+    """`106-110 301-3` 처럼 적은 것을 (106, 110)·(301, 3) 으로 읽는다.
+
+    🚨 **글자로도 오고 목록으로도 온다.** 앱은 쉼표로 잘라 목록으로 넘기고
+       (`app.py` 의 `targets = [t.strip() for t in …split(",")]`), 시험은 글자로
+       넘긴다 — `str(목록)` 으로 받으면 대괄호와 따옴표가 섞여 아무것도 못 읽는다.
+    """
+    if isinstance(targets, (list, tuple)):
+        targets = " ".join(str(x) for x in targets)
+    out = []
+    for tok in str(targets or "").replace(",", " ").split():
+        for sep in ("-", "–", "~"):
+            if sep in tok[1:]:                    # 앞 글자는 음수 부호일 수 있다
+                a0, _, b0 = tok.partition(sep)
+                try:
+                    out.append((int(a0), int(b0)))
+                except ValueError:
+                    pass
+                break
+    return out
+
+
 def _find_bus(sol, no):
     """실제 버스 번호 → ("AC"|"DC", 몇 번째 줄). 없으면 None.
 
@@ -832,27 +906,23 @@ def _cmp_by_bus(c, sol, item, nos):
     상·하한 점선은 깔지 않는다. 버스마다 한계가 다른데 여러 개를 겹치면
     어느 선의 한계인지 알 수 없기 때문이다(원본도 같은 이유로 생략했다).
     """
-    col = {"전압 크기": "VM[pu]", "위상각": "Angle[deg]"}[item]
+    s = CI.spec(item)
+    col = s[2]
     ch = _new_chart(c, f"{item} 비교   ·   x축 = 시간")
     lo = hi = None
     n = 0
-    skipped = []
-    for k, no in enumerate(nos):
-        got = _find_bus(sol, no)
-        if got is None:
-            skipped.append(f"{no}(없음)")
-            continue
-        kind, row = got
-        cols = sol.cols(kind)
-        if col not in cols:              # DC 버스에는 위상각이 없다
-            skipped.append(f"{no}(DC)")
-            continue
-        y = np.asarray(sol.series(kind, cols.index(col), row), dtype=float)
+    which, rows, skipped = _pick_rows(sol, item, nos)
+    if which is None:
+        return _note(c, f"{item} 은 아직 그리지 못합니다")
+    cols = sol.cols(which) if getattr(sol, which, None) is not None else []
+    if col not in cols:
+        return _note(c, f"이 계통 결과에 {col} 열이 없습니다")
+    for k, (name, row) in enumerate(rows):
+        y = _series_or_point(sol, which, cols.index(col), row)
         if y.size == 0:
             continue
         x = np.arange(1, y.size + 1)
         color = CYCLE[k % len(CYCLE)]
-        name = f"버스 {no}"
         ch.addSeries(_line(zip(x, y), color, 1.8, name=name))
         d = _dots(list(zip(x, y)), color, name, size=7.0)
         ch.addSeries(d)
@@ -861,22 +931,51 @@ def _cmp_by_bus(c, sol, item, nos):
         hi = float(y.max()) if hi is None else max(hi, float(y.max()))
         n = max(n, int(y.size))
     if not n:
-        why = ("고른 버스에 위상각이 없습니다 (위상각은 AC 버스만 있습니다)"
-               if item == "위상각" else "고른 버스를 찾지 못했습니다")
-        return _note(c, why)
+        u = CI.UNIT_NAME.get(CI.by(item), "것")
+        return _note(c, f"고른 {u} 를 찾지 못했습니다 ({CI.HINT.get(CI.by(item), '')})")
 
     xa = _style_axis(QValueAxis(), c)
     xa.setLabelFormat("%d")
     xa.setRange(1, max(2, n))
     xa.setTickCount(min(12, max(2, n)))
     ya = _style_axis(QValueAxis(), c)
-    ya.setLabelFormat("%.3f" if item == "전압 크기" else "%.2f")
+    ya.setLabelFormat(f"%.{CI.digits(item)}f")
     ya.setTickCount(6)
     pad = max(1e-4, (hi - lo) * 0.15)
     ya.setRange(lo - pad, hi + pad)
     if skipped:                          # 왜 빠졌는지 제목에 남긴다
-        ch.setTitle(ch.title() + f"   (뺀 버스: {', '.join(skipped)})")
+        ch.setTitle(ch.title()
+                    + f"   (뺀 {CI.UNIT_NAME.get(CI.by(item), '것')}: {', '.join(skipped)})")
     return _finish(ch, c, xa, ya)
+
+
+def _row_values(sol, item, t):
+    """한 시각의 (x 라벨들, 값들, 하한, 상한). 못 그리면 (None, …).
+
+    🚨 전압 크기만 **AC·DC 를 이어 붙여** 본다(`_bus_table`) — 원래 그렇게 그렸고,
+       상·하한 점선도 그때만 뜻이 있다. 나머지는 그 항목이 사는 표 하나만 본다.
+    """
+    if item == "전압 크기":
+        nm, vals, vmin, vmax, _ = _bus_table(sol, t)
+        return nm, np.asarray(vals, dtype=float), vmin, vmax
+    s = CI.spec(item)
+    if s is None:
+        return None, None, None, None
+    which = s[1]
+    arr = getattr(sol, which, None)
+    if arr is None or not getattr(arr, "size", 0):
+        return None, None, None, None
+    a2 = sol.at(which, t) if arr.ndim == 3 else arr
+    if not a2.size:
+        return None, None, None, None
+    cols = sol.cols(which)
+    if s[2] not in cols:
+        return None, None, None, None
+    if s[5] == "bus":
+        nm = [f"{int(r[0])}" for r in a2]
+    else:                                  # 선로·IC 는 두 번호로 부른다
+        nm = [f"{int(r[0])}–{int(r[1])}" for r in a2]
+    return nm, np.asarray(a2[:, cols.index(s[2])], dtype=float), None, None
 
 
 def _cmp_by_time(c, sol, item, times):
@@ -886,24 +985,14 @@ def _cmp_by_time(c, sol, item, times):
     이때는 모든 선이 같은 버스를 보므로 한계가 뜻을 갖는다).
     위상각은 AC 버스만 그린다.
     """
-    ac_only = item == "위상각"
-    ch = _new_chart(c, f"{item} 비교   ·   x축 = 버스")
+    unit = CI.UNIT_NAME.get(CI.by(item), "버스")
+    ch = _new_chart(c, f"{item} 비교   ·   x축 = {unit}")
     names, lo_all, hi_all = [], None, None
     ys = []
     for k, h in enumerate(times):
         t = h - 1                        # 화면은 1시부터, 배열은 0부터
-        if item == "전압 크기":
-            nm, vm, vmin, vmax, _ = _bus_table(sol, t)
-            vals = vm
-        else:
-            ac = sol.at("AC", t)
-            if not ac.size:
-                continue
-            cols = sol.cols("AC")
-            nm = [f"{int(r[0])}" for r in ac]
-            vals = np.asarray(ac[:, cols.index("Angle[deg]")], dtype=float)
-            vmin = vmax = None
-        if not len(nm):
+        nm, vals, vmin, vmax = _row_values(sol, item, t)
+        if nm is None or not len(nm):
             continue
         names = nm
         x = np.arange(1, len(nm) + 1)
@@ -917,8 +1006,7 @@ def _cmp_by_time(c, sol, item, times):
         if vmin is not None:
             lo_all, hi_all = np.asarray(vmin), np.asarray(vmax)
     if not ys:
-        return _note(c, "그릴 값이 없습니다 (고른 시간을 확인해 주세요)"
-                     if not ac_only else "AC 버스가 없어 위상각을 그릴 수 없습니다")
+        return _note(c, f"{item} 을 그릴 값이 없습니다 (고른 시간을 확인해 주세요)")
 
     x = np.arange(1, len(names) + 1)
     if lo_all is not None:               # 상·하한 (범례에선 감춘다 — 원본과 같음)
@@ -928,7 +1016,7 @@ def _cmp_by_time(c, sol, item, times):
         _hide_from_legend(ch, bot)
     xa = _bus_axis(c, names)
     ya = _style_axis(QValueAxis(), c)
-    ya.setLabelFormat("%.3f" if item == "전압 크기" else "%.2f")
+    ya.setLabelFormat(f"%.{CI.digits(item)}f")
     ya.setTickCount(6)
     lo = min(float(np.min(y)) for y in ys)
     hi = max(float(np.max(y)) for y in ys)
@@ -1054,31 +1142,22 @@ def _cmp_by_scenario(c, pairs, item, t):
     한 버스만 시간축으로 보면 그 그림이 안 나온다.
     상·하한 점선은 깐다 — 모든 선이 같은 버스들을 보므로 한계가 뜻을 갖는다.
     """
-    ch = _new_chart(c, f"{item} 비교   ·   x축 = 버스   ·   {t + 1}H")
+    ch = _new_chart(c, f"{item} 비교   ·   x축 = "
+                       f"{CI.UNIT_NAME.get(CI.by(item), '버스')}   ·   {t + 1}H")
     names, lo_all, hi_all, ys = [], None, None, []
     skipped = []
     for k, (label, sol) in enumerate(pairs):
         if sol is None:
             skipped.append(label)
             continue
-        if item == "전압 크기":
-            nm, vals, vmin, vmax, _ = _bus_table(sol, t)
-        else:
-            ac = sol.at("AC", t)
-            if not ac.size:
-                skipped.append(label)
-                continue
-            cols = sol.cols("AC")
-            nm = [f"{int(r[0])}" for r in ac]
-            vals = np.asarray(ac[:, cols.index("Angle[deg]")], dtype=float)
-            vmin = vmax = None
-        if not len(nm):
+        nm, vals, vmin, vmax = _row_values(sol, item, t)
+        if nm is None or not len(nm):
             skipped.append(label)
             continue
         # 🚨 버스 수가 다르면 겹쳐 그릴 수 없다. 조건을 바꿔도 버스는 그대로지만,
         #    다른 케이스를 섞으면 어긋난다 — 조용히 어긋난 그림을 그리느니 뺀다.
         if names and len(nm) != len(names):
-            skipped.append(f"{label}(버스 수 다름)")
+            skipped.append(f"{label}({CI.UNIT_NAME.get(CI.by(item), '버스')} 수 다름)")
             continue
         names = nm
         x = np.arange(1, len(nm) + 1)
@@ -1101,7 +1180,7 @@ def _cmp_by_scenario(c, pairs, item, t):
         _hide_from_legend(ch, bot)
     xa = _bus_axis(c, names)
     ya = _style_axis(QValueAxis(), c)
-    ya.setLabelFormat("%.3f" if item == "전압 크기" else "%.2f")
+    ya.setLabelFormat(f"%.{CI.digits(item)}f")
     ya.setTickCount(6)
     lo = min(float(np.min(y)) for y in ys)
     hi = max(float(np.max(y)) for y in ys)
@@ -1156,10 +1235,11 @@ def compare_scenarios(c, pairs, item, t):
     if not pairs:
         return _note(c, "겹쳐 볼 시나리오를 목록에서 체크하세요")
     try:
-        if item in ("주파수", "손실"):
+        if CI.by(item) == "system":
             return _cmp_scen_scalar(c, pairs, item)
-        if item == "위상각" and int(getattr(pairs[0][1], "mode", 0)) == 2:
-            return _note(c, "DC only 계통이라 위상각이 없습니다")
+        why = CI.available(pairs[0][1], item) if pairs[0][1] is not None else ""
+        if why:
+            return _note(c, why)
         return _cmp_by_scenario(c, pairs, item, t)
     except Exception as exc:
         print(f"[시나리오 비교] {item} 실패: {exc}")
@@ -1174,20 +1254,25 @@ def compare_chart(c, sol, item, axis, targets):
     """
     if sol is None:
         return _note(c, "먼저 케이스를 불러와 계산하세요")
-    nos = _nums(targets)
+    kind = CI.by(item)
+    nos = (_pairs_of(targets) if kind in ("branch", "ic") and axis == "버스끼리"
+           else _nums(targets))
     if not nos:
-        unit = "버스" if axis == "버스끼리" else "시간"
-        return _note(c, f"비교할 {unit} 번호를 왼쪽에 적어 주세요")
+        unit = CI.UNIT_NAME.get(kind, "버스") if axis == "버스끼리" else "시간"
+        hint = CI.HINT.get(kind, "") if axis == "버스끼리" else ""
+        josa = "를" if unit[-1] in "스로" or unit == "IC" else "을"
+        return _note(c, f"비교할 {unit}{josa} 왼쪽에 적어 주세요  {hint}".rstrip())
     try:
-        if item in ("주파수", "손실"):
+        if CI.by(item) == "system":
             # 이 둘은 계통 전체에 하나뿐인 값이라 버스끼리 비교가 성립하지 않는다
             if axis != "시간끼리":
                 return _note(c, f"{item} 은 계통 전체에 하나뿐이라 "
                                 f"시간끼리 비교에서만 볼 수 있습니다")
             return _cmp_freq(c, sol, nos) if item == "주파수" \
                 else _cmp_loss(c, sol, nos)
-        if item == "위상각" and int(getattr(sol, "mode", 0)) == 2:
-            return _note(c, "DC only 계통이라 위상각이 없습니다")
+        why = CI.available(sol, item)
+        if why:
+            return _note(c, why)
         return (_cmp_by_bus(c, sol, item, nos) if axis == "버스끼리"
                 else _cmp_by_time(c, sol, item, nos))
     except Exception as exc:              # 한 그래프가 죽어도 앱은 살아 있게

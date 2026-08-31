@@ -54,3 +54,6 @@ results/
 # `tests/shot_all.py` 에 있으므로 언제든 다시 뽑을 수 있다.
 shots_*/
 _backup_*.bat
+
+# 백업본은 올리지 않는다 — 코드 고치기 전 백업이 규칙이라 계속 생긴다
+src/*_backup_*.py

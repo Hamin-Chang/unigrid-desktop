@@ -68,7 +68,10 @@ except Exception as _exc:              # 그래도 앱은 뜨게 — 대신 **�
     load_case = None
     _LOAD_CASE_ERR = f"{type(_exc).__name__}: {_exc}"
 
-import scenario as SC          # 계통 조건 바꾸기 (PDR §7 2단계)
+import scenario as SC
+import adjust_panel as ADJ
+import cell_rules as RULES
+import compare_items as CI          # 계통 조건 바꾸기 (PDR §7 2단계)
 
 
 def _grid_headers():
@@ -130,9 +133,11 @@ GRID_SCALES = _grid_scales()
 # A1 조정 열(14~19)은 옛 파일에 없다 — 안 보여 주면 켤 방법이 없다.
 GRID_PAD_TO_HEADERS = {"AC_Line_dat", "AC_Bus_dat"}
 
+# 🚨 **A1 조정 칸은 여기 없다** (2026-08-27). 엑셀에는 있는 칸이고 표에 **값도 그대로
+#    보여 주지만**, 고치는 곳은 `⚙ AC 조정` 패널 하나다 — 표 안에서도 고칠 수 있게 두면
+#    같은 값을 고치는 자리가 둘이 되고, 표 쪽은 19칸 중 14~19번째라 화면 밖이다.
+#    아래 `GRID_PANEL_COLS` 가 그 칸을 「패널에서 고친다」고 알려 준다.
 GRID_EDITABLE = {
-    "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # A1 조정 — Mode·Bus·Target·Min·Max·Steps
-    "AC_Bus_dat": {17, 18, 19, 20, 21},        # A1 ④ SVC — Shunt Mode·Target·Bmin·Bmax·Steps
     "AC_gen_dat": {2, 3, 4, 7},        # 운전모드 · P-f droop · Q-V droop · 지정전압
     "DC_gen_dat": {2, 3, 5},           # 운전모드 · P-Vdc droop · 지정전압
     "IC_dat": {2, 3, 4, 5, 6, 7, 8},   # AC/DC 제어모드 · droop 셋 · P·Q 동작점
@@ -147,7 +152,11 @@ GRID_EDITABLE = {
 #      하는지 먼저 확인하고 여기 더한다.
 #   계기: 계단을 켠 뒤 한계를 다시 비워 자동(0.9~1.1)으로 돌리려는데 **방법이 없었다** —
 #         `float("")` 이 걸려 "숫자가 아닙니다" 로 되돌아갔다.
-GRID_CLEARABLE = {
+GRID_CLEARABLE: dict[str, set[int]] = {}   # 조정 칸이 패널로 옮겨 가며 비었다 (2026-08-27)
+
+# 표에서는 **읽기만** 하고 `⚙ AC 조정` 패널에서 고치는 칸. 회색으로 두되 칸을 짚으면
+# 어디서 고치는지 말해 준다 — 안 그러면 "왜 안 고쳐지지" 로 끝난다.
+GRID_PANEL_COLS = {
     "AC_Line_dat": {13, 14, 15, 16, 17, 18},   # Ctrl Mode·Bus·Target·Min·Max·Step Size
     "AC_Bus_dat": {17, 18, 19, 20, 21},        # Shunt Ctrl Mode·Target·Bmin·Bmax·Step Size
 }
@@ -164,6 +173,30 @@ SCENARIO_ROWS = 4
 SCENARIO_ROW_H = 42   # 실측 줄 간격(렌더에서 잼 — sizeHint 증가분 25 와 다르다)
 
 # 계통 데이터 탭에 보여 줄 표 (차례대로). 켜고 끌 수 있는 것이 앞에 온다.
+def _col_name(key, col):
+    h = GRID_HEADERS.get(key, [])
+    return h[col] if col < len(h) else f"{col + 1}열"
+
+
+def _cell_tip(key, col):
+    """고칠 수 있는 칸에 붙는 설명 — 무엇을 받는지까지 말해 준다."""
+    tip = ("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
+           "위의 [이 조건으로 계산] 을 눌러야 풉니다")
+    rule = RULES.RULES.get(key, {}).get(col)
+    if rule in (RULES.BUS_AC, RULES.BUS_DC):
+        tip += ("\n\n계통에 있는 "
+                + ("AC" if rule == RULES.BUS_AC else "DC") + " 버스 번호여야 합니다.")
+    elif rule == RULES.FLAG:
+        tip += "\n\n0(끔) 아니면 1(켬) 입니다."
+    elif rule == RULES.SHARE:
+        tip += "\n\n0 과 1 사이입니다 (부하 나눔 비율)."
+    elif rule == RULES.POS:
+        tip += "\n\n0 보다 커야 합니다."
+    elif rule == RULES.NONNEG:
+        tip += "\n\n0 이상이어야 합니다."
+    return tip
+
+
 GRID_TABLES = [
     ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
     ("DC_Line_dat", "DC 선로"), ("DC_gen_dat", "DC 발전기"),
@@ -413,10 +446,10 @@ def real_tables(sol, mode, t, show_vsc):
     return out
 
 
-COMPARE_ITEMS = [
-    ("전압 크기", True), ("위상각", True),
-    ("주파수", False), ("손실", False),      # False = 시간끼리 비교에서만
-]
+# 🚨 **항목 목록은 `compare_items.py` 가 갖는다** (2026-08-27). 여기엔 이름과
+#    「늘 보이나」 두 값밖에 못 담아서, 어느 표 어느 열인지가 코드 세 군데에 글자로
+#    흩어져 있었다. 늘리려면 그 셋을 다 고쳐야 했다 — 그래서 넷에서 멈춰 있었다.
+COMPARE_ITEMS = [(s[0], s[6] == "all") for s in CI.SPECS]
 
 
 def fake(col, row):
@@ -1039,6 +1072,11 @@ class Proto(QMainWindow):
         # **여기에 들고 있다가 다시 넘긴다** — 안 그러면 계산 한 번에 100% 로 돌아간다.
         self.topo_zoom = 1.0
         self.graph_tab = 0            # 보고 있던 그래프 탭 (재생성 때 되돌리려고)
+        # 차트를 여럿 위아래로 쌓는 탭(전압·위상)에서 **몇 번째를 보고 있나** (2026-08-28).
+        #   쌓아 두면 한 장이 절반씩 나눠 가져 그래프 최소 높이가 425 로 뛰고, 그만큼
+        #   표가 깎인다(창 1440px 아래에서는 표가 늘 제 몫을 못 받았다). ⇒ **한 장씩
+        #   보이고 탭 줄 구석 단추로 고른다.** 탭은 「전압·위상」 하나로 그대로 둔다.
+        self.plot_pick = 0
         # 아래쪽 표 탭도 같이 기억한다. **번호가 아니라 이름**으로 — 모드·VSC 표시에 따라
         # 탭 개수가 달라지고, 이름에도 건수가 붙는다("점검 (3)"·"계통 데이터 (2)").
         self.table_tab = "AC 결과"
@@ -1267,6 +1305,19 @@ class Proto(QMainWindow):
             h.addWidget(b)
         h.addStretch()
 
+        # 「지금 무엇을 보고 있나」 — 시간 · 버스 (2026-08-29 사용자 확정).
+        # 사이드바에 있던 것을 여기로 옮겼다. 사이드바에는 *한 번 정하면 한동안
+        # 안 바꾸는 것*(케이스 · 무엇을 할까 · 보기)만 남긴다.
+        # ⚠️ **그래프 탭 줄이 아니라 맨 위 줄인 까닭** — 「계통 데이터」·「점검」 탭은
+        #    그래프를 무조건 접어(2026-08-28) 그 줄이 **통째로 없다**. 거기 두면 그
+        #    두 탭에서 시간을 못 고른다. 맨 위 줄은 어느 탭에서나 있다.
+        # 📌 앱 스스로 *"그래프와 **표**가 이 시간을 같이 따라갑니다"* 라고 말한다 —
+        #    그래프만의 것이 아니라 화면 전체가 따라가는 것이라 그래프 줄보다 위가 맞다.
+        pick = self.view_picker()
+        if pick is not None:
+            h.addWidget(pick)
+        h.addStretch()
+
         # 🚨 **「정보」는 넣고 뺄 수 있는 것이 아니다** (2026-08-19).
         #    MathWorks 라이선스가 *"About Box, 또는 그와 비슷한 눈에 띄는 자리"* 에
         #    저작권 고지를 넣으라고 요구한다(license_agreement.txt 205–210행).
@@ -1290,6 +1341,51 @@ class Proto(QMainWindow):
         #       놨는데 툴팁만 옛 문구를 달고 남아 있었다.
 
         return bar
+
+    def view_picker(self):
+        """맨 위 줄 가운데 — 지금 무엇을 보고 있나 (시간 · 버스).
+
+        비교 모드는 **아직 여기 없다** — 「볼 항목」은 24개짜리라 칩+패널이 필요하고,
+        그것은 따로 정한다(2026-08-29). 그때까지 비교는 사이드바에 그대로 둔다.
+        """
+        if self.sol is None or self.mode not in ("스냅샷", "다이나믹"):
+            return None
+        c = self.c
+        if self.mode == "스냅샷":
+            cap = "시간"
+            n_t = self.sol.n_time
+            items = [f"{i} H" for i in range(1, n_t + 1)]
+            idx, slot = min(self.t, n_t - 1), self.set_time
+        else:
+            cap = "버스"
+            if self.sol.AC.size:
+                items = [f"AC {int(b)}" for b in self.sol.AC[:, 0, 0]]
+                if self.sol.DC.size:
+                    items += [f"DC {int(b)}" for b in self.sol.DC[:, 0, 0]]
+            else:
+                items = [f"AC {i}" for i in range(1, 15)]
+            idx, slot = min(self.bus_row, len(items) - 1), self.set_bus
+
+        w = QWidget()
+        w.setObjectName("viewpick")
+        # 🚨 안 주면 **자기 배경(흰색)을 칠해** 맨 위 줄에 흰 덩어리가 생긴다
+        #    (2026-08-29 확대해서 확인).
+        w.setStyleSheet("#viewpick { background: transparent; }")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lb = QLabel(cap)
+        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        lay.addWidget(lb)
+        cb = QComboBox()
+        cb.addItems(items)
+        cb.setCurrentIndex(max(0, idx))
+        cb.setMinimumWidth(118)
+        cb.currentIndexChanged.connect(slot)
+        cb.setToolTip("그래프와 표가 이것을 같이 따라갑니다")
+        lay.addWidget(cb)
+        self._view_pick = cb
+        return w
 
     # ── 좌측 ──
     def sidebar(self):
@@ -1333,6 +1429,13 @@ class Proto(QMainWindow):
             wn.setWordWrap(True)
             wn.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             v.addWidget(wn)
+        # 「무엇을 할까」와 그 아래를 가르는 선 (2026-08-29 사용자 확정 · 안 가-1).
+        # 위 = 무엇을 할까 / 아래 = 그 작업 안에서 어떻게 볼까.
+        # 셋(케이스·할 일·보기)이 같은 꼴이라 나란한 설정처럼 읽혔는데, 실은
+        # 「PV·QV 곡선」을 고르면 아래가 통째로 바뀐다(이 함수가 거기서 return 한다).
+        # ⚠️ 두 갈래 **앞**에 둔다 — 곡선 쪽 입력들도 「무엇을 할까」의 아래다.
+        v.addSpacing(10)
+        v.addWidget(hline_soft(c))
         v.addSpacing(12)
 
         if self.task == "PV·QV 곡선":
@@ -1361,42 +1464,13 @@ class Proto(QMainWindow):
         v.addWidget(seg)
         v.addSpacing(12)
 
+        # 🚨 「시간 선택」·「버스 선택」은 **맨 위 줄로 옮겼다** (2026-08-29 사용자 확정).
+        #    `view_picker()` 참조. 사이드바에는 *한 번 정하면 한동안 안 바꾸는 것*만 남긴다.
         if self.mode == "스냅샷":
-            lb = QLabel("시간 선택")
-            lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
-            v.addWidget(lb)
-            cb = QComboBox()
-            n_t = self.sol.n_time if self.sol is not None else 24
-            cb.addItems([f"{i} H" for i in range(1, n_t + 1)])
-            cb.setCurrentIndex(min(self.t, n_t - 1))
-            cb.currentIndexChanged.connect(self.set_time)
-            v.addWidget(cb)
-            n = QLabel("그래프와 표가 이 시간을 같이 따라갑니다")
-            n.setWordWrap(True)
-            n.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-            v.addWidget(n)
-            v.addSpacing(14)
-            v.addWidget(self.freq_card())
+            pass                                # 주파수는 맨 아래 상태바에 있다
 
         elif self.mode == "다이나믹":
-            lb = QLabel("버스 선택")
-            lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
-            v.addWidget(lb)
-            cb = QComboBox()
-            if self.sol is not None and self.sol.AC.size:
-                buses = [f"AC {int(b)}" for b in self.sol.AC[:, 0, 0]]
-                if self.sol.DC.size:
-                    buses += [f"DC {int(b)}" for b in self.sol.DC[:, 0, 0]]
-            else:
-                buses = [f"AC {i}" for i in range(1, 15)]
-            cb.addItems(buses)
-            cb.setCurrentIndex(min(self.bus_row, len(buses) - 1))
-            cb.currentIndexChanged.connect(self.set_bus)
-            v.addWidget(cb)
-            n = QLabel("그래프와 표가 이 버스를 같이 따라갑니다")
-            n.setWordWrap(True)
-            n.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-            v.addWidget(n)
+            pass                                # 버스 고르개는 맨 위 줄에 있다
 
         else:  # 비교
             lb = QLabel("무엇끼리 비교")
@@ -1438,34 +1512,33 @@ class Proto(QMainWindow):
                 v.addStretch(1)
                 return sb
 
-            lb2 = QLabel("비교할 " + ("버스" if self.compare_axis == "버스끼리" else "시간"))
+            # 🚨 고른 항목이 **무엇마다 있는 값이냐**에 따라 골라 달라는 것이 다르다
+            #    (버스 · 선로 · IC). 「버스」로 박아 두면 선로 부하율을 고르고도
+            #    버스 번호를 적게 된다.
+            kinds = CI.kinds_needed(self.picked, self.compare_axis)
+            what = (" · ".join(CI.UNIT_NAME[k] for k in kinds) or "버스") \
+                if self.compare_axis == "버스끼리" else "시간"
+            lb2 = QLabel(f"비교할 {what}")
             lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
             v.addWidget(lb2)
-            le = QLineEdit(self.compare_targets)
-            le.setPlaceholderText("예: 3, 7, 12   (최대 50개)")
-            le.textChanged.connect(self.set_targets)
-            v.addWidget(le)
-            n = QLabel("최대 50개 · 한 그래프에 겹쳐 그립니다")
+            # 🚨 **타이핑 칸이었다** (2026-08-30 사용자 확정으로 고르개가 됐다).
+            #    타이핑 칸일 때 네 가지가 조용히 어긋났다 —
+            #      ① 기본값 `3, 7, 12` 가 12버스 계통에서 3 하나만 맞았다(7·12 는 DC)
+            #      ② 없는 번호(999)를 아무 말 없이 버렸다
+            #      ③ 빈 칸 안내가 `예: 106 107`(쉼표 없음)인데 쉼표가 없으면 통째로 버렸다
+            #      ④ 같은 번호를 여러 번 받아 같은 선을 겹쳐 그렸다
+            #    **있는 것만 고르게** 하면 넷이 한꺼번에 사라진다.
+            v.addWidget(self.target_button())
+            n = QLabel("누르면 이 계통에 있는 것 중에서 고릅니다 · 최대 50개")
             n.setWordWrap(True)
             n.setStyleSheet(f"color:{c['muted']};font-size:13px;")
             v.addWidget(n)
             v.addSpacing(10)
 
-            lb3 = QLabel("볼 항목")
-            lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
-            v.addWidget(lb3)
-            for name, always in COMPARE_ITEMS:
-                usable = always or self.compare_axis == "시간끼리"
-                cb = QCheckBox(name)
-                cb.setChecked(name in self.picked and usable)
-                cb.setEnabled(usable)
-                cb.stateChanged.connect(
-                    lambda st, n2=name: self.toggle_item(n2, st))
-                v.addWidget(cb)
-                if not usable:
-                    w = QLabel("   시간끼리 비교에서만")
-                    w.setStyleSheet(f"color:{c['warn']};font-size:12px;")
-                    v.addWidget(w)
+            # 🚨 「볼 항목」 24개 목록은 **비교 탭 줄 구석의 칩**으로 옮겼다
+            #    (2026-08-29 사용자 확정, `item_chip()`·`open_item_pick()`).
+            #    고른 것이 곧 오른쪽 탭이 되므로 **같은 것을 두 번 말하고 있었고**,
+            #    그 목록 하나가 사이드바의 3분의 2(1543px 중 약 1090px)를 썼다.
             # 비교 그림 저장은 위쪽 "내보내기"와 **따로** 둔다(사용자 요청).
             # 원본 앱도 비교는 별도 버튼이었다(ExportComparisonButtonPushed).
             # ⚠️ 이름을 sb 로 쓰면 안 된다 — 이 함수의 sb 는 사이드바 자체다.
@@ -1523,7 +1596,15 @@ class Proto(QMainWindow):
                 lay = QHBoxLayout(page) if layout == "h" else QVBoxLayout(page)
                 lay.setContentsMargins(10, 10, 10, 10)
                 lay.setSpacing(9)
-                for pname in plots:
+                # 🚨 **위아래로 쌓지 않고 한 장만 그린다** (2026-08-28 사용자 확정 —
+                #    *"탭은 전압이랑 위상각을 두개 갖고 있는걸로 하되, 전압만 기본적으로
+                #    뜨게 하고, 버튼으로 고를 수 있게"*). 쌓으면 한 장이 절반씩 나눠 가져
+                #    그래프 최소 높이가 425 로 뛰고 그만큼 표가 깎였다.
+                #    ⚠️ 옆으로 놓는 탭(조류 P·Q)은 그대로 둘 다 그린다 — 세로를 안 나눈다.
+                shown = plots
+                if layout == "v" and len(plots) > 1:
+                    shown = [plots[min(self.plot_pick, len(plots) - 1)]]
+                for pname in shown:
                     # 시간과 버스를 둘 다 넘긴다 — 어느 쪽을 쓸지는 그래프가
                     # 이름(x축이 버스냐 시간이냐)을 보고 고른다.
                     # (한때 하나만 넘겨서 고른 버스가 아니라 늘 첫 버스를 그렸다)
@@ -1538,8 +1619,16 @@ class Proto(QMainWindow):
             # 다시 만드는데, 안 되살리면 늘 0번(전압·위상)으로 튀어 버렸다
             # (토폴로지에서 토글을 누르면 전압 그래프로 넘어가던 버그).
             gt.setCurrentIndex(min(self.graph_tab, gt.count() - 1))
-            gt.currentChanged.connect(
-                lambda i: setattr(self, "graph_tab", int(i)))
+            # ⚠️ 아래 처리기가 이 둘을 붙잡으므로 **여기서 먼저** 만든다.
+            stack_of = {i: pl for i, (_n, pl, lo) in enumerate(GRAPHS[self.mode])
+                        if lo == "v" and len(pl) > 1}
+            self._plot_seg = None
+
+            def _on_graph_tab(i, _stack=stack_of):
+                self.graph_tab = int(i)
+                if self._plot_seg is not None:
+                    self._plot_seg.setVisible(int(i) in _stack)
+            gt.currentChanged.connect(_on_graph_tab)
             # 그래프가 낮으면 QtCharts 가 x축 글자를 "..." 로 줄여 버린다. 그래서
             # **평소 높이**(아래 setSizes 620)는 넉넉히 준다. 다만 이걸 최소치로
             # 잡아 두면 창을 화면보다 작게 못 만든다 — 470 + 표 579 로 창 최소가
@@ -1566,7 +1655,51 @@ class Proto(QMainWindow):
             fold.setToolTip("그래프를 접고 표를 넓게 씁니다.")
             fold.setCursor(Qt.PointingHandCursor)
             fold.clicked.connect(lambda: self.set_numbers(True))
-            gt.setCornerWidget(fold, Qt.TopRightCorner)
+
+            # 어느 것을 볼지 고르는 단추 — 차트를 여럿 가진 탭에만 뜬다.
+            # 자리는 탭 줄 구석이라 **세로를 안 먹는다**(접기 단추와 같은 수법).
+            corner = fold
+            if stack_of:
+                cur = min(self.graph_tab, gt.count() - 1)
+                names = stack_of.get(cur) or next(iter(stack_of.values()))
+                seg = QFrame()
+                seg.setObjectName("segwrap")
+                # 🚨 **34 로 두면 한글이 세로로 잘린다** (2026-08-28 화면 캡처로 확인).
+                #    QSS 의 `padding:8px 14px` 이 위아래로 16px 을 먹어 글자에 10px 밖에
+                #    안 남고, 잘린 윗부분 때문에 「전압」이 **「선압」**, 「위상각」이
+                #    **「뷔상삭」** 으로 보였다(ㅈ 의 윗줄·ㄱ 의 윗줄이 사라진다).
+                #    VSC 표의 [ON|OFF] 는 같은 34 인데 라틴 대문자라 티가 안 났다.
+                seg.setFixedHeight(40)
+                seg.setStyleSheet(
+                    f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
+                    f"border-radius:9px; }}")
+                sh = QHBoxLayout(seg)
+                sh.setContentsMargins(3, 3, 3, 3)
+                sh.setSpacing(3)
+                # 🚨 **폭을 글자에서 재서 준다.** 그냥 두면 「전압」이 53px 로 나와
+                #    QSS 안쪽 여백(14px x 2)을 빼면 글자에 25px 밖에 안 남아
+                #    **「선압」·「위상삭」 처럼 잘려 보인다**(2026-08-28 실측·확대해서 확인).
+                #    sizeHint 가 QSS padding 을 안 세는 탓이라 여기서 직접 더한다.
+                fm = self.fontMetrics()
+                for i, pname in enumerate(names):
+                    # 이름은 축 표기를 뗀 앞부분만 — "전압  [pu] · x축 = 버스" → "전압"
+                    txt = pname.split("[")[0].strip()
+                    b = QPushButton(txt)
+                    b.setObjectName("seg_on" if i == self.plot_pick else "seg_off")
+                    b.setCursor(Qt.PointingHandCursor)
+                    b.setMinimumWidth(fm.horizontalAdvance(txt) + 36)
+                    b.setFixedHeight(34)
+                    b.clicked.connect(lambda _, x=i: self.set_plot_pick(x))
+                    sh.addWidget(b)
+                seg.setVisible(cur in stack_of)
+                self._plot_seg = seg
+                corner = QWidget()
+                ch = QHBoxLayout(corner)
+                ch.setContentsMargins(0, 0, 0, 0)
+                ch.setSpacing(10)
+                ch.addWidget(seg)
+                ch.addWidget(fold)
+            gt.setCornerWidget(corner, Qt.TopRightCorner)
             split.addWidget(gt)
         else:
             note = QFrame()
@@ -1669,8 +1802,13 @@ class Proto(QMainWindow):
             head.addWidget(self._find_clear)
             self._find_clear.setVisible(bool(self.res_find))
 
+        # 🚨 「열 선택」은 **결과 표에만** 뜻이 있다 (2026-08-27).
+        #    점검·수렴·계통 데이터 탭에도 보였는데 눌러도 아무 일이 안 났다 —
+        #    `TABLE_SPECS` 에 그 이름이 없어 `KeyError` 가 나고 Qt 가 삼켰다.
+        #    죽은 단추를 두느니 그 탭에서는 안 보이게 한다.
         cb = QPushButton("열 선택")
         cb.clicked.connect(self.pick_columns)
+        cb.setVisible(_tab_base(self.table_tab) in TABLE_SPECS)
         head.addWidget(cb)
 
         tt = QTabWidget()
@@ -1684,6 +1822,22 @@ class Proto(QMainWindow):
                                 self.show_vsc and self.case_has_vsc)
             bad = self.violating_buses()
             for name, cols, arr in specs:
+                # 🚨 **「열 선택」을 여기서 걸러야 한다** (2026-08-27). 여태 이 자리가
+                #    엔진이 준 열을 통째로 그려서, 열을 골라 [적용] 해도 화면이 안 바뀌었다
+                #    (`self.visible` 을 쓰는 곳은 **결과가 없을 때의 뼈대 표**뿐이었다).
+                #    ⚠️ 거르면 **열 자리가 밀린다** — 버스 번호는 원래 0열이고 위반 표시·
+                #       정수 표기가 그 자리를 쓴다. 그래서 **원래 자리(`keep`)를 들고 다닌다.**
+                want = self.visible.get(name)
+                keep = ([i for i, n in enumerate(cols) if n in want] if want
+                        else list(range(len(cols))))
+                if not keep:                      # 아는 열이 하나도 안 겹치면 다 보여 준다
+                    keep = list(range(len(cols)))
+                # 위반 표시는 **거르기 전** 버스 번호로 정한다 (0열이 꺼져 있을 수 있다)
+                flags = [name in ("AC 결과", "DC 결과")
+                         and (name[:2], int(arr[r, 0])) in bad
+                         for r in range(arr.shape[0])]
+                cols = [cols[i] for i in keep]
+                arr = arr[:, keep]
                 t = QTableWidget(arr.shape[0], len(cols))
                 t.setHorizontalHeaderLabels(cols)
                 t.verticalHeader().setVisible(False)
@@ -1692,11 +1846,11 @@ class Proto(QMainWindow):
                 t.setAlternatingRowColors(True)
                 warn = QColor(self.c["warn"])
                 for r in range(arr.shape[0]):
-                    flag = name in ("AC 결과", "DC 결과") and \
-                        (name[:2], int(arr[r, 0])) in bad
+                    flag = flags[r]
                     for cc in range(len(cols)):
                         val = arr[r, cc]
-                        txt = f"{val:.0f}" if cc == 0 and float(val).is_integer() \
+                        # 정수로 찍는 것은 **원래 0열(버스 번호)** 일 때만이다
+                        txt = f"{val:.0f}" if keep[cc] == 0 and float(val).is_integer() \
                             else f"{val:,.4f}".rstrip("0").rstrip(".")
                         it = NumItem(txt, val)
                         if cc > 0:
@@ -1786,11 +1940,14 @@ class Proto(QMainWindow):
 
     def _graph_rows(self) -> int:
         """지금 그래프 탭에서 차트가 **몇 줄로 쌓이나**. 옆으로 놓는 탭은 한 줄이다."""
+        # ⚠️ 2026-08-28 부터 **위아래로 쌓지 않는다** — 여럿이면 한 장씩 골라 본다
+        #    (`plot_pick`). 옆으로 놓는 탭(조류 P·Q)도 원래 한 줄이라, 지금은 어느
+        #    탭이든 한 줄이다. 쌓는 탭이 다시 생길 때를 대비해 셈은 남겨 둔다.
         try:
             _name, plots, layout = GRAPHS[self.mode][self.graph_tab]
         except (KeyError, IndexError):
-            return 2                      # 모르면 넉넉한 쪽으로
-        return len(plots) if layout == "v" else 1
+            return 1
+        return 1 if (layout != "v" or len(plots) > 1) else len(plots)
 
     # 그래프 높이 두 가지 — **다시 실측했다**(2026-08-18, 50버스 · 창 950px).
     # 🚨 2026-08-15 에 적어 둔 *"320 → 제대로 나온다"* 는 **틀렸다.** 두 줄짜리 탭에서
@@ -1803,8 +1960,8 @@ class Proto(QMainWindow):
     #    `1... 1... ...` 로 통째로 죽는다).
     GRAPH_FLOOR = {1: 150, 2: 425}
     GRAPH_WANT = {1: 220, 2: 380}
-    # 그래프 말고 **나머지**가 요구하는 세로. 창 최소 = 이 값 + 그래프 바닥값이다
-    # (2026-08-19 실측: 바닥값 425 → 창 747 · 260 → 582 로 **1:1 로 따라온다**.
+    # 그래프 말고 **나머지**가 요구하는 세로. 창 최소 = 이 값 + 그래프 최소 높이다
+    # (2026-08-19 실측: 최소 높이 425 → 창 747 · 260 → 582 로 **1:1 로 따라온다**.
     #  실제 몫은 322px 이고 케이스 넷에서 모두 같았다 — AC·AC/DC 가리지 않는다).
     # 24px 을 얹어 둔다. 나중에 머리나 띠가 늘어도 바로 화면 밖으로 안 나가게.
     NON_GRAPH_H = 346
@@ -1853,7 +2010,7 @@ class Proto(QMainWindow):
         절반씩 나눠 갖는다). ⚠️ 예전에는 **탭마다 달랐다** — 계통 데이터 탭은
         `GRAPH_FLOOR`, 나머지는 260. 그런데 260 도 320 도 세로축을 뭉개는 값이라
         (2026-08-18 실측) 탭을 가릴 이유가 없어졌다. **어느 탭이든 읽을 수 있는
-        크기가 바닥이고, 그걸 못 주면 접는다.**
+        크기가 최소이고, 그걸 못 주면 접는다.**
         """
         rows = self._graph_rows()
         want = self.GRAPH_FLOOR.get(rows, self.GRAPH_FLOOR[2])
@@ -1878,15 +2035,20 @@ class Proto(QMainWindow):
         """그 탭에서 **읽을 수 있는 그래프**와 표 몫을 함께 줄 수 있나.
 
         계통 데이터 탭은 표에 66% 를 주기로 돼 있어(표를 고치는 곳이다) 그래프에
-        남는 것이 34% 뿐이다. 950px 창이면 271px — **바닥값 425 에 한참 못 미친다.**
+        남는 것이 34% 뿐이다. 950px 창이면 271px — **최소 높이 425 에 한참 못 미친다.**
         그럴 때 예전에는 그래프를 425 로 붙들어 표를 373 으로 깎았는데, 그러면
         **표도 좁고 그래프도 못 읽는다.** 접으면 표가 전부 갖는다.
         """
         tab = self.table_tab if tab is None else tab
-        if self._split_slot(tab) != "grid":
-            return True          # 결과 탭은 그래프 쪽에 62% 를 주므로 늘 넉넉하다
-        room = self._room_for_graph()
-        return self._graph_floor() <= room - int(room * 0.66)
+        # 🚨 **표를 고치는 탭은 자리가 있어도 접는다** (2026-08-28 사용자 확정).
+        #    ⚠️ 예전에는 「그래프 최소 높이(두 장 쌓기 425)가 표 몫을 뺀 나머지에
+        #       안 들어간다」는 셈으로 접었다. 같은 날 전압·위상을 **한 장씩** 보이게
+        #       바꾸자 그 최소가 150 으로 내려가 셈이 뒤집혔고, 계통 데이터 탭의 표가
+        #       **23줄 → 14줄로 줄었다**(창 1920x1080 실측). 결과 탭에서 4줄 얻고
+        #       여기서 9줄을 잃은 셈이라 되돌린다.
+        #    ⇒ 접는 근거는 **자리가 아니라 그 탭이 하는 일**이다. 값을 고치러 들어온
+        #       자리에는 표를 다 준다. 그래프는 결과 탭에서 본다.
+        return self._split_slot(tab) != "grid"
 
     def _fold_for_room(self, tab=None) -> bool:
         """자리 때문에 접거나 펴야 하면 상태를 바꾸고 True. 부르는 쪽이 다시 그린다.
@@ -1919,6 +2081,17 @@ class Proto(QMainWindow):
     #    보면 431px 이 나오지만, 표 셋(전압 위반·과부하 선로·발전기 한계)이 352px 에
     #    들어가질 않아 **한 표도 온전히 안 보였다**(실측: 다 보이는 표 0개 → 접으면 2개).
     #    그래서 여기 목록에 넣어 같은 길을 타게 한다.
+    # 표에 주는 몫 (2026-08-28 사용자 확정).
+    #   예전에는 **결과 탭 0.38 · 계통 데이터/점검 0.66** 으로 갈랐다. 그런데
+    #   **계산 결과를 읽는 자리가 데이터를 고치는 자리보다 표를 적게 받는 것**이
+    #   앞뒤가 안 맞았다 — 결과 표는 14줄짜리인데 8줄만 보였다.
+    # 🚨 이 값을 올려도 **그래프는 안 뭉개진다** — 아래 `keep`(=`_graph_floor`)이 하한이라
+    #    그래프가 최소 높이 밑으로는 안 깎인다. 실측으로 확인: 억지로 [325, 423] 을 줘도
+    #    Qt 가 [425, 323] 으로 되돌린다.
+    # ⚠️ 그래서 **창이 작으면 이 값을 올려도 표가 별로 안 는다**. 전압·위상 탭은
+    #    그래프를 두 장 쌓아 최소 높이가 425 라, 작은 화면에서는 이 값과 무관하게 잠긴다.
+    TABLE_SHARE = 0.66
+
     TABLE_FIRST = ("계통 데이터", "점검")
 
     def _split_slot(self, tab=None):
@@ -1939,7 +2112,7 @@ class Proto(QMainWindow):
         # 🚨 **직접 펼쳤으면 그래프가 우선이다** (2026-08-15 사용자 확정 —
         #    *"사용자가 키고 싶으면 그때 그래프를 띄우고 표는 작게 줄이자"*).
         #    계통 데이터 탭은 평소 표에 66% 를 주는데, 그 규칙을 그대로 두면 그래프가
-        #    늘 바닥값만 받아 **축 글자가 뭉개진 채**로 보인다. 보겠다고 누른 사람에게
+        #    늘 최소 높이만 받아 **축 글자가 뭉개진 채**로 보인다. 보겠다고 누른 사람에게
         #    못 읽는 그래프를 주는 것은 안 켜 준 것과 같다.
         # ⚠️ 예전에는 `slot == "grid"` 로 잠겨 있어 **계통 데이터 탭에만** 걸렸다.
         #    그 바람에 결과 탭에서 [그래프 펼치기] 를 누르면 393px 밖에 안 받아
@@ -1947,12 +2120,12 @@ class Proto(QMainWindow):
         #    금지한 그 상태다. ⇒ 어느 탭에서 눌러도 읽을 수 있는 크기를 준다.
         if self.graph_kept and not self.numbers:
             # ⚠️ `room` 으로 깎지 않는다 — 다시 그리는 도중에는 그 값이 실제보다 작게
-            #    잡혀(470 으로 잡힌 적이 있다) 그래프 요청이 270 까지 깎였고, 결국 바닥값만
+            #    잡혀(470 으로 잡힌 적이 있다) 그래프 요청이 270 까지 깎였고, 결국 최소 높이만
             #    받았다. **원하는 비율로 넘기고 남는 자리는 Qt 가 나눠 준다.**
             split.setSizes([self._graph_want(), 200])
             return
         # 데이터 고칠 땐 아래를 크게, 결과 볼 땐 그래프를 크게.
-        share = 0.66 if slot == "grid" else 0.38
+        share = self.TABLE_SHARE
         # 그래프에 남겨 둘 최소치. **위 `gt.setMinimumHeight` 과 같은 값이어야 한다** —
         # 어긋나면 그래프 최소를 낮춰 놓고도 여기서 도로 깎아 표가 안 넓어진다(2026-08-15).
         keep = self._graph_floor()
@@ -2268,53 +2441,30 @@ class Proto(QMainWindow):
             v.addLayout(cr)
         return box
 
-    def freq_card(self):
-        """시스템 주파수 — 계통 전체에 하나뿐인 값이라 크게 보여준다."""
-        c = self.c
-        if self.sol is not None and self.sol.freq.size:
-            f = float(self.sol.freq[min(self.t, self.sol.freq.size - 1)])
-        else:
-            f = 60.02
+    def freq_text(self):
+        """상태바에 넣을 주파수 한 줄. 값이 없으면 None (2026-08-30 사이드바 카드에서 옮김).
+
+        ⚠️ **스냅샷에서만 부른다** — 값이 `self.t`(지금 보는 시각)에 묶여 있어
+        다이나믹·비교에는 「지금 시각」이라는 것이 아예 없다.
+        """
+        if self.sol is None or not self.sol.freq.size:
+            return None
+        f = float(self.sol.freq[min(self.t, self.sol.freq.size - 1)])
         # 기준 주파수는 케이스마다 다르다 (60 Hz / 50 Hz) — 못 박으면 안 된다
-        nominal = self.sol.freq_nominal if self.sol is not None else 60.0
+        nominal = self.sol.freq_nominal
         # 데드밴드도 케이스 파일에서 읽는다. 예전엔 ±0.05 Hz 라고 내가 정한 값을
         # 썼는데, 실제 값은 0.036 Hz 이거나 아예 0 이다(app_engine._freq_deadband).
-        db = self.sol.freq_db if self.sol is not None else 0.0
-        dev = f - nominal
-        box = QFrame()
-        box.setObjectName("card")
-        v = QVBoxLayout(box)
-        v.setContentsMargins(14, 11, 14, 13)
-        v.setSpacing(3)
-        t = QLabel("시스템 주파수")
-        t.setStyleSheet(f"color:{c['muted']};font-size:12px;font-weight:600;")
-        v.addWidget(t)
-        row = QHBoxLayout()
-        row.setSpacing(5)
-        big = QLabel(f"{f:.2f}")
-        big.setStyleSheet(f"color:{c['text']};font-size:30px;font-weight:800;")
-        row.addWidget(big)
-        unit = QLabel("Hz")
-        unit.setStyleSheet(f"color:{c['muted']};font-size:14px;")
-        unit.setAlignment(Qt.AlignBottom)
-        row.addWidget(unit)
-        row.addStretch()
-        v.addLayout(row)
-        d = QLabel(f"기준 {nominal:.0f} Hz 대비 {dev:+.2f} Hz")
-        d.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-        v.addWidget(d)
-        # 데드밴드는 "발전기가 주파수에 응동하기 시작하는 폭"이다. 밖에 있다고
-        # 잘못된 상태가 아니라 **발전기가 응동 중**이라는 뜻이라 경고색을 안 쓴다.
-        # 진짜 위반(전압·과부하·변환기 한계)은 상태바와 점검 탭이 따로 센다.
-        if db > 0:
-            where = "안 — 발전기 응동 없음" if abs(dev) <= db else "밖 — 발전기 응동 중"
-            txt = f"데드밴드 ±{db:g} Hz {where}"
+        db = self.sol.freq_db
+        # 데드밴드는 "이 폭 밖에서만 droop 이 동작한다"는 폭이다. 밖에 있다고
+        # 잘못된 상태가 아니라 **droop 이 동작 중**이라는 뜻이라 경고색을 안 쓴다.
+        # 진짜 위반(전압·과부하·변환기 한계)은 상태바 왼쪽과 점검 탭이 따로 센다.
+        if db <= 0:
+            where = "droop 동작"           # 데드밴드가 없으면 늘 동작한다
+        elif abs(f - nominal) <= db:
+            where = "droop 멈춤"
         else:
-            txt = "데드밴드 없음 — 작은 편차에도 발전기가 응동"
-        s = QLabel(txt)
-        s.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-        v.addWidget(s)
-        return box
+            where = "droop 동작 중"
+        return f"{f:.2f} Hz · {where}"
 
     def viol(self):
         """지금 화면의 위반 목록 (실제 결과가 있으면 실제값)."""
@@ -2831,7 +2981,7 @@ class Proto(QMainWindow):
         if not picks:
             v.addWidget(QLabel("보여 줄 표가 없습니다."))
             return w
-        if self.grid_key not in [k for k, _, _ in picks]:
+        if self.grid_key != ADJ.KEY and self.grid_key not in [k for k, _, _ in picks]:
             self.grid_key = picks[0][0]
 
         row = QHBoxLayout()
@@ -2842,10 +2992,20 @@ class Proto(QMainWindow):
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, k=key: self.set_grid_table(k))
             row.addWidget(b)
+        # 자동 조정은 **표가 아니라 패널**이다 — 넷이 두 표에 갈려 있고 흰 칸이
+        # 화면 밖이라 따로 뺐다 (2026-08-27, `adjust_panel.py` 머리말 참조).
+        ab = QPushButton(f"\u2699 AC 조정 {ADJ.count(self)}")
+        ab.setObjectName("seg_on" if self.grid_key == ADJ.KEY else "seg_off")
+        ab.setCursor(Qt.PointingHandCursor)
+        ab.clicked.connect(lambda: self.set_grid_table(ADJ.KEY))
+        row.addWidget(ab)
         # 찾기 칸을 **같은 줄에** 붙인다. 따로 한 줄을 쓰면 바가 셋이 되어
         # (표 고르기·부하·찾기) 표에 줄이 한 줄도 안 남는다(2026-08-13 실측).
         row.addSpacing(10)
-        row.addWidget(self.find_bar(inline=True))
+        if self.grid_key != ADJ.KEY:
+            # 「조정」은 표가 아니다 — 버스 번호로 좁힐 것도, 셀 줄도 없다
+            # (넣어 두면 「0줄」이 찍힌다).
+            row.addWidget(self.find_bar(inline=True))
         row.addStretch(1)
         # 안내는 **글줄로 두지 않고** 표 고르기 단추의 설명으로 옮겼다 — 그 자리에
         # 부하 슬라이더를 들여야 한 줄이 준다.
@@ -2854,7 +3014,8 @@ class Proto(QMainWindow):
             if isinstance(wd, QPushButton):
                 wd.setToolTip("켜고 끄기는 바로 계산하지 않습니다 — "
                               "다 바꾼 뒤 위의 [이 조건으로 계산] 을 누르세요.")
-        load = self.load_bar(inline=True)       # ② 부하 일괄 증감 — **같은 줄에**
+        load = (self.load_bar(inline=True)      # ② 부하 일괄 증감 — **같은 줄에**
+                if self.grid_key != ADJ.KEY else None)
         if load is not None:
             row.addWidget(load)
 
@@ -2963,18 +3124,23 @@ class Proto(QMainWindow):
         self.rebuild()
 
     def grid_table_widget(self):
-        """지금 고른 표 하나를 그린다.
+        """지금 고른 표 하나를 그린다 (「조정」이면 표가 아니라 패널이다).
 
         · 켤 수 있는 표면 첫 칸이 스위치
         · **화면 단위로 바꿔서** 보여 준다 (엔진은 W, 화면은 MW — 머리글이 [MW] 니까)
         · ③ 운전 조건 칸만 고칠 수 있고, 나머지는 회색이다
+        · 자동 조정 칸도 회색이다 — 값은 보이되 고치는 곳은 [⚙ AC 조정] 패널이다
         """
+        if self.grid_key == ADJ.KEY:
+            return ADJ.panel(self)
         c = self.c
         key = self.grid_key
         sw = SC.SWITCHES.get(key)
         heads = GRID_HEADERS.get(key, [])
         scales = GRID_SCALES.get(key, {})
-        editable = GRID_EDITABLE.get(key, set())
+        # 운전 조건(③)에 더해 **값 칸도 연다** (2026-08-27 사용자 지시 — PDR §4.3 ④ 뒤집기).
+        # 어디까지 여는지와 무엇을 받는지는 `cell_rules.py` 가 갖는다.
+        editable = GRID_EDITABLE.get(key, set()) | RULES.editable(key)
         eff = self.applied + self.changes      # 화면에 보이는 조건 = 푼 것 + 얹은 것
         arr = SC._values(SC.apply(self.base_case, eff), key)
         if key in GRID_PAD_TO_HEADERS and heads and arr.shape[1] < len(heads):
@@ -3015,11 +3181,20 @@ class Proto(QMainWindow):
             if j > 0:
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             if j in editable:
-                it.setToolTip("고칠 수 있는 값입니다 — 바꾸면 계산은 안 돌고 "
-                              "위의 [이 조건으로 계산] 을 눌러야 풉니다")
+                tip = _cell_tip(key, j)
+                # 🚨 **막지 않고 알려만 준다** — 두 칸을 차례로 고치는 동안엔
+                #    중간에 반드시 어긋난다(Qmax 를 낮추려면 한 번은 뒤집힌다).
+                #    막으면 고칠 방법이 없어지므로, 글자를 물들이고 까닭을 붙인다.
+                note = RULES.warn(arr, key, r, j, val if np.isnan(val) else arr[r, j])
+                if note:
+                    it.setForeground(QColor(c["warn"]))
+                    tip = f"⚠️ {note}\n\n{tip}"
+                it.setToolTip(tip)
             else:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
+                if j in GRID_PANEL_COLS.get(key, set()):
+                    it.setToolTip("자동 조정 값입니다 — 위의 [⚙ AC 조정] 에서 고칩니다")
             if (r, j) in touched:
                 it.setForeground(QColor(c["warn"]))
             return it
@@ -3123,7 +3298,9 @@ class Proto(QMainWindow):
         if getattr(self, "_grid_loading", False):
             return
         col = item.column() - off
-        if col < 0 or col not in GRID_EDITABLE.get(key, set()):
+        # 🚨 **그리는 쪽과 같은 목록을 봐야 한다** (2026-08-27). 여기만 옛 목록을 보면
+        #    새로 연 칸이 **조용히 반려**된다 — 화면은 흰 칸인데 쳐도 아무 일이 안 난다.
+        if col < 0 or col not in (GRID_EDITABLE.get(key, set()) | RULES.editable(key)):
             return
         txt = item.text().strip().replace(",", "")
         if txt == "":
@@ -3146,6 +3323,15 @@ class Proto(QMainWindow):
                 return
             scale = scales.get(col, 1.0)
             value = shown * (1.0 / scale) if scale != 1.0 else shown
+        # 🚨 **넣기 전에 따진다** (2026-08-27). 값 칸을 열면서 같이 들어왔다 —
+        #    `From` 을 없는 버스로 고치면 계통이 끊어지고, 정격이 음수면 부하율이 뒤집힌다.
+        eff0 = SC.apply(self.base_case, self.applied + self.changes)
+        bad = RULES.check(eff0, key, col, value)
+        if bad:
+            QMessageBox.information(
+                self, f"{_col_name(key, col)} — 넣을 수 없는 값입니다", bad)
+            self.rebuild()
+            return
         # 찾기로 좁혀 놓았으면 화면 줄 ≠ 진짜 줄
         seen = getattr(self, "_grid_rows", None)
         row = seen[item.row()] if seen and item.row() < len(seen) else item.row()
@@ -3175,6 +3361,50 @@ class Proto(QMainWindow):
             nxt = [x for x in nxt if x != 14]
         self._grid_focus = (item.row(), (nxt[0] if nxt else col) + off)
         self.rebuild()
+
+    # ── 자동 조정 패널이 값을 쓰는 길 (2026-08-27) ───────────────────
+    #   🚨 표를 고치는 것과 **똑같이** `SC.Cell` 하나를 얹는다. 패널은 화면일 뿐이고
+    #      데이터가 흐르는 길은 하나여야 [이 조건으로 계산]·시나리오·되돌리기·비교가
+    #      손대지 않고 그대로 돈다.
+
+    def adj_set(self, table, row, col, value):
+        """조정 칸 하나를 값으로 쓴다 (`value` 가 NaN 이면 「안 적음」)."""
+        cur = SC._values(SC.apply(self.base_case, self.applied + self.changes), table)
+        before = float(cur[row, col]) if col < cur.shape[1] else float("nan")
+        if np.isnan(before) and np.isnan(value):
+            return
+        if not np.isnan(before) and not np.isnan(value) and before == value:
+            return
+        head = GRID_HEADERS.get(table, [])
+        name = head[col] if col < len(head) else f"{col + 1}열"
+        self.changes = [ch for ch in self.changes
+                        if not (isinstance(ch, SC.Cell) and ch.table == table
+                                and ch.row == row and ch.col == col)]
+        self.changes.append(SC.Cell(
+            table=table, row=row, col=col, value=value,
+            label=(f"{SC.describe_row(self.base_case, table, row)} {name} → "
+                   + ("(비움)" if np.isnan(value) else f"{value:g}")),
+            mark=SC.row_mark(self.base_case, table, row)))
+        self.rebuild()
+
+    def adj_typed(self, table, row, col, text):
+        """패널의 숫자 칸에 친 것. 비우면 「안 적음」이다."""
+        txt = (text or "").strip().replace(",", "")
+        if txt == "":
+            self.adj_set(table, row, col, float("nan"))
+            return
+        try:
+            self.adj_set(table, row, col, float(txt))
+        except ValueError:
+            QMessageBox.information(self, "숫자를 넣어 주세요",
+                                    f"'{text}' 는 숫자가 아닙니다.")
+            self.rebuild()
+
+    def adj_remove(self, table, row):
+        """그 조정을 통째로 지운다 — 여섯 칸을 다 비워야 흔적이 안 남는다."""
+        for col in ADJ._cols(table):
+            if col is not None:
+                self.adj_set(table, row, col, float("nan"))
 
     def set_grid_table(self, key):
         self.grid_key = key
@@ -3259,19 +3489,23 @@ class Proto(QMainWindow):
 
     def scenario_table(self, item, pairs):
         """겹쳐 그린 시나리오의 요약 표 — 최저·최고·원본 대비."""
-        if item in ("주파수", "손실") or not pairs:
+        s = CI.spec(item)
+        if s is None or s[5] == "system" or not pairs:
             return None
-        col = {"전압 크기": "VM[pu]", "위상각": "Angle[deg]"}.get(item)
-        if col is None:
-            return None
+        col = s[2]
+        # 전압 크기만 AC·DC 를 함께 본다 — 나머지는 그 항목이 사는 표 하나만
+        kinds = ("AC", "DC") if item == "전압 크기" else (s[1],)
         rows = []
         base_lo = None
         for name, sol in pairs:
             vals = []
-            for kind in ("AC", "DC"):
-                arr = sol.at(kind, self.t)
+            for kind in kinds:
+                arr = sol.at(kind, self.t) if getattr(sol, kind, None) is not None \
+                    and getattr(sol, kind).ndim == 3 else getattr(sol, kind, None)
+                if arr is None or not getattr(arr, "size", 0):
+                    continue
                 cols = sol.cols(kind)
-                if arr.size and col in cols:
+                if col in cols:
                     vals.append(np.asarray(arr[:, cols.index(col)], dtype=float))
             if not vals:
                 continue
@@ -3951,6 +4185,14 @@ class Proto(QMainWindow):
     def toggle_vsc(self):
         self.set_vsc(not self.show_vsc)
 
+    def set_plot_pick(self, i):
+        """전압·위상 탭에서 어느 차트를 볼지 고른다 (2026-08-28)."""
+        i = int(i)
+        if i == self.plot_pick:
+            return
+        self.plot_pick = i
+        self.rebuild()
+
     def set_topo_zoom(self, z):
         """계통도가 배율을 바꿨다고 알려 온다. **다시 그리지 않는다** — 계통도가
         스스로 그렸고, 여기서는 다음 계산 때 되살리려고 적어 두기만 한다."""
@@ -3996,7 +4238,11 @@ class Proto(QMainWindow):
         d.exec()
 
     def pick_columns(self):
-        name = self._tabs.tabText(self._tabs.currentIndex())
+        # 🚨 탭 글자에는 개수 꼬리가 붙는다(「점검 (25)」) — `_tab_base` 로 뗀다.
+        #    안 떼면 그 표에 열 목록을 나중에 붙여도 이름이 안 맞아 또 안 열린다.
+        name = _tab_base(self._tabs.tabText(self._tabs.currentIndex()))
+        if name not in TABLE_SPECS:      # 단추가 안 보이는 탭 — 눌릴 일이 없다
+            return
         d = QDialog(self)
         d.setWindowTitle(f"열 선택 — {name}")
         d.setStyleSheet(self.styleSheet())
@@ -4008,7 +4254,24 @@ class Proto(QMainWindow):
         info.setStyleSheet(f"color:{self.c['muted']};font-size:13px;")
         v.addWidget(info)
         boxes = []
-        for col, _ in TABLE_SPECS[name]:
+        # 열이 열셋까지 있어 하나씩 누르면 손이 아프다 (2026-08-27 사용자 요청).
+        #   「처음대로」의 기준은 `TABLE_SPECS` 의 `always` — 표를 처음 열 때 켜져 있던 것이다.
+        bulk = QHBoxLayout()
+        bulk.setSpacing(6)
+        for label, pick in (
+                ("전부 켜기", lambda col, always: True),
+                ("전부 끄기", lambda col, always: False),
+                ("처음대로", lambda col, always: bool(always))):
+            bb = QPushButton(label)
+            bb.setCursor(Qt.PointingHandCursor)
+            bb.clicked.connect(
+                lambda _=False, f=pick: [b.setChecked(f(c0, a0))
+                                         for (c0, a0), (_c, b) in zip(
+                                             TABLE_SPECS[name], boxes)])
+            bulk.addWidget(bb)
+        bulk.addStretch(1)
+        v.addLayout(bulk)
+        for col, _always in TABLE_SPECS[name]:
             b = QCheckBox(col)
             b.setChecked(col in self.visible[name])
             v.addWidget(b)
@@ -4025,15 +4288,229 @@ class Proto(QMainWindow):
         v.addLayout(row)
         if d.exec():
             picked = {col for col, b in boxes if b.isChecked()}
-            if picked:
-                self.visible[name] = picked
+            if not picked:
+                # 열이 하나도 없으면 표가 사라진다. 조용히 무시하면 "적용이 안 되네" 로 끝난다.
+                QMessageBox.information(
+                    self, "열을 하나는 켜 주세요",
+                    "열을 전부 끄면 표가 빈칸이 됩니다.\n하나 이상 골라 주세요.")
+                return
+            self.visible[name] = picked
+            self.rebuild()
+
+    def target_options(self):
+        """지금 고를 수 있는 것들 — [(보일 글자, 넣을 값)]. 없으면 빈 목록.
+
+        **계통에 실제로 있는 것만** 담는다. 예전 타이핑 칸은 없는 번호도 받아 놓고
+        조용히 버렸다(12버스 계통에서 기본값 `3, 7, 12` 가 3 하나만 맞았다).
+
+        고르는 것이 무엇이냐는 **고른 항목**이 정한다 (`CI.kinds_needed`) —
+        선로 부하율을 보면서 버스 번호를 고르면 아무것도 안 나온다.
+        """
+        sol = self.sol
+        if sol is None:
+            return []
+        if self.compare_axis == "시간끼리":
+            return [(f"{i} H", str(i)) for i in range(1, sol.n_time + 1)]
+
+        out, seen = [], set()
+        for k in (CI.kinds_needed(self.picked, self.compare_axis) or ["bus"]):
+            if k == "bus":
+                # 🚨 AC·DC 를 함께 담는다 — 전압 크기는 AC 표, DC 전압은 DC 표를
+                #    보므로 한쪽만 담으면 다른 항목에서 고를 것이 없어진다.
+                for which in ("AC", "DC"):
+                    arr = getattr(sol, which, None)
+                    if arr is None or not getattr(arr, "size", 0) or arr.ndim != 3:
+                        continue
+                    for b in arr[:, 0, 0]:
+                        val = str(int(b))
+                        if val not in seen:
+                            seen.add(val)
+                            out.append((f"{which} {val}", val))
+            else:
+                # 선로·IC 는 **두 번호**로 고른다 (`charts._pick_rows` 와 같은 꼴)
+                which = "Branch" if k == "branch" else "VSC_bus"
+                arr = getattr(sol, which, None)
+                if arr is None or not getattr(arr, "size", 0):
+                    continue
+                a2 = arr[:, :, 0] if arr.ndim == 3 else arr
+                for r in a2:
+                    val = f"{int(r[0])}-{int(r[1])}"
+                    if val not in seen:
+                        seen.add(val)
+                        out.append((f"{CI.UNIT_NAME[k]} {int(r[0])}–{int(r[1])}", val))
+        return out
+
+    def target_values(self):
+        """지금 고른 것들. 계통에 **없는 것은 뺀다** — 케이스를 갈아 열면 남아 있다."""
+        ok = {v for _, v in self.target_options()}
+        out = []
+        for t in (self.compare_targets or "").replace(";", ",").split(","):
+            t = t.strip()
+            if t in ok and t not in out:     # 중복도 여기서 걸린다 (옛 결함 ④)
+                out.append(t)
+        return out
+
+    def target_button(self):
+        c = self.c
+        opts = self.target_options()
+        got = self.target_values()
+        if not opts:
+            b = QPushButton("고를 것이 없습니다")
+            b.setEnabled(False)
+            return b
+        # 적으면 고른 것을 그대로 보여준다 — 한 번 더 눌러 확인할 일이 없게
+        txt = ", ".join(got) if 0 < len(got) <= 6 else (
+            f"{len(got)}개 고름" if got else "고르기")
+        b = QPushButton(txt)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip(f"이 계통에 있는 {len(opts)}개 중에서 고릅니다")
+        b.clicked.connect(lambda: self.open_target_pick(b))
+        return b
+
+    def open_target_pick(self, near):
+        """찾는 칸이 붙은 고르개.
+
+        ⚠️ **찾는 칸이 있어야 한다** — 가장 큰 케이스가 버스 25,000개다
+        (`AConly_25k_v2.xlsx`). 목록만 내밀면 아무도 못 찾는다.
+
+        ⚠️ 고를 때마다 `rebuild()` 하면 **이 판이 그리는 도중에 사라진다**.
+           그래서 고르는 동안은 값만 고치고, 닫힐 때 한 번만 다시 그린다
+           (「볼 항목」 고르개와 같은 약속).
+        """
+        opts = self.target_options()
+        chosen = list(self.target_values())
+        c = self.c
+        pop = QFrame(self, Qt.Popup)
+        pop.setObjectName("card")
+        outer = QVBoxLayout(pop)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        find = QLineEdit()
+        find.setPlaceholderText(f"찾기 — {len(opts)}개 중에서")
+        outer.addWidget(find)
+
+        inner = QWidget()
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(2)
+        boxes = []
+        for label, val in opts:
+            cb = QCheckBox(label)
+            cb.setChecked(val in chosen)
+            cb.stateChanged.connect(
+                lambda st, x=val: (x not in chosen and chosen.append(x)) if st
+                else (x in chosen and chosen.remove(x)))
+            iv.addWidget(cb)
+            boxes.append((cb, label))
+        sa = QScrollArea()
+        sa.setWidget(inner)
+        sa.setWidgetResizable(True)
+        sa.setFixedSize(250, min(430, inner.sizeHint().height() + 8))
+        outer.addWidget(sa)
+
+        def filt(t):
+            t = t.strip().lower()
+            for cb, label in boxes:
+                cb.setVisible(not t or t in label.lower())
+        find.textChanged.connect(filt)
+
+        pop.hide_done = False
+
+        def done(_e=None):
+            if pop.hide_done:
+                return
+            pop.hide_done = True
+            self.compare_targets = ", ".join(chosen[:50])
+            self.rebuild()
+        pop.hideEvent = lambda e: done(e)
+
+        pop.adjustSize()
+        g = near.mapToGlobal(near.rect().bottomLeft())
+        pop.move(g.x(), g.y() + 6)
+        pop.show()
+        find.setFocus()
+        self._target_pop = pop
+
+    def usable_items(self):
+        """지금 축에서 고를 수 있는 항목과, 못 고르는 까닭."""
+        out = []
+        for name in CI.NAMES:
+            why = ""
+            usable = CI.shown_in(name, self.compare_axis)
+            if not usable:
+                why = ("시나리오끼리 비교에서만"
+                       if CI.by(name) == "ic" else "시간끼리 비교에서만")
+            elif self.sol is not None:
+                gone = CI.available(self.sol, name)
+                if gone:
+                    usable, why = False, gone
+            out.append((name, usable, why))
+        return out
+
+    def item_chip(self, tabs):
+        """비교 탭 줄 구석 — 「볼 항목 N」. 누르면 고르는 판이 열린다."""
+        c = self.c
+        n = sum(1 for nm, ok, _ in self.usable_items() if ok and nm in self.picked)
+        b = QPushButton(f"볼 항목 {n}" if n else "볼 항목")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip("고른 항목이 왼쪽 탭으로 나옵니다")
+        b.clicked.connect(lambda: self.open_item_pick(b))
+        tabs.setCornerWidget(b, Qt.TopRightCorner)
+        return tabs
+
+    def open_item_pick(self, near):
+        """항목 고르는 판 — 여럿 고르고 닫으면 그때 한 번 다시 그린다.
+
+        ⚠️ 고를 때마다 `rebuild()` 를 하면 **이 판이 그리는 도중에 사라진다**.
+           그래서 고르는 동안은 `self.picked` 만 고치고, 닫힐 때 한 번만 다시 그린다.
+        """
+        c = self.c
+        pop = QFrame(self, Qt.Popup)
+        pop.setObjectName("card")
+        pv = QVBoxLayout(pop)
+        pv.setContentsMargins(14, 12, 14, 12)
+        pv.setSpacing(6)
+        inner = QWidget()
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(5)
+        for name, usable, why in self.usable_items():
+            cb = QCheckBox(name)
+            cb.setChecked(name in self.picked and usable)
+            cb.setEnabled(usable)
+            cb.stateChanged.connect(
+                lambda st, n2=name: (self.picked.add(n2) if st
+                                     else self.picked.discard(n2)))
+            iv.addWidget(cb)
+            if why:
+                w = QLabel(f"   {why}")
+                w.setStyleSheet(f"color:{c['warn']};font-size:12px;")
+                iv.addWidget(w)
+        sa = QScrollArea()
+        sa.setWidget(inner)
+        sa.setWidgetResizable(True)
+        sa.setFixedSize(240, min(520, inner.sizeHint().height() + 8))
+        pv.addWidget(sa)
+        pop.hide_done = False
+
+        def done(_e=None):
+            if not pop.hide_done:
+                pop.hide_done = True
                 self.rebuild()
+        pop.hideEvent = lambda e: done(e)
+        pop.adjustSize()
+        g = near.mapToGlobal(near.rect().bottomRight())
+        pop.move(g.x() - pop.width(), g.y() + 6)
+        pop.show()
+        self._item_pop = pop
 
     def compare_area(self):
         c = self.c
         wide = self.compare_axis in ("시간끼리", "시나리오끼리")
-        picked = [n for n, always in COMPARE_ITEMS
-                  if n in self.picked and (always or wide)]
+        picked = [n for n in CI.NAMES
+                  if n in self.picked and CI.shown_in(n, self.compare_axis)
+                  and not (self.sol is not None and CI.available(self.sol, n))]
         tabs = QTabWidget()
         if not picked:
             page = QWidget()
@@ -4043,9 +4520,9 @@ class Proto(QMainWindow):
             lb.setStyleSheet(f"color:{c['muted']};font-size:16px;")
             pv.addWidget(lb)
             tabs.addTab(page, "결과")
-            return tabs
+            return self.item_chip(tabs)
         if self.compare_axis == "시나리오끼리":
-            return self.compare_scenarios_area(picked)
+            return self.item_chip(self.compare_scenarios_area(picked))
         targets = [t.strip() for t in self.compare_targets.split(",") if t.strip()]
         unit = "버스" if self.compare_axis == "버스끼리" else "시간"
         for name in picked:
@@ -4062,7 +4539,7 @@ class Proto(QMainWindow):
             if tb is not None:
                 pv.addWidget(tb, 1)
             tabs.addTab(page, name)
-        return tabs
+        return self.item_chip(tabs)
 
     def save_compare_figures(self):
         """지금 보고 있는 비교 그림들을 그대로 파일로. (일반 내보내기와 따로)"""
@@ -4112,8 +4589,13 @@ class Proto(QMainWindow):
         sol = self.sol
         if sol is None or not targets or not sol.AC.size:
             return None
-        col = {"전압 크기": "VM[pu]", "위상각": "Angle[deg]"}.get(item)
-        if col is None or col not in sol.cols("AC"):
+        s = CI.spec(item)
+        # ⚠️ 표로 뽑는 것은 **AC 버스별 항목**까지다. 선로·IC 는 x 축이 버스가 아니라
+        #    이 표 얼개(줄=시간·열=버스)에 안 맞는다 — 그림으로는 볼 수 있다.
+        if s is None or s[5] != "bus" or s[1] != "AC":
+            return None
+        col = s[2]
+        if col not in sol.cols("AC"):
             return None
         ci = sol.cols("AC").index(col)
         bus_ids = [int(b) for b in sol.AC[:, 0, 0]]
@@ -4222,6 +4704,13 @@ class Proto(QMainWindow):
         vb.clicked.connect(self.go_check)
         h.addWidget(vb)
 
+        # 주파수는 계통 전체에 하나뿐인 값이라 여기 둔다 (2026-08-30 사이드바에서 옮김).
+        # 스냅샷에서만 — 다이나믹·비교에는 「지금 시각」이 없어 값이 성립을 안 한다.
+        if self.mode == "스냅샷":
+            ft = self.freq_text()
+            if ft is not None:
+                h.addLayout(item("주파수", ft))
+
         if sol is not None:
             h.addLayout(item("수렴", "성공" if sol.converged else "실패",
                              c["ok"] if sol.converged else c["warn"]))
@@ -4239,14 +4728,25 @@ class Proto(QMainWindow):
         return bar
 
     def _restore_tab(self, tt):
-        """다시 그린 뒤 보고 있던 표 탭으로 되돌린다. 그 탭이 사라졌으면 첫 탭."""
-        want = getattr(self, "table_tab", None)
-        if not want:
+        """다시 그린 뒤 보고 있던 표 탭으로 되돌린다. 그 탭이 사라졌으면 첫 탭.
+
+        🚨 **못 찾았을 때 아무것도 안 하고 나가면 안 된다** (2026-08-27). 화면은
+           저절로 0번 탭에 앉는데 `table_tab` 만 옛 이름으로 남아, 보고 있는 탭과
+           앱이 기억하는 탭이 갈린다. 계통을 바꾸면 실제로 그렇게 된다 —
+           AC/DC 에서 `DC 결과` 를 보다가 AC 전용을 열면 그 탭이 통째로 사라진다.
+           `table_tab` 을 보고 정하는 것들(「열 선택」 단추 감추기·나눔 자리·찾기 딱지)이
+           그때부터 엉뚱한 탭 것을 쓴다.
+        """
+        if tt.count() == 0:
             return
+        want = getattr(self, "table_tab", None)
         for i in range(tt.count()):
             if _tab_base(tt.tabText(i)) == want:
                 tt.setCurrentIndex(i)
                 return
+        # 그 탭이 사라졌다 — 첫 탭으로 가고 **기억도 같이 맞춘다**
+        tt.setCurrentIndex(0)
+        self.table_tab = _tab_base(tt.tabText(0))
 
     def go_check(self):
         """상태바의 위반 건수 → 점검 탭으로."""
@@ -4493,7 +4993,7 @@ class Proto(QMainWindow):
             # (조건을 바꿀 때마다 도로 접히면 못 쓴다)
             self.graph_kept = True
             # 🚨 **적어 둔 자리를 버린다.** 안 버리면 접히기 전의 「표 66%」 가 그대로
-            #    되살아나 그래프가 바닥값만 받는다 — 펼쳐 놓고도 못 읽는 꼴이 된다.
+            #    되살아나 그래프가 최소 높이만 받는다 — 펼쳐 놓고도 못 읽는 꼴이 된다.
             if isinstance(self.split_sizes, dict):
                 self.split_sizes.pop(self._split_slot(), None)
         self.rebuild()
@@ -4583,6 +5083,11 @@ class Proto(QMainWindow):
             # 새 계통을 열면 곡선은 버린다 — **앞 계통의 곡선**이라 지금 화면과 상관없다.
             self.cur = None
             self.curve_err = ""
+            # 비교 대상도 같은 이유로 다시 잡는다. 기본값이 `3, 7, 12` 로 박혀 있어
+            # 12버스 계통에서 AC 는 3 하나만 맞았다(7·12 는 DC 버스라 AC 표에 없다)
+            # — 비교 화면이 선 하나로 열렸다. ⚠️ 여기(새 파일)에서만 한다.
+            # 조건을 바꿔 다시 풀 때 하면 골라 놓은 것이 매번 날아간다.
+            self._retarget = True
             # 🚨 큰 계통은 **그래프를 접은 채로 연다** (2026-08-06 사용자 확정).
             #    버스가 수천이면 점이 겹쳐 빨간 덩어리가 되어 읽을 수가 없다.
             #    보고 싶으면 [그래프 펼치기] 를 누르면 된다.
@@ -4604,6 +5109,10 @@ class Proto(QMainWindow):
         self._case_for_solver = (getattr(getattr(self, "thread", None), "case", None)
                                  or loaded or getattr(self, "base_case", None))
         self.sol = sol
+        if getattr(self, "_retarget", False):
+            self._retarget = False
+            self.compare_targets = ", ".join(
+                v for _, v in self.target_options()[:3])
         # 🚨 곡선은 **AC 단독 계통에서만** 그린다(2026-08-12 사용자 확정 — 넓히지 않는다).
         #    곡선 화면에 있는 채로 AC/DC 파일을 열면 갈래가 곡선에 머물러 있는데
         #    그 버튼은 흐려져 있어 **죽은 화면에 앉게 된다** ⇒ 조류계산으로 되돌린다.

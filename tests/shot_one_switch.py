@@ -75,9 +75,22 @@ def texts():
 
 
 def corner_buttons():
-    return [w.cornerWidget().text()
-            for w in win.findChildren(QTabWidget)
-            if isinstance(w.cornerWidget(), QPushButton)]
+    """탭 줄 구석에 있는 단추 이름들.
+
+    ⚠️ 구석에 **단추가 하나뿐이라고 보면 안 된다** (2026-08-28). 전압·위상 탭에
+    [전압|위상각] 전환 단추가 생기면서 구석이 「묶음 위젯」이 됐다. 예전처럼
+    `cornerWidget()` 이 단추인지만 보면 **[그래프 접기] 를 통째로 놓친다.**
+    """
+    out = []
+    for w in win.findChildren(QTabWidget):
+        cw = w.cornerWidget()
+        if cw is None:
+            continue
+        if isinstance(cw, QPushButton):
+            out.append(cw.text())
+        else:
+            out += [b.text() for b in cw.findChildren(QPushButton)]
+    return out
 
 
 def figure_boxes():
