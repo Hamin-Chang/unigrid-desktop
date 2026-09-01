@@ -232,6 +232,10 @@ def _fit_header(t):
     QTimer.singleShot(0, fit)
 
 
+# 「부하 배율」은 표가 아니다 — `⚙ AC 조정`(`adjust_panel.KEY`) 과 같은 자리에
+# 두는 가짜 표 이름이다 (2026-09-01). 왜 옮겼는지는 `load_bar` 머리말 참조.
+LOAD_KEY = "__LOAD__"
+
 GRID_TABLES = [
     ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
     ("DC_Line_dat", "DC 선로"), ("DC_gen_dat", "DC 발전기"),
@@ -3062,6 +3066,40 @@ class Proto(QMainWindow):
         sl.sliderReleased.connect(lambda: self.scale_loads(sl.value() / 100))
         return bar
 
+    def load_panel(self):
+        """「⚙ 부하」 조절판 — 표 자리에 그린다 (2026-09-01).
+
+        `⚙ AC 조정` 과 같은 격이다. 둘 다 표가 아니라 **조건을 고치는 판**이고,
+        표 고르기 목록의 한 자리를 차지한다.
+        """
+        c = self.c
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+
+        head = QHBoxLayout()
+        t = QLabel("부하 일괄 증감")
+        t.setStyleSheet(f"color:{c['text']};font-size:15px;font-weight:600;")
+        head.addWidget(t)
+        n_t = self.load_times()
+        sub = QLabel("모든 부하에 같은 수를 곱합니다"
+                     + (f" — {n_t}시각 전부에 걸립니다" if n_t > 1 else ""))
+        sub.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        head.addWidget(sub)
+        head.addStretch(1)
+        v.addLayout(head)
+
+        bar = self.load_bar()          # 카드 꼴 (inline 아님)
+        if bar is not None:
+            v.addWidget(bar)
+        note = QLabel("여기서 바꿔도 바로 풀지 않습니다 — 위의 [이 조건으로 계산] 을 "
+                      "눌러야 반영됩니다.\n곱하기는 원본 부하를 기준으로 걸립니다.")
+        note.setStyleSheet(f"color:{c['muted']};font-size:12px;line-height:165%;")
+        v.addWidget(note)
+        v.addStretch(1)
+        return w
+
     def scale_loads(self, want):
         """부하를 원본의 want 배로 만든다. 이미 푼 조건에 걸린 배수는 빼고 얹는다."""
         self._load_timer.stop()
@@ -3100,17 +3138,41 @@ class Proto(QMainWindow):
         if not picks:
             v.addWidget(QLabel("보여 줄 표가 없습니다."))
             return w
-        if self.grid_key != ADJ.KEY and self.grid_key not in [k for k, _, _ in picks]:
+        # ⚠️ 부하가 없는 계통으로 갈아타면 「⚙ 부하」 단추가 안 생긴다 — 그때
+        #    `grid_key` 를 그대로 두면 **빈 조절판에 갇힌다**(돌아갈 단추가 없다).
+        if self.grid_key == LOAD_KEY and not self.has_load():
+            self.grid_key = picks[0][0]
+        if self.grid_key not in (ADJ.KEY, LOAD_KEY) \
+                and self.grid_key not in [k for k, _, _ in picks]:
             self.grid_key = picks[0][0]
 
         row = QHBoxLayout()
         row.setSpacing(6)
-        for key, label, n in picks:
-            b = QPushButton(f"{label} {n}")
-            b.setObjectName("seg_on" if key == self.grid_key else "seg_off")
-            b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _, k=key: self.set_grid_table(k))
-            row.addWidget(b)
+        # 🚨 **단추를 늘어놓으면 이 줄이 창 최소 가로를 정한다** (2026-08-19 부터 알던 것을
+        #    2026-09-01 에 드롭다운으로 푼다). 단추는 그 계통에 있는 표만큼 생겨서
+        #    AC/DC 는 여덟아홉이다 — 실측 **603px**. 표 탭에서 쓴 수법과 같게 간다.
+        #    ⚠️ 「⚙ AC 조정」·「⚙ 부하」는 **여기 안 넣는다** — 표가 아니라 조건을 고치는
+        #       판이라 성격이 다르고, 「⚙ 부하 ×1.37」 은 **안 눌러도 값이 보여야** 한다.
+        pick = QComboBox()
+        pick.setFixedHeight(34)
+        pick.setMinimumWidth(190)
+        pick.setCursor(Qt.PointingHandCursor)
+        pick.setStyleSheet(
+            f"QComboBox {{ background:{c['surface']};color:{c['text']};"
+            f"border:1px solid {c['border']};border-radius:9px;padding:0 12px;"
+            f"font-size:14px;font-weight:700; }}"
+            f"QComboBox:hover {{ border-color:{c['accent']}; }}"
+            f"QComboBox::drop-down {{ border:none;width:24px; }}")
+        pick.addItems([f"{label} {n}" for _, label, n in picks])
+        # 조정·부하 판을 보고 있으면 고른 표가 없다 — 마지막으로 본 표를 그대로 둔다.
+        here = self.grid_key if self.grid_key not in (ADJ.KEY, LOAD_KEY) \
+            else getattr(self, "_grid_last_table", picks[0][0])
+        keys = [k for k, _, _ in picks]
+        pick.setCurrentIndex(keys.index(here) if here in keys else 0)
+        # ⚠️ `activated` 다 — `currentIndexChanged` 로 하면 **조정·부하 판에서
+        #    드롭다운에 이미 적혀 있는 표를 골라도 신호가 안 나** 못 돌아간다.
+        pick.activated.connect(lambda i: self.set_grid_table(keys[i]))
+        row.addWidget(pick)
         # 자동 조정은 **표가 아니라 패널**이다 — 넷이 두 표에 갈려 있고 흰 칸이
         # 화면 밖이라 따로 뺐다 (2026-08-27, `adjust_panel.py` 머리말 참조).
         ab = QPushButton(f"\u2699 AC 조정 {ADJ.count(self)}")
@@ -3118,11 +3180,25 @@ class Proto(QMainWindow):
         ab.setCursor(Qt.PointingHandCursor)
         ab.clicked.connect(lambda: self.set_grid_table(ADJ.KEY))
         row.addWidget(ab)
+        # 부하 일괄 증감도 **표가 아니라 조건**이다 (2026-09-01 사용자 지시).
+        #   여태 이 줄 맨 오른쪽에 슬라이더째로 붙어 있었는데, 그 줄은 「보는 것」
+        #   (표 고르기·찾기)의 줄이라 성격이 혼자 달랐다. 게다가 맨 오른쪽이라
+        #   줄이 넘치면 **통째로 화면 밖으로 밀려** 있는 줄도 몰랐다
+        #   (실측 — 창 1194px 에서 524px 넘침 · 1512px 에서 206px).
+        #   ⚠️ 단추에 지금 배율을 찍는다 — 안 눌러도 값은 보여야 한다.
+        if self.has_load():
+            now = self.load_factor()
+            lb2 = QPushButton(f"\u2699 부하 \u00d7{now:.2f}")
+            lb2.setObjectName("seg_on" if self.grid_key == LOAD_KEY else "seg_off")
+            lb2.setCursor(Qt.PointingHandCursor)
+            lb2.setToolTip("모든 부하에 같은 수를 곱합니다 — 누르면 조절판이 열립니다")
+            lb2.clicked.connect(lambda: self.set_grid_table(LOAD_KEY))
+            row.addWidget(lb2)
         # 찾기 칸을 **같은 줄에** 붙인다. 따로 한 줄을 쓰면 바가 셋이 되어
         # (표 고르기·부하·찾기) 표에 줄이 한 줄도 안 남는다(2026-08-13 실측).
         row.addSpacing(10)
-        if self.grid_key != ADJ.KEY:
-            # 「조정」은 표가 아니다 — 버스 번호로 좁힐 것도, 셀 줄도 없다
+        if self.grid_key not in (ADJ.KEY, LOAD_KEY):
+            # 「조정」·「부하」는 표가 아니다 — 버스 번호로 좁힐 것도, 셀 줄도 없다
             # (넣어 두면 「0줄」이 찍힌다).
             row.addWidget(self.find_bar(inline=True))
         row.addStretch(1)
@@ -3133,10 +3209,6 @@ class Proto(QMainWindow):
             if isinstance(wd, QPushButton):
                 wd.setToolTip("켜고 끄기는 바로 계산하지 않습니다 — "
                               "다 바꾼 뒤 위의 [이 조건으로 계산] 을 누르세요.")
-        load = (self.load_bar(inline=True)      # ② 부하 일괄 증감 — **같은 줄에**
-                if self.grid_key != ADJ.KEY else None)
-        if load is not None:
-            row.addWidget(load)
 
         # 🚨 **이 줄은 넘치면 가로로 민다** (2026-08-19).
         #    「표 고르기」 단추는 **그 계통에 있는 표만큼** 생긴다 — AC 전용은 서넛인데
@@ -3252,6 +3324,8 @@ class Proto(QMainWindow):
         """
         if self.grid_key == ADJ.KEY:
             return ADJ.panel(self)
+        if self.grid_key == LOAD_KEY:
+            return self.load_panel()
         c = self.c
         key = self.grid_key
         sw = SC.SWITCHES.get(key)
@@ -3526,6 +3600,10 @@ class Proto(QMainWindow):
                 self.adj_set(table, row, col, float("nan"))
 
     def set_grid_table(self, key):
+        # 조정·부하 판에서 드롭다운이 무엇을 가리킬지 정하려면 **마지막으로 본 표**를
+        # 기억해야 한다 (2026-09-01).
+        if key not in (ADJ.KEY, LOAD_KEY):
+            self._grid_last_table = key
         self.grid_key = key
         self.rebuild()
 
