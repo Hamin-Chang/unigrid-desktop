@@ -1595,6 +1595,10 @@ class Proto(QMainWindow):
                 n3.setStyleSheet(f"color:{c['muted']};font-size:12px;")
                 v.addWidget(n3)
                 v.addStretch(1)
+                # ⚠️ **여기서도 저장할 수 있어야 한다** (2026-09-01 전수 조사 ⑨).
+                #    이 갈래가 아래 저장 단추까지 못 가고 먼저 나가는 바람에,
+                #    시나리오를 겹쳐 그려 놓고 **그 그림만 저장을 못 했다.**
+                v.addWidget(self.compare_save_button())
                 return sb
 
             # 🚨 고른 항목이 **무엇마다 있는 값이냐**에 따라 골라 달라는 것이 다르다
@@ -1624,14 +1628,8 @@ class Proto(QMainWindow):
             #    (2026-08-29 사용자 확정, `item_chip()`·`open_item_pick()`).
             #    고른 것이 곧 오른쪽 탭이 되므로 **같은 것을 두 번 말하고 있었고**,
             #    그 목록 하나가 사이드바의 3분의 2(1543px 중 약 1090px)를 썼다.
-            # 비교 그림 저장은 위쪽 "내보내기"와 **따로** 둔다(사용자 요청).
-            # 원본 앱도 비교는 별도 버튼이었다(ExportComparisonButtonPushed).
-            # ⚠️ 이름을 sb 로 쓰면 안 된다 — 이 함수의 sb 는 사이드바 자체다.
-            #    덮어쓰면 사이드바가 파이썬 참조를 잃고 사라진다(실제로 겪음).
             v.addSpacing(10)
-            savebtn = QPushButton("이 비교 그림 저장  (PNG · PDF)")
-            savebtn.clicked.connect(self.save_compare_figures)
-            v.addWidget(savebtn)
+            v.addWidget(self.compare_save_button())
 
         v.addStretch()
         return sb
@@ -4779,14 +4777,29 @@ class Proto(QMainWindow):
             tabs.addTab(page, name)
         return self.item_chip(tabs)
 
+    def compare_save_button(self):
+        """「이 비교 그림 저장」 단추 (2026-09-01).
+
+        비교 그림 저장은 위쪽 「내보내기」와 **따로** 둔다(사용자 요청).
+        원본 앱도 비교는 별도 버튼이었다(`ExportComparisonButtonPushed`).
+        ⚠️ 이름을 `sb` 로 쓰면 안 된다 — 사이드바를 그리는 함수의 `sb` 는 사이드바
+           자체다. 덮어쓰면 사이드바가 파이썬 참조를 잃고 사라진다(실제로 겪음).
+        """
+        b = QPushButton("이 비교 그림 저장  (PNG · PDF)")
+        b.setCursor(Qt.PointingHandCursor)
+        b.clicked.connect(self.save_compare_figures)
+        return b
+
     def save_compare_figures(self):
         """지금 보고 있는 비교 그림들을 그대로 파일로. (일반 내보내기와 따로)"""
         if self.sol is None:
             QMessageBox.information(self, "비교 그림 저장",
                                     "먼저 케이스를 불러와 계산하세요.")
             return
+        scen = self.compare_axis == "시나리오끼리"
         items = [n for n, always in COMPARE_ITEMS
-                 if n in self.picked and (always or self.compare_axis == "시간끼리")]
+                 if n in self.picked
+                 and (always or self.compare_axis in ("시간끼리", "시나리오끼리"))]
         if not items:
             QMessageBox.information(self, "비교 그림 저장",
                                     "왼쪽에서 볼 항목을 하나 이상 고르세요.")
@@ -4796,7 +4809,8 @@ class Proto(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             files = exporter.save_compare_figures(
-                self.c, self.sol, self.compare_axis, targets, items, folder)
+                self.c, self.sol, self.compare_axis, targets, items, folder,
+                pairs=self.overlay_pairs() if scen else None, t=self.t)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "비교 그림 저장 실패", f"{exc}")

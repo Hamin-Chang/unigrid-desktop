@@ -241,7 +241,7 @@ def compare_figure_name(item: str, axis: str) -> str:
 
 
 def save_compare_figures(c, sol, axis, targets, items, folder: Path,
-                         on_step=None) -> list[Path]:
+                         on_step=None, pairs=None, t=0) -> list[Path]:
     """비교 그래프를 PNG·PDF 로.
 
     일반 내보내기와 **따로** 둔다 — 원본 앱도 비교는 별도 버튼이었고
@@ -249,11 +249,19 @@ def save_compare_figures(c, sol, axis, targets, items, folder: Path,
     저장하는 쪽이 자연스럽다.
     못 그리는 항목(예: DC 버스만 골라 놓고 위상각)은 **건너뛴다** —
     안내 문구를 그림 파일로 저장하면 안 되니까.
+
+    🚨 **시나리오끼리는 그림 함수가 다르다** (2026-09-01). 화면은 이 갈래에서
+       `charts.compare_scenarios(c, pairs, item, t)` 를 쓰는데 여기서는
+       `compare_chart` 만 알고 있어서, 그대로 두면 **엉뚱한 그림**을 저장한다.
+       그래서 `pairs`(겹쳐 볼 (이름, 결과) 목록)와 `t`(보고 있는 시각)를 받는다.
     """
     folder.mkdir(parents=True, exist_ok=True)
     out = []
     for item in items:
-        w = charts.compare_chart(c, sol, item, axis, targets)
+        if axis == "시나리오끼리":
+            w = charts.compare_scenarios(c, pairs or [], item, t)
+        else:
+            w = charts.compare_chart(c, sol, item, axis, targets)
         if not charts.is_chart(w):
             if on_step:
                 on_step(f"{item} (그릴 수 없어 건너뜀)")
