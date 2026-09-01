@@ -1263,6 +1263,10 @@ class Proto(QMainWindow):
         # 화면을 갈아끼우면 옛 위젯 참조는 버린다 (지워진 위젯을 만지면 죽는다)
         self.dropzone = self.drop_label = self._tabs = self._split = None
         self._tab_pick = None          # 표 고르는 드롭다운도 같이 버린다
+        # ⚠️ 다이나믹으로 보는 중에 1시각 계통을 열면 **잠긴 모드에 갇힌다**
+        #    (단추가 잠겨 돌아갈 길이 없다). 스냅샷으로 되돌린다 (2026-09-01).
+        if self.mode == "다이나믹" and self.dynamic_why():
+            self.mode = "스냅샷"
         if self.sol is None:
             self.setCentralWidget(self.start_page())
             return
@@ -1521,13 +1525,28 @@ class Proto(QMainWindow):
         sh = QHBoxLayout(seg)
         sh.setContentsMargins(3, 3, 3, 3)
         sh.setSpacing(3)
+        why_dyn = self.dynamic_why()
         for m in MODES:
             b = QPushButton(m)
             b.setObjectName("seg_on" if self.mode == m else "seg_off")
             b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _, x=m: self.set_mode(x))
+            if m == "다이나믹" and why_dyn:
+                # `PV·QV 곡선` 과 같은 수법 (2026-08-31 `a46a72a`) — 잠그고 까닭을 붙인다.
+                b.setEnabled(False)
+                b.setToolTip(why_dyn + "\n시간에 따른 변화가 없어 그래프에 점 하나만 "
+                                       "찍힙니다.")
+            else:
+                b.clicked.connect(lambda _, x=m: self.set_mode(x))
             sh.addWidget(b)
         v.addWidget(seg)
+        # ⚠️ **까닭을 글로도 적는다.** 잠긴 단추는 안 고른 단추와 생김새가 같아
+        #    (둘 다 `seg_off` 회색) 풍선말을 띄우기 전엔 잠긴 줄 모른다.
+        #    「PV·QV 곡선」이 쓰는 것과 같은 줄이다 (2026-09-01).
+        if why_dyn:
+            wn2 = QLabel(why_dyn)
+            wn2.setWordWrap(True)
+            wn2.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            v.addWidget(wn2)
         v.addSpacing(12)
 
         # 🚨 「시간 선택」·「버스 선택」은 **맨 위 줄로 옮겼다** (2026-08-29 사용자 확정).
@@ -5024,6 +5043,19 @@ class Proto(QMainWindow):
             return None
         want = self.applied + self.changes
         return SC.apply(self.base_case, want) if want else self.base_case
+
+    def dynamic_why(self):
+        """다이나믹으로 못 가는 까닭. 갈 수 있으면 빈 글자 (2026-09-01 전수 조사 ⑬).
+
+        1시각짜리 계통에서 들어가면 **점 하나짜리 그래프**가 그려지고(x축은 눈금이
+        2까지 난다) 아무 안내가 없었다 — 왜 선이 없는지 알 길이 없다.
+        보여 줄 것이 없으므로 `PV·QV 곡선` 과 같이 **아예 못 들어가게** 막는다.
+        """
+        if self.sol is None:
+            return ""
+        if getattr(self.sol, "n_time", 0) <= 1:
+            return "다이나믹은 여러 시각짜리 계통만 봅니다. 이 계통은 1시각짜리입니다."
+        return ""
 
     def curve_why(self):
         """곡선을 못 그리면 그 까닭. 그릴 수 있으면 None."""
