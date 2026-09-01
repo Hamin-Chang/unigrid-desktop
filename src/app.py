@@ -197,6 +197,41 @@ def _cell_tip(key, col):
     return tip
 
 
+def _fit_header(t):
+    """머리글이 잘리지 않을 **최소 열폭**을 걸고, 넘치면 옆으로 넘긴다 (2026-09-01).
+
+    🚨 늘려 맞추기(Stretch)는 창 폭을 열 수로 나눈다. 창 929px 에서 「볼 항목」의
+       열을 다 켜면 한 칸이 **61px** 이 되어 `Load_Q[MVAR]` 가 **「oad_Q[MVAR」**
+       로 보였다 — 머리글이 가운데 정렬이고 줄임표가 없어(ElideNone) **양끝이**
+       잘린다. 실측: AC 결과 11 건 · 선로 조류 7 건 · 수렴은 **기본 상태에서도** 4 건.
+    ⚠️ 줄임표(ElideRight)로는 못 푼다 — 이 표의 이름은 **앞이 겹친다.**
+       `Load_P[MW]` 와 `Load_Q[MVAR]` 가 둘 다 「Load_…」 가 되어, 읽기는 쉬워지고
+       **두 열을 구별할 수 없게** 된다. 지금 잘린 꼴이 차라리 P·Q 는 갈렸다.
+    📌 계통 데이터 탭이 이미 같은 문제를 풀어 뒀다(20 열짜리 IC 표) — 거기서는
+       글자에 맞추고 옆으로 넘겼다. 여기서는 **넓은 창의 모습을 그대로 두려고**
+       Stretch 를 유지한 채 아래 최소 폭만 건다.
+
+    최소 폭은 `sectionSizeHint` 로 잡는다 — 여백(QSS padding 9)과 **정렬 화살표
+    자리**까지 Qt 가 셈해 주므로 상수를 손으로 못박지 않는다. 실측 차이가 정렬을
+    켠 표는 45~48px, 안 켠 표는 26~32px 로 갈렸다.
+    🚨 **한 박자 미뤄서 잰다.** 표를 만들 때도, 탭에 붙일 때도 QSS(글꼴 14px·
+       여백 9px)는 아직 안 입혀져 있어 머리글이 **기본 9pt** 로 재진다. 실측 —
+       「가장 큰 블록」이 그때 63px, 화면에 나온 뒤 90px. 라틴 이름은 그 차이로도
+       살아남지만 한글은 모자라 그대로 잘렸다. 정렬 화살표 몫도 이때 들어온다.
+       (계통 데이터 표가 쓰는 `QTimer.singleShot(0, fit)` 과 같은 수법이다.)
+    """
+    def fit():
+        try:
+            hh = t.horizontalHeader()
+            if t.columnCount():
+                hh.setMinimumSectionSize(max(hh.sectionSizeHint(c)
+                                             for c in range(t.columnCount())))
+        except RuntimeError:      # 그 사이에 화면을 다시 그려 표가 지워졌다
+            pass
+
+    QTimer.singleShot(0, fit)
+
+
 GRID_TABLES = [
     ("AC_Line_dat", "AC 선로"), ("AC_gen_dat", "AC 발전기"),
     ("DC_Line_dat", "DC 선로"), ("DC_gen_dat", "DC 발전기"),
@@ -1938,6 +1973,7 @@ class Proto(QMainWindow):
                 self._res_tables[name] = (t, list(cols))
                 self._apply_find(name)
                 tt.addTab(self._with_viol_legend(name, t, bad, cols), name)
+                _fit_header(t)      # 정렬을 켠 뒤 · 탭에 붙인 뒤
         else:
             for name in tables_for(self.mode, self.show_vsc and self.case_has_vsc):
                 cols = [n for n, _ in TABLE_SPECS[name] if n in self.visible[name]]
@@ -1954,13 +1990,17 @@ class Proto(QMainWindow):
                             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                         t.setItem(r, cc, it)
                 tt.addTab(t, name)
+                _fit_header(t)
 
         # 점검 · 수렴 탭 — 카드를 세로로 쌓아서 키가 크다(점검 490 · 수렴 378).
         # 그대로 넣으면 그 키가 **창의 최소 높이**가 돼 창을 못 줄인다. 스크롤에
         # 담아 창이 작아도 아래까지 갈 수 있게 한다(2026-08-13).
         n = violation_count(self.viol())
         tt.addTab(_scrollable(self.check_page()), f"점검 ({n})" if n else "점검")
-        tt.addTab(_scrollable(self.conv_page()), "수렴")
+        conv_tab = _scrollable(self.conv_page())
+        tt.addTab(conv_tab, "수렴")
+        for _t in conv_tab.findChildren(QTableWidget):   # 반복별 블록 표 하나
+            _fit_header(_t)
         n_ch = len(self.changes)
         tt.addTab(self.grid_page(),
                   f"계통 데이터 ({n_ch})" if n_ch else "계통 데이터")
