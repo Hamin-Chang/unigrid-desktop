@@ -232,6 +232,23 @@ def _fit_header(t):
     QTimer.singleShot(0, fit)
 
 
+def _fit_button(b, extra=34):
+    """단추가 글자를 안 자를 만큼 넓어지게 한다 (2026-09-01).
+
+    🚨 **QSS 가 입혀진 뒤에 잰다.** 만들 때 재면 창의 기본 글꼴(9pt)로 재게 되어
+       실제 글꼴(14px)보다 좁게 나온다 — 「OFF」가 25px 대 30px 이라 모자랐다.
+       `_fit_header` 와 같은 함정이고 같은 수법으로 푼다.
+    ⚠️ `sizeHint` 로는 못 푼다 — QSS 안쪽 여백을 안 센다(2026-08-28 계통도 단추에서 확인).
+    """
+    def fit():
+        try:
+            b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + extra)
+        except RuntimeError:      # 그 사이에 화면을 다시 그려 단추가 지워졌다
+            pass
+
+    QTimer.singleShot(0, fit)
+
+
 # 「부하 배율」은 표가 아니다 — `⚙ AC 조정`(`adjust_panel.KEY`) 과 같은 자리에
 # 두는 가짜 표 이름이다 (2026-09-01). 왜 옮겼는지는 `load_bar` 머리말 참조.
 LOAD_KEY = "__LOAD__"
@@ -1864,11 +1881,16 @@ class Proto(QMainWindow):
             sh = QHBoxLayout(seg)
             sh.setContentsMargins(3, 3, 3, 3)
             sh.setSpacing(3)
+            # 🚨 **폭을 글자에서 재서 준다** (2026-09-01). 52px 로 못박아 두었더니
+            #    QSS 안쪽 여백(14px x 2)을 빼고 글자에 24px 밖에 안 남아
+            #    **「OFF」의 O 왼쪽이 잘렸다** — 따로 그려 보니 52px 는 잘리고 66px 는
+            #    멀쩡했다. 2026-08-28 계통도 단추(`49a20cf`)와 같은 결함인데 이 자리를
+            #    빠뜨렸다. ⚠️ 「ON」은 안 잘린다 — 흐린 배율로 「UN」이라 잘못 읽었던 것이다.
             for txt, val in [("ON", True), ("OFF", False)]:
                 b = QPushButton(txt)
                 b.setObjectName("seg_on" if self.show_vsc == val else "seg_off")
                 b.setCursor(Qt.PointingHandCursor)
-                b.setFixedWidth(52)
+                _fit_button(b)
                 b.clicked.connect(lambda _, x=val: self.set_vsc(x))
                 sh.addWidget(b)
             head.addWidget(seg)
