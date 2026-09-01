@@ -1298,6 +1298,8 @@ class Proto(QMainWindow):
         self._res_tables = {}
         self._find_label = None
         self._find_clear = None
+        self._head_res = []     # 죽은 위젯을 `_update_head_vis` 가 만지지 않게
+        self._col_btn = None
         self._save_grid_view()
         # 그리기 **전에** 접힘 상태를 자리에 맞춘다. `_table_tab_changed` 에서도 부르지만
         # 그 길로만 오는 게 아니다 — 새 파일을 열 때 앞 파일의 탭이 그대로 남아 있고,
@@ -1833,6 +1835,12 @@ class Proto(QMainWindow):
         head.setSpacing(8)
 
         # ── 어느 표를 볼지 고르는 드롭다운 ──
+        # 🚨 **이름표를 붙인다** (2026-09-01 전수 조사). 탭 줄일 때는 모양 자체가
+        #    「여기서 고른다」를 말했는데, 드롭다운이 되니 값(「AC 결과」)만 남아
+        #    뭘 고르는 자리인지 안 보였다. 다른 고르개(시간·버스·해법)와 같은 꼴.
+        tl = QLabel("표")
+        tl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        head.addWidget(tl)
         # 🚨 **탭 줄로는 원래 안 되는 일이었다** (2026-08-31 실측). 다이나믹은 탭이
         #    8 개인데 창이 1920px 이 돼야 다 보인다 — 맥북 14인치 5/8 · 사이드카 2/8.
         #    구석을 줄여도(561 → 245px) 탭바가 요구하는 폭이 그대로라 안 풀린다.
@@ -1856,7 +1864,9 @@ class Proto(QMainWindow):
         #    표 위 주황 띠로는 대신할 수 없다 — 그건 전압만 센다.
         n_v = violation_count(self.viol())
         if n_v:
-            vb = QPushButton(f"⚠ {n_v:,}")
+            # 「⚠ 26」 만으로는 정체가 툴팁에만 있었다 (2026-09-01 전수 조사)
+            # — 상태바가 쓰는 말(「위반 26건」)과 같은 낱말로 밝힌다.
+            vb = QPushButton(f"⚠ 위반 {n_v:,}")
             vb.setCursor(Qt.PointingHandCursor)
             vb.setFixedHeight(34)
             vb.setToolTip(f"한계를 벗어난 것이 {n_v:,}건 있습니다 — 누르면 점검으로 갑니다")
@@ -1868,9 +1878,15 @@ class Proto(QMainWindow):
             head.addWidget(vb)
 
         head.addStretch()
+        # 🚨 여기부터는 **결과 표에만 뜻이 있는 컨트롤**이다 (2026-09-01 전수 조사).
+        #    계통 데이터·점검·수렴·시나리오에서도 그대로 보여서 — 「버스 번호로
+        #    찾기」가 두 벌 나란히 뜨고, 「50줄」이 안 보이는 표를 세고 있었다.
+        #    「열 선택」과 같은 수법으로 표에 맞춰 숨긴다(`_update_head_vis`).
+        self._head_res = []
         lab = QLabel("VSC 표")
         lab.setStyleSheet(f"color:{c['muted']};font-size:13px;")
         head.addWidget(lab)
+        self._head_res.append(lab)
 
         if not self.case_has_vsc:
             off = QLabel("  없음  ")
@@ -1888,6 +1904,7 @@ class Proto(QMainWindow):
             else:
                 off.setToolTip("이 계통에는 변환기(VSC)가 없습니다")
             head.addWidget(off)
+            self._head_res.append(off)
         else:
             seg = QFrame()
             seg.setObjectName("segwrap")
@@ -1911,6 +1928,7 @@ class Proto(QMainWindow):
                 b.clicked.connect(lambda _, x=val: self.set_vsc(x))
                 sh.addWidget(b)
             head.addWidget(seg)
+            self._head_res.append(seg)
         # 버스 번호로 찾기 — 계통 데이터 탭에만 있던 것을 **결과 표에도** (2026-08-18).
         # 1,888버스 계통이면 표가 1,888줄인데 한 화면에 20줄이라 찾을 길이 없었다.
         # 자리는 이 머리 줄 — 원래 비어 있던 자리라 세로를 더 안 쓴다.
@@ -1926,6 +1944,7 @@ class Proto(QMainWindow):
             head.addWidget(fb)
             self._find_label = QLabel("")
             head.addWidget(self._find_label)
+            self._head_res += [fl, fb, self._find_label]
             # ⚠️ **항상 만들어 두고 숨김만 바꾼다.** 찾을 때마다 이 단추를 만들려고
             #    화면을 다시 그리면 6,495버스에서 **4.58초**다(실측). 띠에서 겪은
             #    것과 같은 수법으로 푼다 — 만들어 두고 보였다 숨겼다 한다.
@@ -1946,6 +1965,7 @@ class Proto(QMainWindow):
         cb.clicked.connect(self.pick_columns)
         cb.setVisible(_tab_base(self.table_tab) in TABLE_SPECS)
         head.addWidget(cb)
+        self._col_btn = cb
 
         tt = QTabWidget()
         # 🚨 **구석에 넣지 않는다** (2026-08-31). 구석은 탭 줄 안에 살아서, 탭바를
@@ -2060,6 +2080,7 @@ class Proto(QMainWindow):
         # 표를 다 만든 뒤에 「N줄 중 M줄」 을 채운다 — 보고 있는 탭 기준이라
         # 탭이 정해진 다음이어야 한다.
         self._update_find_label()
+        self._update_head_vis()
         tv.addWidget(tt)
         # 표 묶음도 최소치를 못 박는다 — 안 그러면 가장 키 큰 탭이 창의 최소
         # 높이를 정해 버린다(Qt 는 최소치를 손으로 정하면 그것을 먼저 본다).
@@ -2077,7 +2098,8 @@ class Proto(QMainWindow):
             split.splitterMoved.connect(lambda *_: self._save_split(split))
         else:
             tt.currentChanged.connect(
-                lambda i, w=tt: setattr(self, "table_tab", _tab_base(w.tabText(i))))
+                lambda i, w=tt: (setattr(self, "table_tab", _tab_base(w.tabText(i))),
+                                 self._update_head_vis()))
         v.addWidget(split, 1)
         return w
 
@@ -2291,6 +2313,7 @@ class Proto(QMainWindow):
             return
         self._save_split(split)          # 떠나는 탭의 자리를 먼저 적어 둔다
         self.table_tab = name
+        self._update_head_vis()          # 결과용 컨트롤(찾기·VSC 표·열 선택)을 표에 맞춘다
         # 자리가 모자라 접거나, 자리가 나서 도로 펴야 하면 화면을 다시 그린다
         # (그래프 자리가 통째로 안내 띠로 바뀌므로 split 만 고쳐서는 안 된다)
         if self._fold_for_room(name):
@@ -2701,6 +2724,27 @@ class Proto(QMainWindow):
         else:
             lb.setText(f"{n:,}줄")
             lb.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+
+    # 결과 표에만 뜻이 있는 머리 줄 컨트롤 — 이 표들에서는 숨긴다 (2026-09-01).
+    _HEAD_OFF = ("점검", "수렴", "계통 데이터", "시나리오")
+
+    def _update_head_vis(self):
+        """머리 줄의 결과용 컨트롤(VSC 표·찾기·N줄·열 선택)을 지금 표에 맞춘다.
+
+        계통 데이터에서도 그대로 보여서 「버스 번호로 찾기」가 두 벌 나란히 뜨고,
+        「50줄」이 **안 보이는 결과 표**를 세고 있었다 (2026-09-01 전수 조사).
+        「열 선택」이 2026-08-27 에 밟은 길(뜻 없는 탭에서는 숨긴다)을 그대로 간다.
+        """
+        tab = _tab_base(self.table_tab)
+        on = tab not in self._HEAD_OFF
+        for w in getattr(self, "_head_res", []):
+            w.setVisible(on)
+        fc = getattr(self, "_find_clear", None)
+        if fc is not None:            # 「전부 보기」는 찾는 중일 때만 — 조건을 겹친다
+            fc.setVisible(on and bool(self.res_find))
+        cb = getattr(self, "_col_btn", None)
+        if cb is not None:
+            cb.setVisible(tab in TABLE_SPECS)
 
     def _apply_sort(self, name, table, cols):
         """적어 둔 정렬을 다시 건다. 없으면 원래 순서 그대로 둔다."""
@@ -3187,6 +3231,14 @@ class Proto(QMainWindow):
 
         row = QHBoxLayout()
         row.setSpacing(6)
+        # 이름표 — 값(「AC 선로 77줄」)만으로는 뭘 고르는 자리인지 안 보인다
+        # (2026-09-01 전수 조사, 위 표 드롭다운과 같은 결함).
+        # ⚠️ 이 줄은 창 929px 에서 **여유가 0** 이라(실측 — shot_grid_pick [5])
+        #    좁은 화면에서는 이름표를 접는다. 찾기 칸 폭과 같은 갈림(`_narrow`).
+        if not self._narrow():
+            gl = QLabel("고칠 표")
+            gl.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            row.addWidget(gl)
         # 🚨 **단추를 늘어놓으면 이 줄이 창 최소 가로를 정한다** (2026-08-19 부터 알던 것을
         #    2026-09-01 에 드롭다운으로 푼다). 단추는 그 계통에 있는 표만큼 생겨서
         #    AC/DC 는 여덟아홉이다 — 실측 **603px**. 표 탭에서 쓴 수법과 같게 간다.
@@ -3194,7 +3246,9 @@ class Proto(QMainWindow):
         #       판이라 성격이 다르고, 「⚙ 부하 ×1.37」 은 **안 눌러도 값이 보여야** 한다.
         pick = QComboBox()
         pick.setFixedHeight(34)
-        pick.setMinimumWidth(190)
+        # 폭 180 = 위 표 드롭다운과 같게. 190 이던 것을 「N줄」 단위를 넣으며
+        # 줄였다 — 929px 창 여유가 0 이라 이 줄은 1px 도 못 늘린다 (2026-09-01).
+        pick.setMinimumWidth(180)
         pick.setCursor(Qt.PointingHandCursor)
         pick.setStyleSheet(
             f"QComboBox {{ background:{c['surface']};color:{c['text']};"
@@ -3202,7 +3256,11 @@ class Proto(QMainWindow):
             f"font-size:14px;font-weight:700; }}"
             f"QComboBox:hover {{ border-color:{c['accent']}; }}"
             f"QComboBox::drop-down {{ border:none;width:24px; }}")
-        pick.addItems([f"{label} {n}" for _, label, n in picks])
+        # 🚨 「AC 선로 77」 은 **77번 선로**로 읽힌다 — 뒤 숫자는 줄 수이므로
+        #    단위를 붙인다 (2026-09-01 전수 조사). ⚠️ 괄호는 안 쓴다 —
+        #    「AC 발전기 (65줄)」 은 197px 로 최소폭 190 을 넘겨 929px 창에서 줄이 넘친다.
+        pick.setToolTip("어느 표를 고칠지 고릅니다")
+        pick.addItems([f"{label} {n:,}줄" for _, label, n in picks])
         # 조정·부하 판을 보고 있으면 고른 표가 없다 — 마지막으로 본 표를 그대로 둔다.
         here = self.grid_key if self.grid_key not in (ADJ.KEY, LOAD_KEY) \
             else getattr(self, "_grid_last_table", picks[0][0])
