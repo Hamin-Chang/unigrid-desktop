@@ -1206,6 +1206,7 @@ class Proto(QMainWindow):
         self.setStyleSheet(self.qss())
         # 화면을 갈아끼우면 옛 위젯 참조는 버린다 (지워진 위젯을 만지면 죽는다)
         self.dropzone = self.drop_label = self._tabs = self._split = None
+        self._tab_pick = None          # 표 고르는 드롭다운도 같이 버린다
         if self.sol is None:
             self.setCentralWidget(self.start_page())
             return
@@ -1751,10 +1752,49 @@ class Proto(QMainWindow):
         # 🚨 이 줄은 **따로 한 줄을 쓰지 않는다** (2026-08-15). 표 묶음 186px 중 표에 남는
         #    것이 19px 뿐이었는데, 그 줄 하나가 46px 을 먹고 있었다.
         #    표 탭바 오른쪽 구석으로 옮기면 **세로 자리를 안 쓴다**(그래프 접기 단추와 같은 수법).
+        # 🚨 2026-08-31 — 탭바를 **드롭다운으로 바꾸면서** 이 줄이 탭바 자리를 물려받았다.
+        #    구석에서 나왔지만 탭바가 사라져 세로는 **9px** 만 더 든다(실측 39 → 48px).
         head_w = QWidget()
         head = QHBoxLayout(head_w)
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(8)
+
+        # ── 어느 표를 볼지 고르는 드롭다운 ──
+        # 🚨 **탭 줄로는 원래 안 되는 일이었다** (2026-08-31 실측). 다이나믹은 탭이
+        #    8 개인데 창이 1920px 이 돼야 다 보인다 — 맥북 14인치 5/8 · 사이드카 2/8.
+        #    구석을 줄여도(561 → 245px) 탭바가 요구하는 폭이 그대로라 안 풀린다.
+        #    ⚠️ 목록은 **탭을 다 만든 뒤** 채운다 — 아래 `_fill_tab_pick` 참조.
+        pick = QComboBox()
+        pick.setFixedHeight(34)
+        pick.setMinimumWidth(180)
+        pick.setCursor(Qt.PointingHandCursor)
+        pick.setStyleSheet(
+            f"QComboBox {{ background:{c['surface']};color:{c['text']};"
+            f"border:1px solid {c['border']};border-radius:9px;padding:0 12px;"
+            f"font-size:14px;font-weight:700; }}"
+            f"QComboBox:hover {{ border-color:{c['accent']}; }}"
+            f"QComboBox::drop-down {{ border:none;width:24px; }}")
+        self._tab_pick = pick
+        head.addWidget(pick)
+
+        # ── 위반 건수 ──
+        # 🚨 탭 이름에 찍히던 「점검 (13)」 이 드롭다운으로 가면 **고르기 전엔 안 보인다.**
+        #    개수는 안 눌러도 보여야 하므로 여기 따로 낸다 (2026-08-31 사용자 확정 「ㄱ」).
+        #    표 위 주황 띠로는 대신할 수 없다 — 그건 전압만 센다.
+        n_v = violation_count(self.viol())
+        if n_v:
+            vb = QPushButton(f"⚠ {n_v:,}")
+            vb.setCursor(Qt.PointingHandCursor)
+            vb.setFixedHeight(34)
+            vb.setToolTip(f"한계를 벗어난 것이 {n_v:,}건 있습니다 — 누르면 점검으로 갑니다")
+            vb.setStyleSheet(
+                f"background:{c['surface']};color:{c['warn']};font-weight:700;"
+                f"border:1px solid {c['warn']};border-radius:9px;"
+                f"padding:0 12px;font-size:13px;")
+            vb.clicked.connect(self.go_check)
+            head.addWidget(vb)
+
+        head.addStretch()
         lab = QLabel("VSC 표")
         lab.setStyleSheet(f"color:{c['muted']};font-size:13px;")
         head.addWidget(lab)
@@ -1830,9 +1870,13 @@ class Proto(QMainWindow):
         head.addWidget(cb)
 
         tt = QTabWidget()
-        tt.setCornerWidget(head_w, Qt.TopRightCorner)
+        # 🚨 **구석에 넣지 않는다** (2026-08-31). 구석은 탭 줄 안에 살아서, 탭바를
+        #    감추면 **구석도 같이 사라진다**(실측 — 조작 줄이 통째로 없어졌다).
+        #    그래서 제 줄로 꺼내고 탭바를 감춘다. 고르는 일은 드롭다운이 한다.
+        tv.addWidget(head_w)
         self._tabs = tt
         tt.setTabPosition(QTabWidget.North)
+        tt.tabBar().setVisible(False)
 
         if self.sol is not None:
             key = self.bus_row if self.mode == "다이나믹" else self.t
@@ -1927,6 +1971,9 @@ class Proto(QMainWindow):
         # 보고 있던 탭으로 되돌린다 — 조건을 하나 바꿀 때마다 화면을 다시 그리므로,
         # 이걸 안 하면 매번 첫 탭(AC 결과)으로 튄다.
         self._restore_tab(tt)
+        # 드롭다운 목록은 **여기서** 채운다 — 탭이 다 만들어지고 어느 탭에 앉을지
+        # 정해진 다음이어야 고른 값이 화면과 맞는다.
+        self._fill_tab_pick(tt)
         # 표를 다 만든 뒤에 「N줄 중 M줄」 을 채운다 — 보고 있는 탭 기준이라
         # 탭이 정해진 다음이어야 한다.
         self._update_find_label()
@@ -4779,6 +4826,29 @@ class Proto(QMainWindow):
         # 그 탭이 사라졌다 — 첫 탭으로 가고 **기억도 같이 맞춘다**
         tt.setCurrentIndex(0)
         self.table_tab = _tab_base(tt.tabText(0))
+
+    def _fill_tab_pick(self, tt):
+        """드롭다운에 탭 이름을 채우고 탭과 서로 잇는다 (2026-08-31).
+
+        ⚠️ **신호가 되돌아오는 것을 막아야 한다.** 드롭다운을 고치면 탭이 옮겨가고,
+           탭이 옮겨가면 드롭다운을 고치려 든다. `blockSignals` 로 한쪽을 끊어
+           고리를 끊는다.
+        """
+        pick = getattr(self, "_tab_pick", None)
+        if pick is None:
+            return
+        pick.blockSignals(True)
+        pick.clear()
+        pick.addItems([tt.tabText(i) for i in range(tt.count())])
+        pick.setCurrentIndex(max(tt.currentIndex(), 0))
+        pick.blockSignals(False)
+        pick.currentIndexChanged.connect(tt.setCurrentIndex)
+
+        def _follow(i, p=pick):
+            p.blockSignals(True)
+            p.setCurrentIndex(i)
+            p.blockSignals(False)
+        tt.currentChanged.connect(_follow)
 
     def go_check(self):
         """상태바의 위반 건수 → 점검 탭으로."""
