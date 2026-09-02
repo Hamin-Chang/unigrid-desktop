@@ -1590,7 +1590,13 @@ class Proto(QMainWindow):
         tseg.setStyleSheet(
             f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
             f"border-radius:8px; }}")
-        th = QVBoxLayout(tseg)
+        # 🚨 **가로로 눕힌다** (2026-09-02 사용자 확정, D 안 (나)).
+        #    세로 2 단이라 77px 을 썼는데, 바로 아래 「보기」는 **셋을 가로로** 담고
+        #    41px 이다 — 같은 급의 고르개 둘이 서로 다른 꼴이었다.
+        #    ⚠️ 비교 모드 사이드바가 창 950px 에서 **5px 넘쳐 스크롤**이 생기던 것을
+        #       이 36px 로 뒤집는다(839 → 803px, 자리 834px). 맨 아래 「이 비교 그림
+        #       저장」이 스크롤해야 보이던 자리다.
+        th = QHBoxLayout(tseg)
         th.setContentsMargins(3, 3, 3, 3)
         th.setSpacing(3)
         why = self.curve_why()
