@@ -1113,6 +1113,10 @@ class Proto(QMainWindow):
         self.graph_kept = False       # 사용자가 직접 펼친 적이 있나 (있으면 자동으로 안 접는다)
         self.numbers_why = ""         # 왜 접혔나 — "big"(큰 계통) · "changed"(조건을 바꿔 품)
         self.mode = "스냅샷"
+        # 왼쪽 줄을 펼쳐 두었나 (2026-09-02 사용자 확정, 안 (나) — 접으면 56px 띠).
+        # 접힘은 split 자리와 같은 격의 **세션 안 상태**다. 디스크에 남기는 것은
+        # 최근 연 파일과 계통도 자리 둘뿐이라(`paths`) 여기 끼워 넣지 않는다.
+        self.side_open = True
         self.compare_axis = "버스끼리"
         self.overlay = set()          # 겹쳐 볼 시나리오 (Book 안 자리 번호) — 비면 전부
         self.compare_targets = "3, 7, 12"
@@ -1238,6 +1242,10 @@ class Proto(QMainWindow):
             color:{c['muted']}; font-size:13px; padding:4px 6px;
             text-decoration:underline; }}
         QPushButton#link:hover {{ color:{c['accent']}; }}
+        /* 잠긴 링크 단추는 **눌리는 것과 달라 보여야** 한다 — 밑줄을 빼고 흐리게.
+           2026-09-01 「잠긴 단추가 안 고른 단추와 생김새가 같다」와 같은 자리다
+           (접기 단추가 비교·곡선에서 잠기는데 회색 링크 그대로였다). */
+        QPushButton#link:disabled {{ color:{c['border']}; text-decoration:none; }}
         QComboBox, QSpinBox, QLineEdit {{ background:{c['surface']}; color:{c['text']};
             border:1px solid {c['border']}; border-radius:6px;
             padding:9px 12px; font-size:16px; }}
@@ -1285,8 +1293,8 @@ class Proto(QMainWindow):
         side.setWidgetResizable(True)
         side.setFrameShape(QFrame.NoFrame)
         side.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        side.setWidget(self.sidebar())
-        side.setFixedWidth(280)
+        side.setWidget(self.sidebar() if self.side_open else self.side_rail())
+        side.setFixedWidth(280 if self.side_open else 56)
         side.setMinimumHeight(0)
         mid.addWidget(side)
         mid.addWidget(self.center(), 1)
@@ -1460,6 +1468,78 @@ class Proto(QMainWindow):
         return w
 
     # ── 좌측 ──
+    def side_lock_why(self):
+        """왼쪽 줄을 접을 수 없는 까닭. 접을 수 있으면 빈 글자 (2026-09-02).
+
+        접으면 그 안에 있던 조작이 **통째로 사라진다** — 비교의 「무엇끼리 비교」·
+        「비교할 버스」·「이 비교 그림 저장」, 곡선의 입력 셋. 이 둘은 맨 위 줄로
+        옮길 수도 없어서(여러 개 고르는 팝업이라 꼴이 다르다) 접기를 막는다.
+        🚨 잠근 자리에 **갇히지 않게** 길을 같이 낸다 — 접힌 띠에서 그 둘로 갈 때는
+           스스로 펼친다(`set_mode`·`set_task`). 2026-09-01 에 두 번 겪은 함정이다.
+        """
+        if self.task == "PV·QV 곡선":
+            return "PV·QV 곡선은 왼쪽에서 넣을 것이 있어 접을 수 없습니다."
+        if self.mode == "비교":
+            return "비교는 왼쪽에서 고를 것이 있어 접을 수 없습니다."
+        return ""
+
+    def toggle_side(self):
+        """왼쪽 줄을 접었다 폈다. 펴는 쪽은 언제나 된다."""
+        if not self.side_open:
+            self.side_open = True
+        elif not self.side_lock_why():
+            self.side_open = False
+        self.rebuild()
+
+    def side_rail(self):
+        """접힌 왼쪽 띠 — 폭 56px (2026-09-02 사용자 확정, 안 (나)).
+
+        ⚠️ **아이콘은 임시다.** 지금은 정체가 풍선말에만 있어서, 2026-09-01 에
+           고친 「⚠ 26」(뜻이 툴팁에만)과 같은 결함을 스스로 만든 꼴이다.
+           디자인 다듬기 때 다시 본다(사용자 확정 — *"아이콘은 디자인 다듬을 때 보자"*).
+        """
+        c = self.c
+        sb = QFrame()
+        sb.setObjectName("sidebar")
+        sb.setFixedWidth(56)
+        v = QVBoxLayout(sb)
+        v.setContentsMargins(6, 14, 6, 14)
+        v.setSpacing(8)
+
+        def icon(txt, on=False, tip="", on_click=None, why=""):
+            b = QPushButton(txt)
+            b.setObjectName("seg_on" if on else "seg_off")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedSize(44, 40)
+            b.setStyleSheet("font-size:17px;padding:0;")
+            if why:
+                b.setEnabled(False)
+                b.setToolTip(why)
+            else:
+                b.setToolTip(tip)
+                if on_click is not None:
+                    b.clicked.connect(on_click)
+            v.addWidget(b)
+            return b
+
+        icon("☰", tip="왼쪽 줄 펼치기", on_click=lambda _: self.toggle_side())
+        v.addWidget(hline_soft(c))
+        icon("⌂", tip=f"케이스 — {self.case[0]}\n누르면 왼쪽 줄을 펼칩니다",
+             on_click=lambda _: self.toggle_side())
+        why = self.curve_why()
+        for name, ch in zip(TASKS, ("▶", "◠")):
+            icon(ch, on=(self.task == name), tip=f"무엇을 할까 — {name}",
+                 on_click=lambda _, x=name: self.set_task(x),
+                 why=(why if name == "PV·QV 곡선" and why else ""))
+        v.addWidget(hline_soft(c))
+        why_dyn = self.dynamic_why()
+        for m, ch in zip(MODES, ("▦", "◷", "⇄")):
+            icon(ch, on=(self.mode == m), tip=f"보기 — {m}",
+                 on_click=lambda _, x=m: self.set_mode(x),
+                 why=(why_dyn if m == "다이나믹" and why_dyn else ""))
+        v.addStretch()
+        return sb
+
     def sidebar(self):
         c = self.c
         sb = QFrame()
@@ -1468,6 +1548,30 @@ class Proto(QMainWindow):
         v = QVBoxLayout(sb)
         v.setContentsMargins(14, 16, 14, 14)
         v.setSpacing(8)
+
+        # ── 접기 (2026-09-02 사용자 확정, 안 (나)) ──
+        # 접으면 표가 **1198 → 1422px** 로 넓어진다(1512px 창 실측). 사이드바를
+        # 아예 없애는 안 (다)는 표를 1478px 까지 넓히지만 「무엇을 할까」·「보기」가
+        # 맨 위 줄로 올라가 **그 줄이 1333px 을 요구** — 창 최소 가로가 929 → 1294px
+        # 로 올라가서 접었다.
+        why_fold = self.side_lock_why()
+        fold = QPushButton("◀  접기")
+        fold.setObjectName("link")
+        fold.setCursor(Qt.PointingHandCursor)
+        if why_fold:
+            # ⚠️ 여기서는 까닭을 **글줄로 안 적는다** — 잠긴 「다이나믹」과 달리
+            #    이건 상태를 고르는 단추가 아니라 곁다리 동작이라, 못 눌러도
+            #    갇히지 않는다. 사이드바 세로도 비교 모드에서 이미 807px 이다.
+            fold.setEnabled(False)
+            fold.setToolTip(why_fold)
+        else:
+            fold.setToolTip("왼쪽 줄을 접어 표를 넓게 씁니다")
+            fold.clicked.connect(self.toggle_side)
+        fr = QHBoxLayout()
+        fr.setContentsMargins(0, 0, 0, 0)
+        fr.addStretch()
+        fr.addWidget(fold)
+        v.addLayout(fr)
 
         v.addWidget(self.case_card())
         v.addSpacing(12)
@@ -5098,6 +5202,10 @@ class Proto(QMainWindow):
     # ── 동작 ──
     def set_mode(self, m):
         self.mode = m
+        # 접힌 띠에서 비교로 오면 왼쪽에 고를 것이 생긴다 — 스스로 펼친다.
+        # 「무엇을 잠그면 이미 그 안에 있는 사람을 꺼내는 길을 같이 만든다」(2026-09-01).
+        if self.side_lock_why():
+            self.side_open = True
         self.rebuild()
 
     def set_axis(self, a):
@@ -5223,6 +5331,8 @@ class Proto(QMainWindow):
 
     def set_task(self, t):
         self.task = t
+        if self.side_lock_why():        # 곡선 입력이 왼쪽에 있다 — 접혀 있으면 편다
+            self.side_open = True
         self.rebuild()
 
     def run_curve(self):
