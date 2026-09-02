@@ -1117,6 +1117,11 @@ class Proto(QMainWindow):
         # 접힘은 split 자리와 같은 격의 **세션 안 상태**다. 디스크에 남기는 것은
         # 최근 연 파일과 계통도 자리 둘뿐이라(`paths`) 여기 끼워 넣지 않는다.
         self.side_open = True
+        # 계통 데이터 표에서 켠 열 — {표 key: {데이터 열 번호}} (2026-09-02).
+        # 없으면 전부 켜진 것으로 본다. 결과 표의 `visible` 과 같은 격이되,
+        # 저쪽은 **열 이름**으로 세고 여기는 **열 번호**로 센다(머리글이 파일마다
+        # 다르고 빈 열이 뒤에 붙기도 해서 이름이 안 고정된다).
+        self.grid_visible = {}
         self.compare_axis = "버스끼리"
         self.overlay = set()          # 겹쳐 볼 시나리오 (Book 안 자리 번호) — 비면 전부
         self.compare_targets = "3, 7, 12"
@@ -2832,6 +2837,28 @@ class Proto(QMainWindow):
     # 결과 표에만 뜻이 있는 머리 줄 컨트롤 — 이 표들에서는 숨긴다 (2026-09-01).
     _HEAD_OFF = ("점검", "수렴", "계통 데이터", "시나리오")
 
+    def _col_btn_text(self):
+        """「열 선택」 단추 글자 — 숨긴 열이 있으면 **몇 개인지 밝힌다** (2026-09-02).
+
+        🚨 안 밝히면 다음에 열었을 때 **「열이 왜 없지」** 가 된다. 숨김은 세션 내내
+           남는데 화면에는 아무 표시가 없었다(결과 표도 처음부터 같았다).
+           계통 데이터는 **고치는 표**라 더 아프다 — 안 보이는 열은 고칠 수도 없다.
+        📌 다 켜져 있으면 숫자를 안 붙인다 — 늘 붙이면 숫자가 뜻을 잃는다.
+        ⚠️ **결과 표에는 안 붙인다.** 거기는 `TABLE_SPECS` 의 `always` 로 **처음부터
+           일부만** 켠다(AC 결과가 7/13) — 손대지 않아도 숫자가 뜨니 「내가 뭘 껐나」로
+           읽힌다. 계통 데이터는 기본이 **전부**라 숫자가 곧 「내가 껐다」다.
+        """
+        tab = _tab_base(self.table_tab)
+        if tab != "계통 데이터":
+            return "열 선택"
+        cols = getattr(self, "_grid_all_cols", None)
+        if not cols:
+            return "열 선택"
+        vis = self.grid_visible.get(self.grid_key)
+        total = len(cols)
+        on = total if vis is None else sum(1 for j, _ in cols if j in vis)
+        return "열 선택" if on >= total else f"열 선택 {on}/{total}"
+
     def _update_head_vis(self):
         """머리 줄의 결과용 컨트롤(VSC 표·찾기·N줄·열 선택)을 지금 표에 맞춘다.
 
@@ -2848,7 +2875,12 @@ class Proto(QMainWindow):
             fc.setVisible(on and bool(self.res_find))
         cb = getattr(self, "_col_btn", None)
         if cb is not None:
-            cb.setVisible(tab in TABLE_SPECS)
+            # 계통 데이터도 켠다 (2026-09-02) — 열이 가장 많은 표가 여기다
+            # (IC 20열이 1512px 창에서 903px 넘친다). 단, 조정·부하 판은 표가 아니다.
+            grid_ok = (tab == "계통 데이터"
+                       and self.grid_key not in (ADJ.KEY, LOAD_KEY))
+            cb.setVisible(tab in TABLE_SPECS or grid_ok)
+            cb.setText(self._col_btn_text())
 
     def _apply_sort(self, name, table, cols):
         """적어 둔 정렬을 다시 건다. 없으면 원래 순서 그대로 둔다."""
@@ -3626,7 +3658,22 @@ class Proto(QMainWindow):
                 left.setItem(at, 1 if sw else 0, cell(r, 0))
 
         body = [j for j in range(ncol)] if not freeze else list(range(1, ncol))
+        # 고를 수 있는 열을 적어 둔다 — 「열 선택」 판이 이것으로 목록을 만든다.
+        # 데이터 열 0 은 왼쪽 고정(또는 상태 옆)이라 끄고 켤 대상이 아니다.
+        self._grid_all_cols = [(j, head_of(j)) for j in body]
+        # ── 열 선택 (2026-09-02) — 고른 것만 남긴다.
+        # 🚨 열을 숨기면 **화면 열 = 데이터 열 + 상수** 가 깨진다(빠진 자리가 생긴다).
+        #    그래서 아래로는 상수 `off` 대신 **대응표 `body`** 로 오간다.
+        vis = self.grid_visible.get(key)
+        if vis is not None:
+            kept = [j for j in body if j in vis]
+            if kept:                      # 전부 끄면 표가 사라진다 — 그럴 땐 무시
+                body = kept
         off = (1 if sw else 0) if not freeze else -1   # 화면 열 = 데이터 열 + off
+        # 앞에 몇 칸이 먼저 붙나(상태 단추) — 대응표의 시작점.
+        lead = (1 if sw else 0) if not freeze else 0
+        self._grid_body = body            # 화면 열 k ↔ 데이터 열 body[k − lead]
+        self._grid_lead = lead
         labels = ((["상태"] if sw else []) + [head_of(j) for j in body]) if not freeze \
             else [head_of(j) for j in body]
         tb = new_table(labels)
@@ -3642,8 +3689,8 @@ class Proto(QMainWindow):
                 b.setCursor(Qt.PointingHandCursor)
                 b.clicked.connect(lambda _, rr=r: self.flip_row(rr))
                 (left if freeze else tb).setCellWidget(at, 0, b)
-            for j in body:
-                tb.setItem(at, j + off, cell(r, j))
+            for k, j in enumerate(body):
+                tb.setItem(at, k + lead, cell(r, j))
         self._grid_loading = False
         tb.itemChanged.connect(lambda item: self.grid_edited(key, item, off, scales))
 
@@ -3691,7 +3738,14 @@ class Proto(QMainWindow):
         """운전 조건 칸을 고쳤다. **계산은 안 한다** — 바꾼 목록에만 얹는다."""
         if getattr(self, "_grid_loading", False):
             return
-        col = item.column() - off
+        # 🚨 **대응표로 되찾는다** (2026-09-02). 열을 숨기면 화면 열과 데이터 열이
+        #    상수만큼 어긋나지 않는다 — 빠진 자리를 건너뛰기 때문이다.
+        #    (`off` 인자는 시험이 쓰던 것이라 그대로 받되 여기서는 안 쓴다.)
+        k = item.column() - getattr(self, "_grid_lead", 0)
+        body = getattr(self, "_grid_body", None)
+        if body is None or not (0 <= k < len(body)):
+            return
+        col = body[k]
         # 🚨 **그리는 쪽과 같은 목록을 봐야 한다** (2026-08-27). 여기만 옛 목록을 보면
         #    새로 연 칸이 **조용히 반려**된다 — 화면은 흰 칸인데 쳐도 아무 일이 안 난다.
         if col < 0 or col not in (GRID_EDITABLE.get(key, set()) | RULES.editable(key)):
@@ -4635,10 +4689,109 @@ class Proto(QMainWindow):
         v.addLayout(row)
         d.exec()
 
+    def pick_grid_columns(self):
+        """계통 데이터 표의 열 선택 (2026-09-02).
+
+        **왜 여기에도 필요한가** — 열이 가장 많은 표가 계통 데이터다. 1512px 창
+        실측으로 IC 20열이 **903px**, AC 버스 21열이 541px, AC 선로 18열이 427px
+        넘친다(사이드바를 접어 224px 을 보태도 넷이 남는다). 결과 표는 「열 선택」이
+        있어 들어가는데 정작 넘치는 쪽에는 없었다.
+
+        🚨 **결과 표와 다른 점 둘.**
+        ① 여기 표는 **고치는 표**다 — 숨긴 열은 고칠 수도 없으므로 판에서 말해 준다.
+        ② 열을 **이름이 아니라 번호**로 센다(`grid_visible`). 머리글이 파일마다 다르고
+           빈 열이 뒤에 붙기도 해서(`GRID_PAD_TO_HEADERS`) 이름이 안 고정된다.
+        📌 왼쪽 고정 열(데이터 열 0)은 목록에 없다 — 그게 없으면 어느 줄인지 모른다.
+        """
+        key = self.grid_key
+        cols = getattr(self, "_grid_all_cols", None)
+        if key in (ADJ.KEY, LOAD_KEY) or not cols:
+            return
+        label = dict(GRID_TABLES).get(key, key)
+        editable = GRID_EDITABLE.get(key, set()) | RULES.editable(key)
+        now = self.grid_visible.get(key)
+
+        d = QDialog(self)
+        d.setWindowTitle(f"열 선택 — {label}")
+        d.setStyleSheet(self.styleSheet())
+        d.setMinimumWidth(340)
+        v = QVBoxLayout(d)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(7)
+        info = QLabel(f"「{label}」 표에 보일 열을 고르세요")
+        info.setStyleSheet(f"color:{self.c['muted']};font-size:13px;")
+        v.addWidget(info)
+        warn = QLabel("⚠️ 끈 열은 고칠 수도 없습니다. 고친 값은 그대로 남습니다.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(f"color:{self.c['warn']};font-size:12px;")
+        v.addWidget(warn)
+
+        boxes = []
+        bulk = QHBoxLayout()
+        bulk.setSpacing(6)
+        # ⚠️ 「처음대로」는 안 둔다 — 계통 데이터에는 결과 표의 `always` 같은
+        #    「처음 켜져 있던 것」이 없다(늘 전부다). 두면 「전부 켜기」와 같은 단추다.
+        cand = {j for j, _ in cols}
+        for lab, pick in (("전부 켜기", lambda j: True),
+                          ("고칠 수 있는 것만", lambda j: j in editable)):
+            bb = QPushButton(lab)
+            bb.setCursor(Qt.PointingHandCursor)
+            # 🚨 **줄어들지 않으면 잠근다.** IC 는 22 열이 전부 고칠 수 있어 이 단추가
+            #    아무 일도 안 한다 — 눌렀는데 그대로면 고장으로 읽힌다.
+            if lab == "고칠 수 있는 것만" and not (cand & editable) < cand:
+                bb.setEnabled(False)
+                bb.setToolTip("이 표는 열이 다 고칠 수 있는 것이라 줄지 않습니다"
+                              if editable else "이 표에는 고칠 수 있는 열이 없습니다")
+            else:
+                bb.clicked.connect(
+                    lambda _=False, f=pick: [b.setChecked(f(j0))
+                                             for j0, b in boxes])
+            bulk.addWidget(bb)
+        bulk.addStretch(1)
+        v.addLayout(bulk)
+
+        # 📌 **전부 고칠 수 있으면 꼬리를 안 붙인다** — IC 는 20 줄에 같은 말이
+        #    되풀이돼 목록이 읽히지 않았다. 그럴 땐 위에서 한 번만 말한다.
+        all_ed = bool(cand) and (cand & editable) == cand
+        if all_ed:
+            note = QLabel("이 표는 열이 다 고칠 수 있습니다.")
+            note.setStyleSheet(f"color:{self.c['muted']};font-size:12px;")
+            v.addWidget(note)
+        for j, head in cols:
+            tail = "" if all_ed or j not in editable else "   (고칠 수 있음)"
+            b = QCheckBox(head + tail)
+            b.setChecked(now is None or j in now)
+            v.addWidget(b)
+            boxes.append((j, b))
+
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("취소")
+        cancel.clicked.connect(d.reject)
+        ok = QPushButton("적용")
+        ok.setObjectName("primary")
+        ok.clicked.connect(d.accept)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        v.addLayout(row)
+
+        if d.exec():
+            picked = {j for j, b in boxes if b.isChecked()}
+            if not picked:
+                # 결과 표와 같은 잣대 — 조용히 무시하면 "적용이 안 되네" 로 끝난다.
+                QMessageBox.information(
+                    self, "열을 하나는 켜 주세요",
+                    "열을 전부 끄면 표가 빈칸이 됩니다.\n하나 이상 골라 주세요.")
+                return
+            self.grid_visible[key] = picked
+            self.rebuild()
+
     def pick_columns(self):
         # 🚨 탭 글자에는 개수 꼬리가 붙는다(「점검 (25)」) — `_tab_base` 로 뗀다.
         #    안 떼면 그 표에 열 목록을 나중에 붙여도 이름이 안 맞아 또 안 열린다.
         name = _tab_base(self._tabs.tabText(self._tabs.currentIndex()))
+        if name == "계통 데이터":
+            return self.pick_grid_columns()
         if name not in TABLE_SPECS:      # 단추가 안 보이는 탭 — 눌릴 일이 없다
             return
         d = QDialog(self)

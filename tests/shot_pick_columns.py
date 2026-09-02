@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """「열 선택」 시험 (2026-08-27).
 
-  ① 열 선택이 뜻 없는 탭에서는 **단추가 안 보인다**(점검·수렴·계통 데이터).
+  ① 열 선택이 뜻 없는 탭에서는 **단추가 안 보인다**(점검·수렴).
+     ⚠️ 계통 데이터는 2026-09-02 부터 **보인다** — 그때 실제로 도는 열 선택이 붙었다.
   ② 「전부 켜기 · 전부 끄기 · 처음대로」가 실제로 돈다.
   ③ 전부 끄고 [적용] 하면 막고 까닭을 말해 준다.
 """
@@ -38,10 +39,14 @@ while time.time() < e:
 pump(1.0)
 
 print("[1] 단추가 보이는 탭 · 안 보이는 탭")
+# ⚠️ **계통 데이터는 2026-09-02 에 False → True 로 뒤집혔다.** 2026-08-27 에 숨긴
+#    까닭은 「필요 없어서」가 아니라 거기서 **죽어 있었기 때문**이다(`TABLE_SPECS` 에
+#    없어 `KeyError`). 이제 `pick_grid_columns()` 가 받으므로 보이는 것이 맞다 —
+#    IC 20 열이 1512px 창에서 903px 넘치는 그 표가 여기 있다.
 for tab, want in [("AC 결과", True), ("DC 결과", True), ("선로 조류", True),
-                  ("점검", False), ("수렴", False), ("계통 데이터", False)]:
+                  ("점검", False), ("수렴", False), ("계통 데이터", True)]:
     win.table_tab = tab; win.rebuild(); pump(0.25)
-    seen = any(b.text() == "열 선택" and b.isVisible()
+    seen = any(b.text().startswith("열 선택") and b.isVisible()
                for b in win.findChildren(QPushButton))
     chk(f"{tab} 단추 보임={want}", seen, want)
 
@@ -148,7 +153,8 @@ open_case("AConly_case118.xlsx")
 chk("AC 전용을 열면 둘이 같은가", win.table_tab, cur_tab())
 chk("첫 탭으로 갔나", cur_tab(), "AC 결과")
 chk("그 탭에서 단추가 보이나",
-    any(b.text() == "열 선택" and b.isVisible() for b in win.findChildren(QPushButton)), True)
+    any(b.text().startswith("열 선택") and b.isVisible()
+        for b in win.findChildren(QPushButton)), True)
 
 print("═"*56)
 print(f"  통과 {ok[0]} · 실패 {len(bad)}")
