@@ -7,7 +7,10 @@ REM Makes: packaging\dist\UNIGRID\   -> then unigrid.iss makes setup.exe
 REM
 REM Needs
 REM   1) Python 3.12 venv (set PY below to its python.exe)
-REM   2) PySide6 6.11.1 / numpy / pandas / openpyxl / pyinstaller in it
+REM   2) the pinned packages from requirements.txt, plus pyinstaller:
+REM         "%PY%" -m pip install -r requirements.txt pyinstaller
+REM      PySide6 MUST be 6.9.1 - 6.11.1 fails to import at all on Windows
+REM      (Qt6Core.dll wants an ICU symbol the wheel does not ship).
 REM   3) engine\unigrid_app_win\unigrid_app_win.ctf   (Windows engine, 21st build)
 REM   4) MATLAB Runtime R2024b to actually run a calculation
 REM
