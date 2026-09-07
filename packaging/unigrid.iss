@@ -11,7 +11,7 @@
 #define AppName    "UNIGRID"
 ; 판 번호는 `src/app.py` 의 VERSION 과 같이 간다 — 「정보」 창이 그걸 띄운다.
 ; 2026-09-07 에 날짜(yyyymmdd)에서 판 번호로 바꿨다. 날짜로는 어느 판인지 안 보인다.
-#define AppVer     "2.1"
+#define AppVer     "2.1.1"
 #define AppPub     "중앙대학교 GML"
 #define AppExe     "UNIGRID.exe"
 
