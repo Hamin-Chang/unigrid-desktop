@@ -346,6 +346,15 @@ class CurveThread(QThread):
             self.failed.emit(str(exc))
 
 
+# ─────────────────────────────────────────── 판
+# 앱의 판 번호. 「정보」 창과 윈도우 설치본(`packaging/unigrid.iss`)이 이걸 쓴다.
+#   2.1 = UI 확정까지 (2026-09-02, 커밋 05a5214)
+#   2.2 = 디자인 다듬기 (예정)
+# ⚠️ 올릴 때는 `packaging/unigrid.iss` 의 AppVer 도 같이 올린다 —
+#    설치본 파일 이름이 거기서 나온다.
+VERSION = "2.1"
+
+
 # ─────────────────────────────────────────── 색
 LIGHT = dict(
     bg="#eef1f5", surface="#ffffff", border="#d5dae2", text="#1b2430",
@@ -652,7 +661,7 @@ class AboutDialog(QDialog):
                         "letter-spacing:1.4px;")
         v.addWidget(t)
 
-        sub = QLabel("AC/DC 조류계산")
+        sub = QLabel(f"AC/DC 조류계산  ·  v{VERSION}")
         sub.setStyleSheet(f"color:{c['muted']};font-size:13px;")
         v.addWidget(sub)
 
