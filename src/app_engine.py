@@ -23,6 +23,7 @@ from typing import Any
 import numpy as np
 
 import engine_path
+from engine_path import EngineNotFound
 import paths
 
 _HERE = Path(__file__).resolve().parent
@@ -522,8 +523,20 @@ def _mat_streams() -> tuple[Any, Any]:
 
 def _curve_in_process(payload: dict[str, Any]) -> dict[str, Any]:
     import importlib
+    # 🚨 **엔진 패키지는 import 되는 그 순간 PATH 를 훑는다** (`__init__.py` 289-294 행이
+    #    모듈 레벨에서 `get_paths_from_os()` 를 부른다). 처음 걸린 자리에 
+    #    `toolbox/compiler_sdk/pysdk_py` 가 없으면 거기서 죽고, 뒤에 쓸 수 있는 자리가
+    #    있어도 보지 않는다 ⇒ **import 하기 전에** 쓸 자리를 PATH 맨 앞에 놓는다.
+    #    (2026-09-07 시연용 윈도우에서 실제로 터졌다 — 자세한 것은 engine_path.py)
+    engine_path.ensure_runtime_on_path()
     sys.path.insert(0, str(paths.engine_dir()))
-    pkg = importlib.import_module("unigrid_app_win")
+    try:
+        pkg = importlib.import_module("unigrid_app_win")
+    except EngineNotFound:
+        raise
+    except Exception as exc:
+        # 그대로 두면 사용자에게 영어 한 줄만 보인다 — 무엇을 깔아야 하는지 말해 준다.
+        raise EngineNotFound([], engine_path.windows_guidance(exc)) from exc
     import matlab
     app = pkg.initialize()
     try:
@@ -828,8 +841,20 @@ class _Worker:
 
 def _run_in_process(case: Any, method: str = "nr") -> dict[str, Any]:
     import importlib
+    # 🚨 **엔진 패키지는 import 되는 그 순간 PATH 를 훑는다** (`__init__.py` 289-294 행이
+    #    모듈 레벨에서 `get_paths_from_os()` 를 부른다). 처음 걸린 자리에 
+    #    `toolbox/compiler_sdk/pysdk_py` 가 없으면 거기서 죽고, 뒤에 쓸 수 있는 자리가
+    #    있어도 보지 않는다 ⇒ **import 하기 전에** 쓸 자리를 PATH 맨 앞에 놓는다.
+    #    (2026-09-07 시연용 윈도우에서 실제로 터졌다 — 자세한 것은 engine_path.py)
+    engine_path.ensure_runtime_on_path()
     sys.path.insert(0, str(paths.engine_dir()))
-    pkg = importlib.import_module("unigrid_app_win")
+    try:
+        pkg = importlib.import_module("unigrid_app_win")
+    except EngineNotFound:
+        raise
+    except Exception as exc:
+        # 그대로 두면 사용자에게 영어 한 줄만 보인다 — 무엇을 깔아야 하는지 말해 준다.
+        raise EngineNotFound([], engine_path.windows_guidance(exc)) from exc
     import matlab
     app = pkg.initialize()
     try:
