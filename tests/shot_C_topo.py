@@ -107,6 +107,30 @@ f1 = ((hb.value() + sa.viewport().width() / 2) / vv.width(),
 d = max(abs(f1[0] - f0[0]), abs(f1[1] - f0[1]))
 chk("확대해도 보던 자리에 머문다", d < 0.05, True)
 print(f"     어긋남 {d:.4f}")
+
+# 🚨 **「지도처럼 커지는가」를 숫자로 박아 둔다** (2026-09-08).
+#    처음 고쳤을 때 스크롤 자리만 맞추고 «커지는 방식» 은 그대로 둬서,
+#    기호만 커지고 간격은 안 커졌다 — 사용자가 *"그냥 요소가 커졌다 작아졌다가
+#    되는데"* 로 잡아냈다. 눈으로는 그럴듯해 보였다.
+#    ⇒ **화면에서 두 버스 사이가 배율만큼 벌어지는지** 를 잰다.
+def _gap(view):
+    xs = sorted(set(round(float(a[0]), 1) for a in view._px()))
+    return (xs[1] - xs[0]) * view.zoom if len(xs) > 1 else 0.0
+vv.set_zoom(1.0); pump(0.6)
+g1 = _gap(vv)
+vv.set_zoom(2.0); pump(0.6)
+g2 = _gap(vv)
+chk("화면상 간격도 배율만큼 커진다", abs(g2 / max(g1, 1e-9) - 2.0) < 0.1, True)
+print(f"     버스 사이 {g1:.0f}px → {g2:.0f}px  (×{g2/max(g1,1e-9):.2f})")
+lw1, _ = vv._logical()
+chk("논리 크기는 안 변한다", abs(lw1 * 2 - vv.width()) < 3, True)
+print(f"     논리 폭 {lw1:.0f} · 위젯 폭 {vv.width()}")
+# 확대해도 클릭이 안 어긋나나
+from PySide6.QtCore import QPointF as _QPF
+xy = vv._px()
+chk("200% 에서도 그 버스를 집는다",
+    vv._hit(_QPF(float(xy[5][0]) * 2.0, float(xy[5][1]) * 2.0)), 5)
+vv.set_zoom(1.0); pump(0.4)
 vv.set_zoom(1.0); pump(0.4)
 hb.setValue(hb.maximum() // 2); vb.setValue(vb.maximum() // 2); pump(0.2)
 h0, v0 = hb.value(), vb.value()

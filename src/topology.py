@@ -957,8 +957,15 @@ class TopologyView(QFrame):
         ncol = max(1, len(col))
         nrow = max(1, max(col.values()) if col else 1)
         L, m = self._pads()
-        self.setMinimumWidth(int(L + m + ncol * u * 2.9))
-        self.setMinimumHeight(int(2 * m + nrow * (u * 1.25 + 20)))
+        # 논리로 필요한 크기 × 배율 — 배율만큼 정확히 커져야 «지도 확대» 가 된다.
+        # ⚠️ **지금 논리 크기보다 작게 잡으면 안 된다** — 뷰포트에 맞춰 넓게 그리던
+        #    계통이 확대하는 순간 좁아진다. 둘 중 큰 것을 쓴다.
+        z = float(getattr(self, "zoom", 1.0))
+        bw, bh_ = self._logical()
+        need_w = max(L + m + ncol * u * 2.9, bw)
+        need_h = max(2 * m + nrow * (u * 1.25 + 20), bh_)
+        self.setMinimumWidth(int(need_w * z))
+        self.setMinimumHeight(int(need_h * z))
 
     def _pads(self):
         """(왼쪽 여백, 나머지 여백) — 픽셀.
@@ -971,10 +978,42 @@ class TopologyView(QFrame):
         """
         return max(44.0, self.unit() * 2.1), float(self.PAD)
 
+    def _logical(self):
+        """«그림 좌표»의 크기 — **배율이 바뀌어도 안 변한다** (2026-09-08 점검 i17).
+
+        위젯은 화면에서 `논리 크기 × 배율` 만큼 자리를 차지하고, 그리기는 논리
+        좌표로 한 뒤 `p.scale(z, z)` 로 한 번에 늘린다. **지도 확대와 같은 셈**이다 —
+        기호·간격·글자·선 굵기가 한 덩어리로 커지고, 뷰포트는 그대로라 보이는
+        범위가 좁아진다.
+
+        🚨 **이 값이 배율에 따라 변하면 안 된다.** 한때 `위젯폭 / 배율` 로 잡았는데,
+           확대하면 논리 폭이 줄고 버스 자리(0~1 비율)가 그 좁은 폭에 펼쳐져
+           **간격이 줄어든 만큼 배율이 도로 늘려** 화면상 간격이 그대로였다
+           (실측 200% 에서 97 → 90px). 기호만 커지는 것처럼 보인 진짜 까닭이다.
+           ⇒ 크기는 `resizeEvent` 가 «지금 크기 ÷ 지금 배율» 로 잡아 두고,
+             배율이 바뀌면 위젯만 그만큼 커진다.
+        """
+        wh = getattr(self, "_base_wh", None)
+        if wh is None:
+            z = max(1e-6, float(getattr(self, "zoom", 1.0)))
+            wh = (max(1.0, self.width() / z), max(1.0, self.height() / z))
+        return wh
+
+    def resizeEvent(self, ev):
+        """창이 바뀌면 논리 크기를 다시 잡는다 (배율을 걷어낸 크기).
+
+        `set_zoom` → `_fit` → 최소 크기 변경 → 여기로 온다. 그때 위젯 크기는
+        `논리 × 배율` 이므로 나누면 논리 크기가 그대로 나온다 — 안 흔들린다.
+        """
+        z = max(1e-6, float(getattr(self, "zoom", 1.0)))
+        self._base_wh = (max(1.0, self.width() / z), max(1.0, self.height() / z))
+        super().resizeEvent(ev)
+
     def _px(self):
         L, m = self._pads()
-        w = max(1, self.width() - L - m)
-        h = max(1, self.height() - 2 * m)
+        lw, lh = self._logical()
+        w = max(1, lw - L - m)
+        h = max(1, lh - 2 * m)
         return (self.pos * np.array([w, h])) + np.array([L, m])
 
     def unit(self):
@@ -985,12 +1024,16 @@ class TopologyView(QFrame):
         → 지금대로 줄이기로 확정.
         실제 값: 12버스·CIGRE 25버스 = 30(상한) / 71버스 = 20.2 / 239버스부터 11(하한).
         """
+        # 🚨 **여기에 배율을 곱하지 않는다** (2026-09-08 다시 고침, 점검 i17).
+        #    예전에는 `base * zoom` 이었다. 그러면 **기호만** 배율만큼 커지는데
+        #    버스 자리는 위젯 폭에 0~1 비율로 펼쳐지고, 그 폭은 스크롤 상자가
+        #    정한다 — case24 에서 200% 로 키우면 기호는 2배인데 폭은 1.22배라
+        #    (뷰포트 1200 · 최소 730→1460) **기호만 커지고 간격은 그대로**여서
+        #    글자와 막대가 뭉갰다. 사용자: *"그냥 요소가 커졌다 작아졌다가 되는데"*.
+        #    ⇒ 배율은 **그리기 전체**에 건다(`paintEvent` 의 `p.scale`). 여기 값은
+        #      **논리 크기**다 — 배율과 무관한 «원래 크기».
         n = max(1, len(self.g.keys))
-        base = max(11.0, min(30.0, 170.0 / np.sqrt(n)))
-        # 배율은 **자동으로 정한 크기 위에** 얹는다. 이 값 하나가 기호 크기와
-        # `_fit()` 의 최소 크기를 함께 정하므로, 여기만 곱하면 그림 전체가 커진다
-        # (클릭·끌기도 같은 `_px()`·`unit()` 을 쓰므로 따라온다).
-        return base * getattr(self, "zoom", 1.0)
+        return max(11.0, min(30.0, 170.0 / np.sqrt(n)))
 
     def bar_h(self):
         return self.unit() * 1.25          # 버스 막대 길이
@@ -1237,6 +1280,11 @@ class TopologyView(QFrame):
         p.fillRect(self.rect(), QColor(c["plot"]))
         if not self.g.keys:
             p.end(); return
+        # 🚨 **여기서 한 번에 늘린다** (2026-09-08 점검 i17). 아래는 전부 논리
+        #    좌표로 그린다 — 기호도 간격도 글자도 선 굵기도 이 한 줄로 같이 커진다.
+        z = float(getattr(self, "zoom", 1.0))
+        if abs(z - 1.0) > 1e-9:
+            p.scale(z, z)
         xy = self._px()
         u = self.unit()
         bh = self.bar_h()
@@ -1489,7 +1537,8 @@ class TopologyView(QFrame):
         for b in taken:
             hit = rect.intersected(b)
             bad += hit.width() * hit.height()
-        inside = rect.intersected(QRectF(self.rect()))
+        lw, lh = self._logical()
+        inside = rect.intersected(QRectF(0.0, 0.0, lw, lh))
         # 화면 밖은 아예 안 보이므로 겹침보다 더 나쁘게 친다
         bad += 3.0 * (rect.width() * rect.height()
                       - inside.width() * inside.height())
@@ -1581,9 +1630,19 @@ class TopologyView(QFrame):
         symbols.load(p, x1 - u * 0.30, y0, u * 0.62, WIRE, 1.2, angle=0.0)
 
     # ── 끌어서 옮기기 ──
+    def _to_logical(self, pt):
+        """화면에서 누른 자리 → **그림 좌표** (2026-09-08 점검 i17).
+
+        🚨 그리기에 `p.scale(z, z)` 를 걸었으므로, 마우스 좌표도 같은 만큼 되돌려야
+           한다. 안 그러면 200% 에서 클릭·끌기가 **두 배 어긋난다.**
+        """
+        z = max(1e-6, float(getattr(self, "zoom", 1.0)))
+        return QPointF(pt.x() / z, pt.y() / z)
+
     def _hit(self, pt):
         if not self.g.keys:
             return None
+        pt = self._to_logical(pt)          # 배율을 되돌린다 (i17)
         xy = self._px()
         d = np.sqrt(((xy - np.array([pt.x(), pt.y()])) ** 2).sum(1))
         i = int(np.argmin(d))
@@ -1607,7 +1666,8 @@ class TopologyView(QFrame):
         버스 막대 근처는 버스 잡기를 우선하려고 뺀다."""
         if self._hit(pt) is not None or not self._routes:
             return None
-        px, py = pt.x(), pt.y()
+        lp = self._to_logical(pt)           # 배율을 되돌린다 (i17)
+        px, py = lp.x(), lp.y()
         best_ei, best_d = None, 6.0
         for ei, (a, b, kind) in enumerate(self.g.edges):
             # 🚨 **IC 도 넣는다** (2026-09-08 점검 i18 — 사용자: *"IC를 눌러도 선로
@@ -1686,11 +1746,13 @@ class TopologyView(QFrame):
                 self.setCursor(Qt.ArrowCursor)
             return
         L, m = self._pads()          # _px 와 같은 여백을 써야 끌린 자리가 안 어긋난다
-        w = max(1, self.width() - L - m)
-        h = max(1, self.height() - 2 * m)
+        lw, lh = self._logical()     # 배율을 되돌린 크기 (i17)
+        w = max(1, lw - L - m)
+        h = max(1, lh - 2 * m)
+        lp = self._to_logical(ev.position())
         self.pos[self.drag] = [
-            min(1.0, max(0.0, (ev.position().x() - L) / w)),
-            min(1.0, max(0.0, (ev.position().y() - m) / h))]
+            min(1.0, max(0.0, (lp.x() - L) / w)),
+            min(1.0, max(0.0, (lp.y() - m) / h))]
         self.update()
 
     def mouseReleaseEvent(self, ev):
