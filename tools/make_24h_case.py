@@ -135,11 +135,16 @@ def build(src: Path, dst: Path, *, seed=20260908, level=1.0, noise=0.04,
 #    다시 만들려면:  ~/venvs/unigrid-acdc/bin/python tools/make_24h_case.py
 MADE = [
     # (원본, 만들 것, level, dc_share, depth)
-    ("ACDC_case24_MatACDC.xlsx", "ACDC_case24_MatACDC_24h.xlsx", 1.0, 40, 0.18),
+    ("ACDC_case24_MatACDC.xlsx", "ACDC_case24_MatACDC_24h.xlsx", 0.90, 40, 0.22),
     ("ACDC_71bus_3IC_parallel.xlsx", "ACDC_71bus_3IC_parallel_24h.xlsx", 1.0, 0, 0.35),
 ]
-# 🚨 값을 함부로 올리지 말 것 — case24 는 `depth` 0.25 부터, DC 부하는 60 MW 부터
-#    발산한다(2026-09-08 실측). 71bus 는 0.35 에서 주파수가 48.73~50.57 Hz 로 움직인다.
+# 🚨 값을 함부로 올리지 말 것 (2026-09-08 실측)
+#    · case24 는 DC 부하 60 MW 부터 발산한다.
+#    · `level` 을 1.0 으로 두면 **탭 계단을 걸 여유가 없어** `test_a1_steps` 가
+#      발산으로 실패한다. 0.90 으로 낮추고 `depth` 를 0.22 로 올려 하루 변동을
+#      메웠다 — AC 전압 변동폭 0.0451 → 0.0371, 대신 **끄면 풀리는 선로가
+#      9 개에서 18 개로** 늘어 시연이 훨씬 편해졌다.
+#    · 71bus 는 0.35 에서 주파수가 48.73~50.57 Hz 로 움직인다.
 
 if __name__ == "__main__":
     C = Path(__file__).resolve().parent.parent / "cases"

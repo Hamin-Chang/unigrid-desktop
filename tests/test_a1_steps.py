@@ -82,7 +82,20 @@ def scan(path: str) -> dict:
             if to and to not in gen_bus:            # 제어 버스는 PQ 여야 한다
                 row, bus = i + 1, to                # MATLAB 은 1부터
                 break
-    return dict(name=name, tables=T, row=row, bus=bus, is_acdc=is_acdc, mode=mode)
+    # 🚨 **시각이 여럿이면 「자기 대조」가 성립하지 않는다** (2026-09-08).
+    #    아래 대조는 계단으로 나온 탭을 고정으로 넣고 다시 풀어 견주는데,
+    #    가져오는 것은 `TRs(1,4)` — **첫 시각의 탭 하나**다. 24 시각 계통은
+    #    시각마다 탭이 다르므로 그 하나를 전부에 고정하면 당연히 어긋난다.
+    #    (`ACDC_case24_MatACDC_24h` 이 2 권선 변압기가 있는 유일한 24 시각
+    #     계통이라, 부하를 낮춰 계단이 걸리기 시작하자 처음 드러났다.)
+    #    ⇒ 계단이 제대로 걸렸는지(자리 위·한계 안·표시·연속과 반 단)는 그대로
+    #      보고, **자기 대조만** 건너뛴다.
+    nt = 1
+    P = T.get("AC_PLoad_dat")
+    if P is not None and P.ndim == 2 and P.shape[1] > 1:
+        nt = max(1, P.shape[1] - 1)
+    return dict(name=name, tables=T, row=row, bus=bus, is_acdc=is_acdc,
+                mode=mode, n_times=nt)
 
 
 def main() -> int:
@@ -404,13 +417,19 @@ disp('DONE');
                f"연속값에서 반 단 안으로 옮겼다 — 연속 {tc:.6f} → 계단 {t:.6f}",
                f"(차 {abs(t-tc):.2e}, 반 단 {STEP/2})")
 
-        sv = float(o.self_V)
-        ok(np.isfinite(sv) and sv < 1e-9,
-           f"자기 대조(전압) — 그 탭을 고정으로 넣고 손 안 댄 길로 풀면 같다 "
-           f"{sv:.3e}")
-        sf, sfn = float(o.self_F), int(o.self_Fn)
-        ok(sfn > 0 and np.isfinite(sf) and sf < 1e-9,
-           f"자기 대조(조류표) — {sf:.3e}", f"(선로 {sfn}개 대조)")
+        multi = int(info.get("n_times", 1)) > 1
+        if multi:
+            print(f"      · 자기 대조는 건너뛴다 — 시각이 "
+                  f"{int(info['n_times'])}개인데 대조는 첫 시각 탭 하나를 "
+                  f"전부에 고정한다")
+        else:
+            sv = float(o.self_V)
+            ok(np.isfinite(sv) and sv < 1e-9,
+               f"자기 대조(전압) — 그 탭을 고정으로 넣고 손 안 댄 길로 풀면 같다 "
+               f"{sv:.3e}")
+            sf, sfn = float(o.self_F), int(o.self_Fn)
+            ok(sfn > 0 and np.isfinite(sf) and sf < 1e-9,
+               f"자기 대조(조류표) — {sf:.3e}", f"(선로 {sfn}개 대조)")
 
         # ── 위상 계단 ──────────────────────────────────────────────
         if int(getattr(o, "ph_done", 0)):
@@ -420,9 +439,10 @@ disp('DONE');
                f"위상이 자리 위에 있다 — {pv:.4f}° = {round(kk):+d}×0.5°")
             ok(abs(psz - 0.5) < 1e-9, f"위상 10열 = 한 단 {psz:g}°")
             ok(int(o.ph_state) == 1, f"위상 11열 = 계단으로 내렸다 ({int(o.ph_state)})")
-            ok(float(o.ph_selfV) < 1e-9 and int(o.ph_selfN) > 0,
-               f"위상 자기 대조 — 전압 {float(o.ph_selfV):.3e} · "
-               f"조류 {float(o.ph_selfF):.3e}", f"(선로 {int(o.ph_selfN)}개)")
+            if not multi:
+                ok(float(o.ph_selfV) < 1e-9 and int(o.ph_selfN) > 0,
+                   f"위상 자기 대조 — 전압 {float(o.ph_selfV):.3e} · "
+                   f"조류 {float(o.ph_selfF):.3e}", f"(선로 {int(o.ph_selfN)}개)")
         else:
             print(f"      · 위상 계단은 이 계통에서 안 돌렸다 "
                   f"({_s(getattr(o, 'e_ph', ''))[:50]})")
@@ -435,9 +455,10 @@ disp('DONE');
                f"션트가 자리 위에 있다 — {hv:.4f} Mvar = {round(kk):+d}×5")
             ok(abs(hsz - 5.0) < 1e-9, f"션트 10열 = 한 단 {hsz:g} Mvar")
             ok(int(o.sh_state) == 1, f"션트 11열 = 계단으로 내렸다 ({int(o.sh_state)})")
-            ok(float(o.sh_selfV) < 1e-9 and int(o.sh_selfN) > 0,
-               f"션트 자기 대조 — 전압 {float(o.sh_selfV):.3e} · "
-               f"조류 {float(o.sh_selfF):.3e}", f"(선로 {int(o.sh_selfN)}개)")
+            if not multi:
+                ok(float(o.sh_selfV) < 1e-9 and int(o.sh_selfN) > 0,
+                   f"션트 자기 대조 — 전압 {float(o.sh_selfV):.3e} · "
+                   f"조류 {float(o.sh_selfF):.3e}", f"(선로 {int(o.sh_selfN)}개)")
         else:
             print(f"      · 스위치드 션트 계단은 이 계통에서 안 돌렸다 "
                   f"({_s(getattr(o, 'e_sh', ''))[:50]})")
