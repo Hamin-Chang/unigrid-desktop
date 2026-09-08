@@ -413,13 +413,48 @@ def bus_series(g, sol, node_index):
     return list(range(1, len(vals) + 1)), vals, (lo, hi)
 
 
+def ic_series(g, sol, edge_index):
+    """변환기 하나의 **시간별 전력** → (시각, {이름: 값들}) (2026-09-08).
+
+    엔진이 변환기 결과를 시각별로 넘기게 고친 뒤(`all_VSC_*`) 그릴 수 있게 됐다.
+    못 그리면 None — 그때는 `ic_facts` 의 표로 돌아간다.
+    """
+    a, b, kind = g.edges[edge_index]
+    if kind != "IC":
+        return None
+    ai, di = (a, b) if g.kind[a] != "DC" else (b, a)
+    bus_ac, bus_dc = _busno(g.keys[ai]), _busno(g.keys[di])
+    cube = getattr(sol, "VSC_grid_all", None)
+    if cube is None or getattr(cube, "ndim", 0) != 3 or not cube.size:
+        return None
+    if cube.shape[2] <= 1:                 # 1시각 계통 — 그릴 것이 없다
+        return None
+    cols = sol.cols("VSC_grid")
+    flat = cube[:, :, 0]
+    row = None
+    for r in range(flat.shape[0]):
+        if int(flat[r, 0]) == bus_ac and int(flat[r, 1]) == bus_dc:
+            row = r
+            break
+    if row is None:
+        return None
+    out = {}
+    for nm in ("Grid_P[MW]", "Grid_Q[MVAR]"):
+        if nm in cols:
+            out[nm] = [float(v) for v in cube[row, cols.index(nm), :]]
+    if not out:
+        return None
+    return list(range(1, cube.shape[2] + 1)), out
+
+
 def ic_facts(g, sol, edge_index, t=0):
     """변환기 하나의 지금 값 → [(이름, 값)] (2026-09-08 점검 i18).
 
-    ⚠️ **24시간 그래프를 못 그린다.** 엔진(`runpfACDC.m:271`)이 VSC 표를 시각별로
-       담아 두고도(`a_VSC_*`) **첫 시각만** 내보낸다 — `all_` 판이 없다.
-       2026-09-08 오전에 고친 `Tap_result` 와 **정확히 같은 자리**다.
-       엔진을 고치고 다시 구우면 그때 그래프로 바꾼다.
+    고른 시각 하나의 값이다. **하루치 흐름은 `ic_series` 가 준다** — 팝업은 위에
+    그래프(`ic_series`), 아래 이 표를 같이 놓는다.
+
+    📌 2026-09-08 오후에 엔진이 `all_VSC_*` 를 내보내게 고쳐(`runpfACDC.m`) 시각별
+       값이 앱까지 온다. 그 전에는 첫 시각뿐이라 표밖에 못 그렸다.
     """
     a, b, kind = g.edges[edge_index]
     if kind != "IC":
@@ -427,7 +462,9 @@ def ic_facts(g, sol, edge_index, t=0):
     ai, di = (a, b) if g.kind[a] != "DC" else (b, a)
     bus_ac, bus_dc = _busno(g.keys[ai]), _busno(g.keys[di])
     out = [("AC 버스", str(bus_ac)), ("DC 버스", str(bus_dc))]
-    tbl = getattr(sol, "VSC_grid", None)
+    # 고른 시각의 표를 쓴다 — 예전에는 늘 첫 시각이었다 (2026-09-08)
+    tbl = sol.vsc_at("VSC_grid", t) if hasattr(sol, "vsc_at") \
+        else getattr(sol, "VSC_grid", None)
     if tbl is not None and getattr(tbl, "size", 0):
         cols = sol.cols("VSC_grid")
         for r in tbl:

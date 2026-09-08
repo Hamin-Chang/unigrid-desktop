@@ -802,6 +802,47 @@ def voltage_profile_view(c, times, values, limits, title):
     return _view(ch, c)
 
 
+def ic_profile_view(c, times, series, title):
+    """변환기 하나의 **시간별 전력** 꺾은선 (2026-09-08).
+
+    `series` = {"Grid_P[MW]": [...], "Grid_Q[MVAR]": [...]} — 유효·무효를 겹쳐 그린다.
+    🚨 **0 선을 굵게 긋는다** — 변환기는 전력 방향이 하루 안에 뒤집히는 일이 있고
+       (case24 의 113→4 는 -78.8 ~ +2.0 MW), 부호가 곧 «어느 쪽으로 보내나» 다.
+    """
+    ch = _new_chart(c, title)
+    colors = [DC_BLUE, c["warn"]]
+    made, lo, hi = [], 0.0, 0.0
+    for k, (nm, vals) in enumerate(series.items()):
+        ln = _line(list(zip(times, vals)), colors[k % len(colors)], 2.2, name=nm)
+        ch.addSeries(ln)
+        made.append(ln)
+        lo, hi = min(lo, min(vals)), max(hi, max(vals))
+    zero = _line([(times[0], 0.0), (times[-1], 0.0)], c["muted"], 1.4,
+                 dashed=True, name="0")
+    ch.addSeries(zero)
+    made.append(zero)
+
+    xa = _style_axis(QValueAxis(), c, "시간 [H]")
+    xa.setRange(float(times[0]), float(times[-1]))
+    xa.setTickCount(min(len(times), 12))
+    xa.setLabelFormat("%d")
+    ya = _style_axis(QValueAxis(), c, "전력 [MW · MVAr]")
+    pad = max(1.0, (hi - lo) * 0.12)
+    ya.setRange(lo - pad, hi + pad)
+    ya.setTickCount(6)
+    ya.setLabelFormat("%.0f")
+    ch.addAxis(xa, Qt.AlignBottom)
+    ch.addAxis(ya, Qt.AlignLeft)
+    for ser in made:
+        ser.attachAxis(xa); ser.attachAxis(ya)
+    # 🚨 **눈금을 반듯한 수로.** 안 하면 `76 / -5 / -87 / -168` 처럼 나와서
+    #    **0 이 눈금에 안 걸리고**, 0 점선이 어느 높이인지 읽히지 않는다.
+    #    변환기는 부호가 곧 «어느 쪽으로 보내나» 라 0 자리가 특히 중요하다.
+    ya.applyNiceNumbers()
+    _hide_from_legend(ch, zero)
+    return _view(ch, c)
+
+
 def loading_profile_view(c, sol, times, values, title):
     """한 선로의 **시간별 부하율[%]** 꺾은선. 계통도에서 선로를 클릭하면
     이걸 팝업에 담아 띄운다. 100% 를 넘는 시각은 점을 주황으로 얹고

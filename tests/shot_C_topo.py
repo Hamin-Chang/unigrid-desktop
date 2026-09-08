@@ -2,7 +2,8 @@
 """C 덩어리(단선도 5건) 확인 (2026-09-08).
 
 i14 조류 격자를 눌러 어느 선로인지 · i15 부하율 막대도 같게 ·
-i16 엉킴 줄이기(+자리 되돌리기) · i17 확대·이동 · i18 IC·버스 클릭, 전압 위반 표시.
+i16 엉킴 줄이기(+자리 되돌리기) · i17 확대·이동 · i18 IC·버스 클릭, 전압 위반 표시 ·
+i19 변환기 24시간 그래프(엔진 `all_VSC_*`).
 """
 import os, sys, time
 from pathlib import Path
@@ -15,7 +16,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, Qt, QEvent
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (QApplication, QMessageBox, QDialog, QScrollArea,
-                               QPushButton)
+                               QPushButton, QTableWidget)
 qapp = QApplication([])
 import app as APP, app_engine, topology, charts
 from load_case import load_case
@@ -39,7 +40,6 @@ def open_it(f):
     win._solved(app_engine.solve(case)); pump()
 
 print("[i16] 배치 — 선이 서로 넘나드는 수")
-для = None
 for f, want_max in (("ACDC_case24_MatACDC.xlsx", 20),
                     ("AConly_case118.xlsx", 60)):
     sol = app_engine.solve(load_case(str(REPO / "cases" / f)))
@@ -116,17 +116,50 @@ chk("한계도 같이 준다", ser[2][0] is not None, True)
 
 shots = []
 def fake_exec(self):
-    self.grab().save(str(OUT / f"C_popup_{len(shots)}.png")); shots.append(1); return 0
+    self.grab().save(str(OUT / f"C_popup_{len(shots)}.png")); shots.append(self); return 0
 QDialog.exec = fake_exec
 win.show_bus_profile(g, acn[5]); pump(0.4)
 win.show_line_profile(g, ics[0]); pump(0.4)
 chk("팝업이 둘 떴다", len(shots), 2)
 
+print("\n[i19] 변환기도 24시간 그래프 — 엔진이 시각별로 준다")
+# 🚨 **`{1}` 계열 결함의 세 번째 자리**였다 (2026-09-08 오후).
+#    엔진이 `a_VSC_*` 로 24벌을 계산해 놓고 **첫 시각만** 내보내서, 변환기 팝업이
+#    표에 머물렀다. 오전에 고친 `Tap_result` 와 정확히 같은 꼴이다.
+#    ⇒ 「그래프가 떴다」로 끝내지 않고 **시각별 값이 실제로 다른지** 까지 잰다.
+cube = getattr(win.sol, "VSC_grid_all", None)
+chk("VSC_grid 가 3차원", getattr(cube, "ndim", 0), 3)
+chk("24시각이 다 왔다", int(cube.shape[2]) if cube is not None else 0, 24)
+
+moved = 0
+for e in ics:
+    sr = topology.ic_series(g, win.sol, e)
+    if sr is None:
+        continue
+    for vals in sr[1].values():
+        if max(vals) - min(vals) > 1e-6:
+            moved += 1
+            break
+chk("하루 동안 움직이는 변환기가 있다", moved > 0, True)
+print(f"     {len(ics)} 중 {moved} 개가 움직인다 (나머지는 정전력 운전이라 평평한 게 맞다)")
+
+ser_ic = topology.ic_series(g, win.sol, ics[0])
+chk("IC 시간축이 24개", len(ser_ic[0]) if ser_ic else 0, 24)
+chk("유효·무효 둘 다 준다", sorted(ser_ic[1]) if ser_ic else [],
+    ["Grid_P[MW]", "Grid_Q[MVAR]"])
+
+from PySide6.QtCharts import QChartView
+win.show_ic_facts(g, ics[0]); pump(0.4)
+chk("IC 팝업이 떴다", len(shots), 3)
+chk("IC 팝업 안에 그래프가 있다",
+    len(shots[-1].findChildren(QChartView)) > 0, True)
+chk("표도 같이 있다", len(shots[-1].findChildren(QTableWidget)) > 0, True)
+
 print("\n[i14·i15] 그래프에서 눌러 그 선로로")
 br = win.sol.at("Branch", 0)
 fr, to = int(br[0][0]), int(br[0][1])
 win.pick_line_by_bus(str(fr), str(to)); pump(0.4)
-chk("선로 팝업이 떴다", len(shots), 3)
+chk("선로 팝업이 떴다", len(shots), 4)
 print(f"     {fr}–{to} 로 눌러 봄")
 
 print("\n[i17] 확대는 보던 자리 기준 · 휠 눌러 밀기")

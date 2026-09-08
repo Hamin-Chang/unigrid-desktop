@@ -5075,12 +5075,15 @@ class Proto(QMainWindow):
         self.show_violations = bool(on)
         self.rebuild()
 
-    def _popup(self, title, body):
-        """계통도 클릭에 답하는 작은 창 — 세 갈래(선로·버스·변환기)가 같이 쓴다."""
+    def _popup(self, title, body, min_h=380):
+        """계통도 클릭에 답하는 작은 창 — 세 갈래(선로·버스·변환기)가 같이 쓴다.
+
+        `min_h` = 최소 높이. 변환기 창은 **그래프 + 표** 를 같이 놓아 더 높다.
+        """
         d = QDialog(self)
         d.setWindowTitle(title)
         d.setStyleSheet(self.styleSheet())
-        d.setMinimumSize(560, 380)
+        d.setMinimumSize(560, min_h)
         v = QVBoxLayout(d)
         v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(10)
@@ -5159,9 +5162,13 @@ class Proto(QMainWindow):
     def show_ic_facts(self, g, ei):
         """계통도에서 **변환기**를 누르면 그 값을 띄운다 (2026-09-08 점검 i18).
 
-        ⚠️ 그래프가 아니라 **표**다 — 엔진이 VSC 결과를 첫 시각만 내보내서
-           24시간 값이 앱까지 안 온다(`topology.ic_facts` 주석). 엔진을 고쳐
-           다시 구우면 선로처럼 그래프로 바꾼다.
+        위 = **하루치 전력 그래프**(`topology.ic_series`) · 아래 = 고른 시각의 표.
+        1시각 계통이거나 시각별 값이 없으면 표만 놓는다.
+
+        🚨 **선이 평평해도 고장이 아니다** — 두 선 중 «제어하는 쪽» 만 움직인다.
+           case24 24h 일곱 개를 실측하면: DC 전압 제어(107-1·113-4)는 **P** 만,
+           AC 전압 제어(204-2·215-6)는 **Q** 만 움직이고, 둘 다 정전력인 셋
+           (301-3·123-5·217-7)은 하루 내내 그대로다.
         """
         if self.sol is None:
             return
@@ -5176,8 +5183,14 @@ class Proto(QMainWindow):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
+
+        ser = topology.ic_series(g, self.sol, ei)
+        if ser is not None:
+            v.addWidget(charts.ic_profile_view(c, ser[0], ser[1],
+                                               f"{title}  ·  24시간 전력"), 3)
+
         tb = QTableWidget(len(rows), 2)
-        tb.setHorizontalHeaderLabels(["항목", "값"])
+        tb.setHorizontalHeaderLabels(["항목", f"{self.t + 1}시 값"])
         tb.verticalHeader().setVisible(False)
         tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tb.setAlternatingRowColors(True)
@@ -5186,13 +5199,31 @@ class Proto(QMainWindow):
             it = QTableWidgetItem(val)
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             tb.setItem(r, 1, it)
-        v.addWidget(tb, 1)
-        note = QLabel("변환기는 아직 24시간 그래프를 못 그립니다 — 계산 엔진이 "
-                      "변환기 결과를 첫 시각만 돌려줍니다.")
-        note.setWordWrap(True)
-        note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
-        v.addWidget(note)
-        self._popup(title, w)
+        if ser is not None:
+            # 표는 **내용만큼만** 차지하고 나머지는 그래프에 준다 — 비율로 나누면
+            # 일곱 줄짜리 표가 잘려 「한계」 줄이 스크롤 뒤로 숨는다 (2026-09-08)
+            #
+            # ⚠️ **높이를 지금 재면 안 된다.** 창에 붙기 전이라 머리줄이 28~31 로
+            #    나오는데, QSS 가 붙으면 40 이 된다 — 그 차이만큼 마지막 줄이
+            #    잘렸다(실측 표230 · 필요250). 그래서 `singleShot(0)` 으로
+            #    **붙은 뒤에** 재서 고정한다.
+            tb.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            v.addWidget(tb, 0)
+
+            def _fit_table(tb=tb, n=len(rows)):
+                tb.setFixedHeight(tb.horizontalHeader().height()
+                                  + sum(tb.rowHeight(r) for r in range(n))
+                                  + 2 * tb.frameWidth() + 2)
+            QTimer.singleShot(0, _fit_table)
+        else:
+            v.addWidget(tb, 1)
+
+        if ser is None:
+            note = QLabel("이 계통은 시각이 하나라 24시간 그래프가 없습니다.")
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+            v.addWidget(note)
+        self._popup(title, w, 660 if ser is not None else 380)
 
     def show_line_profile(self, g, ei):
         """계통도에서 선로를 클릭하면 그 선로의 24시간 부하율을 팝업으로 띄운다.
