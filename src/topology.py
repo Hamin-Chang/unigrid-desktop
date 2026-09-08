@@ -1389,7 +1389,11 @@ class TopologyView(QFrame):
         # 자리 잡기가 겹침을 막아 주지만 어디를 봐도 자리가 없으면 덜 나쁜 쪽에
         # 놓을 뿐이라 완벽하진 않다. 그래서 **버스 막대는 무조건 맨 위**로 올려
         # 다른 것에 절대 가리지 않게 한다.
-        vbad = self.overlay.get("vbad", {}) if vio else {}
+        # 🚨 **`vio` 를 안 본다** (2026-09-08 점검 i18). 예전에는 「위반 보기」가
+        #    꺼지면 여기서 걸러 버려, `overlay` 에 실어도 화면에 안 나왔다.
+        #    전압 위반 버스는 **늘 표시한다** — 실을지 말지는 `topology_view` 가
+        #    정하므로(꺼지면 `vbad` 만 담는다) 여기서 또 거르면 두 번 막는 꼴이다.
+        vbad = self.overlay.get("vbad", {})
         vmarks = []               # (표시방식, x, y, 방향, 막대 절반길이) — 막대 뒤에 그림
         for i in range(len(self.g.keys)):
             x, y = float(xy[i][0]), float(xy[i][1])
