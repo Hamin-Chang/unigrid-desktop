@@ -64,6 +64,18 @@ COLUMNS: dict[str, dict[int, list[str]]] = {
         7: ["BusAC", "BusDC", "VSC_VM[pu]", "VSC_Angle[deg]", "Inj_P[MW]",
             "Inj_Q[MVAR]", "Loss[MW]"],
     },
+    # 🚨 엔진은 셋을 다 주는데 앱이 `VSC_bus` 하나만 화면에 올렸다 (2026-09-08 점검 i24).
+    #    열 이름은 `app.TABLE_SPECS` 의 「VSC 그리드전력」·「VSC 손실」과 짝이 맞는다.
+    "VSC_grid": {
+        10: ["BusAC", "BusDC", "Grid_P[MW]", "Grid_Q[MVAR]", "TrafFilter_P[MW]",
+             "TrafFilter_Q[MVAR]", "Filter_Q[MVAR]", "VSCFilter_Q[MVAR]",
+             "VSC_P[MW]", "VSC_Q[MVAR]"],
+    },
+    "VSC_power": {
+        10: ["BusAC", "BusDC", "VSC_P[MW]", "VSC_Q[MVAR]", "Filter_Q[MVAR]",
+             "TransfoLoss_P[MW]", "TransfoLoss_Q[MVAR]", "ReactorLoss_P[MW]",
+             "ReactorLoss_Q[MVAR]", "VSCLoss_P[MW]"],
+    },
 }
 
 
@@ -121,6 +133,10 @@ class Solution:
     qlim_bound: int = 0
     qlim_bound_up: int = 0        # 발생(Qmax) 쪽
     qlim_bound_dn: int = 0        # 흡수(Qmin) 쪽 ← 전압이 올라간다
+    # 🚨 엔진은 변환기 표를 **셋** 주는데 앱이 `VSC_bus` 하나만 화면에 올렸다
+    #    (2026-09-08 점검 i24). 기본값이 있어야 하므로 맨 뒤에 둔다.
+    VSC_grid: np.ndarray | None = None      # 변압기·필터·리액터를 나눈 전력
+    VSC_power: np.ndarray | None = None     # 변환기 손실 갈래
     # 탭 자동 조정 결과 (2026-08-13, §7 5단계 A1). 한 줄 = 조정 걸린 변압기 1대, 열 5개:
     #   [선로번호, 제어버스, 목표전압, 최종탭, 살아있나]
     #   ⚠️ **살아있나 = 0 이면 목표를 못 맞춘 것**(탭이 한계에 걸려 놓아줬다).
@@ -1022,6 +1038,8 @@ def _build(raw: dict[str, Any], seconds: float) -> Solution:
         loss=_fix_loss_percent(_arr(raw, "total_loss_table"), mode),
         freq=np.asarray(_flat(raw, "freq_all"), dtype=float),
         VSC_bus=(_arr(raw, "VSC_bus") if "VSC_bus" in raw else None),
+        VSC_grid=(_arr(raw, "VSC_grid") if "VSC_grid" in raw else None),
+        VSC_power=(_arr(raw, "VSC_power") if "VSC_power" in raw else None),
         vsc_ideal=_as_flag(raw.get("isVSC_ideal")),
         converged=bool(float(raw.get("converged", 0))),
         iters=int(float(raw.get("iter_count", 0))),

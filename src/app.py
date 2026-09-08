@@ -376,7 +376,11 @@ TASKS = ["조류계산", "PV·QV 곡선"]
 GRAPHS = {
     "스냅샷": [
         ("전압·위상", ["전압  [pu]  ·  x축 = 버스", "위상각  [deg]  ·  x축 = 버스"], "v"),
-        ("조류 (P·Q)", ["유효전력 P  (3D)", "무효전력 Q  (3D)"], "h"),
+        # 🚨 **3D 가 아니다** — `charts.FlowHeatmap` 은 「출발버스 × 도착버스」 색 격자다
+        #    (조류 행렬이 거의 비어 있어 3D 막대로는 안 읽힌다). 이름에만 "(3D)" 가
+        #    붙어 있어 **끌어서 돌리려다 안 된다고 읽혔다** (2026-09-08 점검 i14).
+        ("조류 (P·Q)", ["유효전력 P  ·  출발 × 도착 버스",
+                        "무효전력 Q  ·  출발 × 도착 버스"], "h"),
         ("부하율", ["선로 부하율  [%]"], "v"),
         ("토폴로지", ["계통 단선도"], "v"),
     ],
@@ -476,7 +480,9 @@ def dynamic_table(sol, bus_row):
     else:
         return "시간별 값", [], np.zeros((0, 0))
     row = max(0, min(row, arr.shape[0] - 1))
-    keep = [c for c in ("VM[pu]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
+    # `Freq[pu]` 가 빠져 있었다 — 슬랙 없는 계통에서 시간마다 움직이는 값인데
+    # 그래프에만 있고 표에는 없었다 (2026-09-08 점검 i58).
+    keep = [c for c in ("VM[pu]", "Freq[pu]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
                         "Load_P[MW]", "Load_Q[MVAR]", "toAC_P[MW]", "toDC_P[MW]")
             if c in cols]
     idx = [cols.index(c) for c in keep]
@@ -508,8 +514,15 @@ def real_tables(sol, mode, t, show_vsc):
             out.append((label, sol.cols(which), arr))
     if mode == "다이나믹" and sol.loss.size:
         out.append(("손실", sol.cols("Loss"), sol.loss))
-    if show_vsc and sol.VSC_bus is not None and sol.VSC_bus.size:
-        out.append(("VSC 버스", sol.cols("VSC_bus"), sol.VSC_bus))
+    if show_vsc:
+        # 🚨 여태 `VSC 버스` 하나만 만들어서, `TABLE_SPECS` 에 적힌 나머지 둘이
+        #    **탭조차 안 생겼다** (2026-09-08 점검 i24). 엔진은 셋 다 준다.
+        for key, label in (("VSC_bus", "VSC 버스"),
+                           ("VSC_grid", "VSC 그리드전력"),
+                           ("VSC_power", "VSC 손실")):
+            arr = getattr(sol, key, None)
+            if arr is not None and arr.size:
+                out.append((label, sol.cols(key), arr))
     return out
 
 
@@ -1273,7 +1286,11 @@ class Proto(QMainWindow):
         QTabBar::tab:selected {{ color:{c['accent']};
             border-bottom:2px solid {c['accent']}; font-weight:700; }}
         QTableWidget {{ background:{c['surface']}; border:none;
-            gridline-color:{c['border']}; font-size:14px; }}
+            gridline-color:{c['border']}; font-size:14px;
+            /* 🚨 줄무늬 색을 **팔레트에서** 준다 (2026-09-08 점검 i63).
+               안 주면 Qt 기본값(밝은 회색)이 쓰여, 어두운 화면에서 한 줄 걸러
+               배경이 밝아지고 밝은 글자를 삼켰다 — 짝수 줄이 안 읽혔다. */
+            alternate-background-color:{c['bg']}; color:{c['text']}; }}
         QHeaderView::section {{ background:{c['bg']}; color:{c['muted']};
             border:none; border-bottom:1px solid {c['border']};
             padding:9px; font-size:14px; font-weight:600; }}
@@ -1418,6 +1435,14 @@ class Proto(QMainWindow):
         #    MathWorks 라이선스가 *"About Box, 또는 그와 비슷한 눈에 띄는 자리"* 에
         #    저작권 고지를 넣으라고 요구한다(license_agreement.txt 205–210행).
         #    자주 누를 것이 아니므로 오른쪽 끝에 조용히 둔다.
+        # 🚨 **어두운 화면을 켤 길이 없었다** (2026-09-08 점검 i63). `toggle_theme` 은
+        #    있는데 그것을 부르는 단추가 어디에도 없어, 시험 스크립트로만 켜 볼 수 있었다.
+        theme = QPushButton("밝게" if self.dark else "어둡게")
+        theme.setToolTip("화면을 어둡게/밝게 바꿉니다")
+        theme.setCursor(Qt.PointingHandCursor)
+        theme.clicked.connect(self.toggle_theme)
+        h.addWidget(theme)
+
         info = QPushButton("정보")
         info.setToolTip("판·저작권·사용 조건")
         info.clicked.connect(lambda: AboutDialog(self, c).exec())
@@ -2024,13 +2049,23 @@ class Proto(QMainWindow):
             #    변환기가 없다고 우겼다.
             #      변환기 자체가 없다  → `vsc_ideal is None`
             #      이상적 변환기다      → `vsc_ideal is True` (내부 회로가 없어 VSC 버스가 없다)
+            # 🚨 **툴팁만으로는 못 본다** (2026-09-08 점검 i68) — 마우스를 올려야
+            #    나오니 "왜 표가 없지" 로 끝난다. 까닭을 글로 옆에 적는다.
             if self.vsc_ideal:
-                off.setToolTip("변환기를 이상적으로 보는 계통이라 내부 회로"
-                               "(변압기·필터·리액터)가 없습니다 — VSC 버스 표도 없습니다")
+                why = "이상적 변환기라 내부 회로가 없습니다"
+                tip = ("변환기를 이상적으로 보는 계통이라 내부 회로"
+                       "(변압기·필터·리액터)가 없습니다 — VSC 버스 표도 없습니다")
             else:
-                off.setToolTip("이 계통에는 변환기(VSC)가 없습니다")
+                why = "이 계통에는 변환기가 없습니다"
+                tip = "이 계통에는 변환기(VSC)가 없습니다"
+            off.setToolTip(tip)
             head.addWidget(off)
             self._head_res.append(off)
+            note = QLabel(why)
+            note.setToolTip(tip)
+            note.setStyleSheet(f"color:{c['muted']};font-size:11.5px;")
+            head.addWidget(note)
+            self._head_res.append(note)
         else:
             seg = QFrame()
             seg.setObjectName("segwrap")
@@ -3636,7 +3671,10 @@ class Proto(QMainWindow):
             else:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
                 it.setForeground(QColor(c["muted"]))   # 여기부터는 엑셀에서
-                if j in GRID_PANEL_COLS.get(key, set()):
+                why_id = RULES.ident_why(key, j)
+                if why_id:
+                    it.setToolTip(why_id)
+                elif j in GRID_PANEL_COLS.get(key, set()):
                     it.setToolTip("자동 조정 값입니다 — 위의 [⚙ AC 조정] 에서 고칩니다")
             if (r, j) in touched:
                 it.setForeground(QColor(c["warn"]))

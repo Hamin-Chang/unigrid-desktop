@@ -160,17 +160,27 @@ def matpower_to_case(m_path: str | Path) -> ACDCCase:
     return _assemble_ac_case(path.name, ac_tables)
 
 
+# 🚨 **MATPOWER 파일은 두 가지 꼴이다** (2026-09-08).
+#   신판  `function mpc = case14`      →  `mpc.baseMVA = 100;`
+#   구판  `function [baseMVA, bus, …]` →  `baseMVA = 100;`      ← `mpc.` 이 없다
+# 여태 신판만 받아서, **구판인 `matacdc_case5_AC.m` 이 안 열렸다** — MatACDC 예제가
+# 통째로 막혀 있었다("MATPOWER 파일에서 mpc.baseMVA를 찾을 수 없습니다").
+# ⇒ `mpc.` 를 있어도 되고 없어도 되게 한다. 줄머리에 붙여 두어 주석 안의 글자나
+#    다른 변수(`nb = ...`)를 잘못 집지 않는다.
+_PFX = r"(?:^|\n)[ \t]*(?:mpc\.)?"
+
+
 def _mp_scalar(text: str, name: str) -> float:
-    m = re.search(r"mpc\." + name + r"\s*=\s*([\d.eE+\-]+)", text)
+    m = re.search(_PFX + name + r"\s*=\s*([\d.eE+\-]+)\s*;", text)
     if not m:
-        raise ValueError(f"MATPOWER 파일에서 mpc.{name}를 찾을 수 없습니다.")
+        raise ValueError(f"MATPOWER 파일에서 {name} 를 찾을 수 없습니다.")
     return float(m.group(1))
 
 
 def _mp_matrix(text: str, name: str) -> np.ndarray:
-    m = re.search(r"mpc\." + name + r"\s*=\s*\[(.*?)\]\s*;", text, re.DOTALL)
+    m = re.search(_PFX + name + r"\s*=\s*\[(.*?)\]\s*;", text, re.DOTALL)
     if not m:
-        raise ValueError(f"MATPOWER 파일에서 mpc.{name} 행렬을 찾을 수 없습니다.")
+        raise ValueError(f"MATPOWER 파일에서 {name} 행렬을 찾을 수 없습니다.")
     rows = []
     for chunk in re.split(r"[;\n]", m.group(1)):
         chunk = re.sub(r"%.*", "", chunk).strip()   # 주석 제거
