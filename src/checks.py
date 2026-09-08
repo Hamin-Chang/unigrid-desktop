@@ -52,6 +52,28 @@ def unrated_lines(sol, t) -> int:
                if (iS < 0 or r[iS] != 0) and not _rated(r, iC, iL))
 
 
+def overloaded_rows(sol, t) -> set:
+    """부하율이 100%를 넘은 선로의 **줄 번호** 집합 (2026-09-08 점검 i22).
+
+    「과부하 선로」 표(`real_violations`)와 **같은 잣대**를 쓴다 — 정격이 안 적힌
+    선로는 빼고(`_rated`), 100%를 넘은 것만.
+    🚨 From/To 로 짝짓지 않고 **줄 번호**를 돌려준다. 평행 선로(같은 From-To 가 둘)
+       에서 하나만 넘쳤는데 둘 다 칠하면 없는 과부하를 만들어 낸다.
+    """
+    out = set()
+    arr = sol.at("Branch", t) if sol is not None else None
+    if arr is None or not arr.size:
+        return out
+    cols = sol.cols("Branch")
+    iL, iC = col_index(cols, "Loading[%]"), col_index(cols, "Capacity[MVA]")
+    if iL < 0:
+        return out
+    for i, r in enumerate(arr):
+        if _rated(r, iC, iL) and r[iL] > 100.0:
+            out.add(i)
+    return out
+
+
 def real_violations(sol, t):
     """전압 위반 · 과부하 · 변환기 한계를 결과에서 걸러낸다."""
     res = {}

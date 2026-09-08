@@ -51,7 +51,8 @@ import paths
 import charts
 import checks
 from checks import (col_index, gen_limit_rows, real_violations,   # noqa: F401
-                    unrated_lines, violation_count, GEN_LIMIT_COLS)
+                    unrated_lines, violation_count, GEN_LIMIT_COLS,
+                    overloaded_rows as checks_overloaded)
 import exporter
 
 # 케이스 읽기는 **이 저장소 안**에 있다 (2026-08-05 들여옴).
@@ -2287,6 +2288,7 @@ class Proto(QMainWindow):
             specs = real_tables(self.sol, self.mode, key,
                                 self.show_vsc and self.case_has_vsc)
             bad = self.violating_buses()
+            over = self.overloaded_rows()
             for name, cols, arr in specs:
                 # 🚨 **「열 선택」을 여기서 걸러야 한다** (2026-08-27). 여태 이 자리가
                 #    엔진이 준 열을 통째로 그려서, 열을 골라 [적용] 해도 화면이 안 바뀌었다
@@ -2299,9 +2301,17 @@ class Proto(QMainWindow):
                 if not keep:                      # 아는 열이 하나도 안 겹치면 다 보여 준다
                     keep = list(range(len(cols)))
                 # 위반 표시는 **거르기 전** 버스 번호로 정한다 (0열이 꺼져 있을 수 있다)
-                flags = [name in ("AC 결과", "DC 결과")
-                         and (name[:2], int(arr[r, 0])) in bad
-                         for r in range(arr.shape[0])]
+                # 🚨 「선로 조류」도 칠한다 (2026-09-08 점검 i22). 여태 전압 위반 버스만
+                #    주황이었고, 부하율이 100%를 넘은 선로는 점검 탭에서만 보였다 —
+                #    선로 조류 표를 보면서는 어느 줄이 넘쳤는지 눈으로 못 찾았다.
+                #    ⚠️ 줄 번호로 짚는다. From/To 로 짝지으면 평행 선로에서 하나만
+                #       넘쳤는데 둘 다 칠해진다(`checks.overloaded_rows` 주석 참조).
+                if name == "선로 조류":
+                    flags = [r in over for r in range(arr.shape[0])]
+                else:
+                    flags = [name in ("AC 결과", "DC 결과")
+                             and (name[:2], int(arr[r, 0])) in bad
+                             for r in range(arr.shape[0])]
                 cols = [cols[i] for i in keep]
                 arr = arr[:, keep]
                 t = QTableWidget(arr.shape[0], len(cols))
@@ -3002,6 +3012,32 @@ class Proto(QMainWindow):
         """
         return {int(x) for x in re.findall(r"\d+", self.res_find or "")}
 
+    def _find_missing(self, name):
+        """찾는 번호 중 **그 표에 없는** 것 (2026-09-08 점검 i28).
+
+        예전에는 없는 번호를 치면 표가 통째로 비고 「1,888줄 중 0줄」만 떴다 —
+        *번호가 틀린 건지 정말 그 버스에 아무것도 없는 건지* 갈리지 않았다.
+        """
+        want = self._find_numbers()
+        keep = self._res_tables.get(name)
+        if not want or keep is None:
+            return set()
+        table, cols = keep
+        idc = [i for i, cn in enumerate(cols) if cn in self.RES_ID_COLS]
+        if not idc:
+            return set()
+        have = set()
+        for r in range(table.rowCount()):
+            for ci in idc:
+                it = table.item(r, ci)
+                if it is None:
+                    continue
+                try:
+                    have.add(int(float(it.text().replace(",", ""))))
+                except ValueError:
+                    pass
+        return want - have
+
     def set_res_find(self, text):
         """찾는 번호가 바뀌었다 — **화면을 다시 그리지 않고** 줄만 걸러 낸다."""
         text = (text or "").strip()
@@ -3030,6 +3066,13 @@ class Proto(QMainWindow):
             # 🚨 친 것에 숫자가 하나도 없다 — 예전에는 빈칸과 **똑같이** 「14줄」 이라
             #    아무 일도 안 난 것처럼 보였다(2026-08-31). 번호를 달라고 말한다.
             lb.setText("번호를 넣어 주세요")
+            lb.setStyleSheet(f"color:{c['warn']};font-size:12px;font-weight:600;")
+        elif (miss := self._find_missing(nm)):
+            # 🚨 **없는 번호를 짚어 준다** (2026-09-08 점검 i28). 「0줄」만 뜨면
+            #    번호를 잘못 친 건지 그 버스에 아무것도 없는 건지 갈리지 않는다.
+            few = ", ".join(str(x) for x in sorted(miss)[:3])
+            more = f" 외 {len(miss) - 3}" if len(miss) > 3 else ""
+            lb.setText(f"{few}{more} — 이 표에 없는 번호입니다")
             lb.setStyleSheet(f"color:{c['warn']};font-size:12px;font-weight:600;")
         elif self.res_find and shown != n:
             lb.setText(f"{n:,}줄 중 {shown:,}줄")
@@ -3144,8 +3187,13 @@ class Proto(QMainWindow):
 
         c = self.c
         bad = self.violating_buses()
-        n = (sum(1 for grid, _bus in bad if grid == name[:2])
-             if name in ("AC 결과", "DC 결과") else 0)
+        if name == "선로 조류":
+            n = len(self.overloaded_rows())
+            what = "부하율이 100%를 넘은 선로"
+        else:
+            n = (sum(1 for grid, _bus in bad if grid == name[:2])
+                 if name in ("AC 결과", "DC 결과") else 0)
+            what = "전압이 한계를 벗어난 버스"
         sorted_by = self.sort_by.get(name)
         # 🚨 **정렬 중이면 위반이 없어도 띄운다** (2026-08-18 사용자 확정).
         #    안 그러면 성한 계통에서 정렬했을 때 되돌릴 길이 화면에 없다 —
@@ -3159,7 +3207,7 @@ class Proto(QMainWindow):
             sq = QLabel("■")
             sq.setStyleSheet(f"color:{c['warn']};font-size:13px;")
             h.addWidget(sq)
-            txt = QLabel(f"주황 = 전압이 한계를 벗어난 버스 {n}곳")
+            txt = QLabel(f"주황 = {what} {n}곳")
             txt.setStyleSheet(f"color:{c['text']};font-size:13px;")
             h.addWidget(txt)
 
@@ -3239,6 +3287,13 @@ class Proto(QMainWindow):
             if len(parts) == 2 and parts[1].isdigit():
                 out.add((parts[0], int(parts[1])))
         return out
+
+    def overloaded_rows(self):
+        """선로 조류 표에서 주황으로 칠할 **줄 번호** (2026-09-08 점검 i22)."""
+        if self.sol is None:
+            return set()
+        key = self.bus_row if self.mode == "다이나믹" else self.t
+        return checks_overloaded(self.sol, key)
 
     # ── 점검 탭 ──
     # ══════════════════════════ 계통 조건 (PDR §7 2단계) ══════════════════════════
@@ -3437,7 +3492,9 @@ class Proto(QMainWindow):
 
         sl = QSlider(Qt.Horizontal)
         sl.setRange(50, 200)
-        sl.setValue(int(round(now * 100)))
+        # 적어 넣은 값이 슬라이더 범위 밖이면 손잡이를 끝에 붙여 둔다 — 값 자체는
+        # 옆 칸이 그대로 보여 준다(2026-09-08 i41).
+        sl.setValue(max(50, min(200, int(round(now * 100)))))
         # 좁은 화면에서는 더 줄인다 — 이 줄의 합이 창 최소 가로를 정한다(`_narrow`)
         sl.setFixedWidth((110 if self._narrow() else 150) if inline else 240)
         sl.setTickPosition(QSlider.TicksBelow)
@@ -3448,10 +3505,44 @@ class Proto(QMainWindow):
                          if n_t > 1 else ""))
         h.addWidget(sl)
 
-        val = QLabel(f"×{now:.2f}")
+        # 🚨 **숫자로도 적을 수 있게** (2026-09-08 점검 i41). 여태 읽기만 하는
+        #    글자라 슬라이더로만 정했는데, 슬라이더는 ×0.50~×2.00 이고 한 칸이
+        #    0.01 이라 «정확히 ×1.37» 을 맞추기가 어렵다. 그리고 **범위 밖**
+        #    (×2.5 로 어디서 무너지나)은 아예 못 넣었다.
+        vx = QLabel("×")
+        vx.setStyleSheet(f"color:{c['accent']};font-size:14px;font-weight:700;")
+        h.addWidget(vx)
+        val = QLineEdit(f"{now:.2f}")
         val.setFixedWidth(52)
-        val.setStyleSheet(f"color:{c['accent']};font-size:14px;font-weight:700;")
+        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val.setToolTip("바로 적어도 됩니다 — 슬라이더 범위(0.50~2.00) 밖도 넣을 수 있습니다")
+        val.setStyleSheet(
+            f"QLineEdit {{ color:{c['accent']};font-size:14px;font-weight:700;"
+            f"background:{c['surface']};border:1px solid {c['border']};"
+            f"border-radius:6px;padding:2px 5px; }}"
+            f"QLineEdit:focus {{ border-color:{c['accent']}; }}")
         h.addWidget(val)
+
+        def typed():
+            """적은 값을 받는다. 못 읽을 값이면 지금 값으로 되돌린다."""
+            try:
+                want = float(val.text().replace("×", "").replace(",", "").strip())
+            except ValueError:
+                val.setText(f"{self.load_factor():.2f}")
+                return
+            # ⚠️ 0 이하는 막는다 — 부하가 0 이면 계통이 다른 것이 되고,
+            #    음수는 부하가 발전이 되어 버린다.
+            if want <= 0:
+                QMessageBox.warning(self, "부하 배율",
+                                    "0 보다 큰 수를 넣어 주세요.")
+                val.setText(f"{self.load_factor():.2f}")
+                return
+            if abs(want - self.load_factor()) < 1e-9:
+                return
+            self.scale_loads(want)
+
+        val.returnPressed.connect(typed)
+        val.editingFinished.connect(typed)
 
         # 🚨 곱하기는 **모든 시각**에 걸리는데 여기 뜨는 합계는 **보고 있는 시각 하나**다.
         #    시간을 바꾸면 이 숫자도 따라 움직여서 "이 시각에만 걸리나?" 로 읽힌다
@@ -3476,7 +3567,7 @@ class Proto(QMainWindow):
         h.addWidget(back)
 
         def moved(v):
-            val.setText(f"×{v / 100:.2f}")
+            val.setText(f"{v / 100:.2f}")
             self._load_pending = v / 100
             if not sl.isSliderDown():            # 화살표키·홈 클릭 — 잠깐 뒤에 반영
                 self._load_timer.start(250)
