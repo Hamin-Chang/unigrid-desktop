@@ -5810,6 +5810,61 @@ class Proto(QMainWindow):
         self._pending_new = None
         return SC.auto_name(self.base_case, fresh if fresh else pending)
 
+    # 🚨 **MATLAB 속사정을 첫 화면에 쏟지 않는다** (2026-09-08 점검 i37·i39).
+    #    여태 `msg` 를 통째로 붙여서, 선로 하나 껐다가 안 풀리면 이런 것이 떴다 —
+    #        File /Users/…/MatlabRuntimeCache/R2024b/unigri31/…/solve_ACDC_newton_aug_v7.m,
+    #        line 1390, in solve_ACDC_newton_aug_v7
+    #    쓰는 사람에게는 파일 경로도 줄 번호도 할 일이 없다. **왜 안 풀렸나**와
+    #    **다음에 무엇을 해 볼까**만 보이고, 속사정은 [자세히] 안에 접어 둔다.
+    _DIVERGE_TIP = (
+        "다음을 해 볼 수 있습니다.\n"
+        "· 부하 배율을 낮춘다\n"
+        "· 전압을 잡는 변환기(DC Control Mode = 2)는 끄지 않는다\n"
+        "   — 끄면 DC 망에 기준이 없어져 반드시 발산한다\n"
+        "· 지고 있던 몫이 큰 선로·변환기일수록 끄면 발산하기 쉽다\n"
+        "· 조건을 하나씩만 바꿔 본다 — 둘을 겹치면 여유가 금세 없어진다")
+
+    @staticmethod
+    def _fail_parts(msg: str) -> tuple[str, str]:
+        """대화상자 본문과 [자세히] 안에 접을 것으로 가른다.
+
+        `app_engine._fail_message` 가 「…실패 — 이유\n\n(자세히: 속사정)」 꼴로 만든다.
+        그 함수는 **안 건드린다** — 검사 두 건이 「조류계산 실패」 글자를 본다.
+        """
+        m = re.search(r"\n\n\(자세히:\s*(.*?)\)\s*$", msg or "", re.S)
+        if not m:
+            return (msg or "").strip(), ""
+        return msg[:m.start()].strip(), m.group(1).strip()
+
+    def _fail_box(self, title, lead, msg, icon=QMessageBox.Warning):
+        body, detail = self._fail_parts(msg)
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(lead)
+        info = body
+        if "발산" in body or "수렴" in body:
+            info = f"{body}\n\n{self._DIVERGE_TIP}"
+        box.setInformativeText(info)
+        if detail:
+            box.setDetailedText(detail)      # 눌러야 보인다
+        # 🚨 Qt 기본 단추 글자가 영어로 나온다 — 한국어 번역이 안 실려 있다.
+        #    「OK」·「Show Details…」 를 우리말로 바꾼다.
+        box.setStandardButtons(QMessageBox.Close)
+        box.button(QMessageBox.Close).setText("닫기")
+        for b in box.buttons():
+            if box.buttonRole(b) != QMessageBox.ActionRole:
+                continue
+            b.setText("자세히 보기")
+            # ⚠️ 펼칠 때마다 Qt 가 "Hide Details…" 로 **되돌린다** — 누른 직후
+            #    한 박자 뒤에 다시 덮는다(그 자리에서 세우면 Qt 가 나중에 이긴다).
+            def _relabel(btn=b):
+                btn.setText("자세히 감추기" if "Hide" in btn.text()
+                            else "자세히 보기")
+            b.clicked.connect(
+                lambda _=False, f=_relabel: QTimer.singleShot(0, f))
+        box.exec()
+
     def _solve_failed(self, msg):
         if getattr(self, "prog", None) is not None:
             self.prog.close()
@@ -5823,13 +5878,14 @@ class Proto(QMainWindow):
             self.changes = []          # applied 는 그대로 — 화면은 직전 결과 그대로다
             self._pending = None
             self.rebuild()
-            QMessageBox.warning(
-                self, "안 풀렸습니다",
-                f"{SC.describe(pending)}\n\n이 조건으로는 답을 찾지 못했습니다. "
-                f"시나리오 목록에 '안 풀림' 으로 남겨 두었고, 화면은 그대로 둡니다."
-                f"\n\n{msg[:600]}")
+            self._fail_box(
+                "안 풀렸습니다",
+                f"{SC.describe(pending)} — 이 조건으로는 답을 찾지 못했습니다.\n"
+                f"시나리오 목록에 '안 풀림' 으로 남겨 두었고, 화면은 그대로 둡니다.",
+                msg)
             return
-        QMessageBox.critical(self, "계산 실패", msg[:1500])
+        self._fail_box("계산 실패", "계산을 마치지 못했습니다.", msg,
+                       icon=QMessageBox.Critical)
 
     def _engine_missing(self, msg):
         """계산 엔진을 못 찾았을 때 — 어디를 찾아봤는지까지 담긴 안내를 띄운다.
