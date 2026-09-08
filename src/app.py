@@ -1969,7 +1969,10 @@ class Proto(QMainWindow):
                                         self.show_violations, self.set_violations,
                                         self.show_line_profile,
                                         topo_zoom=self.topo_zoom,
-                                        on_topo_zoom=self.set_topo_zoom)
+                                        on_topo_zoom=self.set_topo_zoom,
+                                        on_reset_places=self.reset_topo_places,
+                                        on_bus_click=self.show_bus_profile,
+                                        on_pick_line=self.pick_line_by_bus)
                     lay.addWidget(real if real is not None else PlotBox(pname, c))
                 gt.addTab(page, name)
             # 보고 있던 탭을 되살린다 — 위반 보기 토글 등이 rebuild() 로 화면을
@@ -4970,6 +4973,17 @@ class Proto(QMainWindow):
         self.plot_pick = i
         self.rebuild()
 
+    def reset_topo_places(self, case_name):
+        """계통도에서 끌어 옮긴 버스 자리를 지우고 처음 배치로 (2026-09-08 i16).
+
+        🚨 자리를 저장해 두면 **`layered_layout()` 을 아무리 고쳐도 그 계통만
+           옛 모습**이다 — 버스를 한 번 끌면 그때의 자리 전부가 적히기 때문이다.
+        """
+        import topology
+        if not topology.clear_places(case_name):
+            return
+        self.rebuild()
+
     def set_topo_zoom(self, z):
         """계통도가 배율을 바꿨다고 알려 온다. **다시 그리지 않는다** — 계통도가
         스스로 그렸고, 여기서는 다음 계산 때 되살리려고 적어 두기만 한다."""
@@ -4980,22 +4994,141 @@ class Proto(QMainWindow):
         self.show_violations = bool(on)
         self.rebuild()
 
-    def show_line_profile(self, g, ei):
-        """계통도에서 선로를 클릭하면 그 선로의 24시간 부하율을 팝업으로 띄운다.
-        시간별 데이터가 없는 케이스(스냅샷 1시각)면 그 사실을 적어 준다."""
-        if self.sol is None:
-            return
-        import topology
-        c = self.c
-        title = topology.edge_label(g, ei)
-        ser = topology.loading_series(g, self.sol, ei)
+    def _popup(self, title, body):
+        """계통도 클릭에 답하는 작은 창 — 세 갈래(선로·버스·변환기)가 같이 쓴다."""
         d = QDialog(self)
-        d.setWindowTitle(f"{title} — 24시간 부하율")
+        d.setWindowTitle(title)
         d.setStyleSheet(self.styleSheet())
         d.setMinimumSize(560, 380)
         v = QVBoxLayout(d)
         v.setContentsMargins(16, 14, 16, 14)
         v.setSpacing(10)
+        v.addWidget(body, 1)
+        close = QPushButton("닫기")
+        close.clicked.connect(d.accept)
+        row = QHBoxLayout(); row.addStretch(); row.addWidget(close)
+        v.addLayout(row)
+        d.exec()
+
+    def pick_line_by_bus(self, a, b):
+        """그래프에서 요소를 누르면 **그것이 어느 선로인지** 찾아 팝업을 띄운다
+        (2026-09-08 점검 i14·i15).
+
+        조류 P·Q 격자와 부하율 막대가 같이 쓴다. 둘 다 «출발 버스 · 도착 버스» 는
+        아는데 계통도의 어느 선인지는 모른다 — 그 짝으로 `topology` 의 선을 찾는다.
+        `a`·`b` 는 글자다(`"106"` · DC 는 `"DC1"`).
+        """
+        if self.sol is None:
+            return
+        import topology
+
+        def num(x):
+            x = str(x).strip().upper()
+            if x.startswith("DC"):
+                x = x[2:]
+            try:
+                return int(float(x))
+            except ValueError:
+                return None
+
+        na, nb = num(a), num(b)
+        if na is None or nb is None:
+            return
+        g = topology.build_graph(self.sol)
+        for ei, (x, y, kind) in enumerate(g.edges):
+            if kind not in ("AC", "변압기", "DC"):
+                continue
+            ba, bb = topology._busno(g.keys[x]), topology._busno(g.keys[y])
+            if {ba, bb} == {na, nb}:
+                self.show_line_profile(g, ei)
+                return
+        # 못 찾는 경우 — 3권선 지선처럼 계통도에서 갈래로 쪼개진 것
+        QMessageBox.information(
+            self, "그 선로를 계통도에서 못 찾았습니다",
+            f"{na} – {nb} 를 잇는 선을 계통도에서 찾지 못했습니다.\n\n"
+            "3권선 변압기처럼 계통도에서 여러 갈래로 쪼개 그리는 것은 "
+            "짝을 맞출 수 없습니다.")
+
+    def show_bus_profile(self, g, i):
+        """계통도에서 **버스**를 누르면 24시간 전압을 띄운다 (2026-09-08 점검 i18).
+
+        끌어 옮기기와 겹치므로, 거의 안 움직이고 뗐을 때만 여기까지 온다
+        (`TopologyView.mouseReleaseEvent`).
+        """
+        if self.sol is None:
+            return
+        import topology
+        c = self.c
+        side = "DC" if g.kind[i] == "DC" else "AC"
+        title = f"{side} {g.label[i]} 버스"
+        ser = topology.bus_series(g, self.sol, i)
+        if ser is None:
+            body = charts._note(c, f"{title} 는 결과 표에 없습니다.")
+        elif len(ser[0]) <= 1:
+            lo, hi = ser[2]
+            lim = f"\n한계 {lo:.3f} ~ {hi:.3f}" if lo is not None else ""
+            body = charts._note(
+                c, f"{title}\n이 케이스는 시간별(24h) 데이터가 없습니다.\n"
+                   f"현재 전압 = {ser[1][0]:.4f} pu{lim}")
+        else:
+            body = charts.voltage_profile_view(c, ser[0], ser[1], ser[2],
+                                               f"{title}  ·  24시간 전압")
+        self._popup(f"{title} — 24시간 전압", body)
+
+    def show_ic_facts(self, g, ei):
+        """계통도에서 **변환기**를 누르면 그 값을 띄운다 (2026-09-08 점검 i18).
+
+        ⚠️ 그래프가 아니라 **표**다 — 엔진이 VSC 결과를 첫 시각만 내보내서
+           24시간 값이 앱까지 안 온다(`topology.ic_facts` 주석). 엔진을 고쳐
+           다시 구우면 선로처럼 그래프로 바꾼다.
+        """
+        if self.sol is None:
+            return
+        import topology
+        c = self.c
+        rows = topology.ic_facts(g, self.sol, ei, self.t)
+        title = topology.edge_label(g, ei).replace(" 선로", " 변환기")
+        if not rows:
+            self._popup(title, charts._note(c, "이 변환기의 값이 결과에 없습니다."))
+            return
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+        tb = QTableWidget(len(rows), 2)
+        tb.setHorizontalHeaderLabels(["항목", "값"])
+        tb.verticalHeader().setVisible(False)
+        tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tb.setAlternatingRowColors(True)
+        for r, (k, val) in enumerate(rows):
+            tb.setItem(r, 0, QTableWidgetItem(k))
+            it = QTableWidgetItem(val)
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            tb.setItem(r, 1, it)
+        v.addWidget(tb, 1)
+        note = QLabel("변환기는 아직 24시간 그래프를 못 그립니다 — 계산 엔진이 "
+                      "변환기 결과를 첫 시각만 돌려줍니다.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
+        v.addWidget(note)
+        self._popup(title, w)
+
+    def show_line_profile(self, g, ei):
+        """계통도에서 선로를 클릭하면 그 선로의 24시간 부하율을 팝업으로 띄운다.
+        시간별 데이터가 없는 케이스(스냅샷 1시각)면 그 사실을 적어 준다.
+
+        🚨 **변환기(IC)도 여기로 온다** (2026-09-08 i18) — 부하율이 없으므로
+           `show_ic_facts` 로 넘긴다.
+        """
+        if self.sol is None:
+            return
+        import topology
+        if g.edges[ei][2] == "IC":
+            self.show_ic_facts(g, ei)
+            return
+        c = self.c
+        title = topology.edge_label(g, ei)
+        ser = topology.loading_series(g, self.sol, ei)
         if ser is None:
             body = charts._note(c, f"{title} 는 부하율 결과가 없습니다.\n"
                                    "(변환기·3권선 지선이거나 Branch 표에 없는 선로)")
@@ -5007,12 +5140,7 @@ class Proto(QMainWindow):
         else:
             body = charts.loading_profile_view(c, self.sol, ser[0], ser[1],
                                                f"{title}  ·  24시간 부하율")
-        v.addWidget(body, 1)
-        close = QPushButton("닫기")
-        close.clicked.connect(d.accept)
-        row = QHBoxLayout(); row.addStretch(); row.addWidget(close)
-        v.addLayout(row)
-        d.exec()
+        self._popup(f"{title} — 24시간 부하율", body)
 
     def pick_grid_columns(self):
         """계통 데이터 표의 열 선택 (2026-09-02).

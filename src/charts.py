@@ -313,11 +313,15 @@ class FlowHeatmap(QFrame):
 
     PAD_L, PAD_T, PAD_R, PAD_B = 52, 44, 74, 26
 
-    def __init__(self, title, mat, used, names, unit, c):
+    def __init__(self, title, mat, used, names, unit, c, on_pick=None):
         super().__init__()
         self.setObjectName("plot")
         self.title, self.mat, self.used, self.names = title, mat, used, names
         self.unit, self.c = unit, c
+        # 칸을 누르면 부르는 콜백 (출발 이름, 도착 이름) — 앱이 그 선로 팝업을 띄운다
+        # (2026-09-08 점검 i14 — 사용자: *"요소 하나 눌렀을 때 토폴로지의 어떤
+        #  선로인지 팝업으로 뜨게 하는 기능 있으면 좋을듯"*)
+        self.on_pick = on_pick
         self.vmax = float(np.abs(mat).max()) if mat is not None and mat.size else 0.0
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumHeight(180)
@@ -427,18 +431,38 @@ class FlowHeatmap(QFrame):
         j = int((ev.position().x() - x0) // cell)
         i = int((ev.position().y() - y0) // cell)
         if 0 <= i < n and 0 <= j < n and self.used[i, j]:
-            QToolTip.showText(ev.globalPosition().toPoint(),
-                              f"{self.names[i]} → {self.names[j]}\n"
-                              f"{self.mat[i, j]:+.4g} {self.unit}", self)
+            tip = (f"{self.names[i]} → {self.names[j]}\n"
+                   f"{self.mat[i, j]:+.4g} {self.unit}")
+            if self.on_pick is not None:
+                tip += "\n클릭 → 이 선로의 24시간 부하율"
+                self.setCursor(Qt.PointingHandCursor)
+            QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
         else:
             QToolTip.hideText()
+            self.setCursor(Qt.ArrowCursor)
+
+    def mouseReleaseEvent(self, ev):
+        """칸을 누르면 그것이 **어느 선로인지** 알려 준다 (2026-09-08 점검 i14).
+
+        격자만 보고서는 「x축 106 · y축 110 칸」이 계통도의 어느 선인지 못 짚는다.
+        """
+        if self.on_pick is None or self.mat is None:
+            return
+        g = self._geom()
+        if g is None:
+            return
+        x0, y0, cell, n = g
+        j = int((ev.position().x() - x0) // cell)
+        i = int((ev.position().y() - y0) // cell)
+        if 0 <= i < n and 0 <= j < n and self.used[i, j]:
+            self.on_pick(self.names[i], self.names[j])
 
 
-def flow_chart(c, sol, t, which, title, unit):
+def flow_chart(c, sol, t, which, title, unit, on_pick=None):
     mat, used, names = flow_matrix(sol, t, which)
     if mat is None:
         return None
-    return FlowHeatmap(title, mat, used, names, unit, c)
+    return FlowHeatmap(title, mat, used, names, unit, c, on_pick=on_pick)
 
 
 # ─────────────────────────────────────────── 한 버스의 시간 변화 (다이나믹)
@@ -624,7 +648,7 @@ def line_names(br):
     return out
 
 
-def loading_chart(c, sol, t):
+def loading_chart(c, sol, t, on_pick=None):
     """선로별 부하율 막대 (MATLAB ACDC_snapshotgraph.m 191~204줄).
 
     100% 를 넘는 선로는 주황으로 칠하고 100% 자리에 점선을 그어,
@@ -719,6 +743,62 @@ def loading_chart(c, sol, t):
         for m in ch.legend().markers(bars):
             if m.label() == "100% 초과":
                 m.setVisible(False)      # 넘은 게 없으면 범례에서 뺀다
+
+    # 🚨 **막대를 누르면 그것이 어느 선로인지 알려 준다** (2026-09-08 점검 i15).
+    #    x축 이름이 `line 106-110` 꼴이라 읽을 수는 있지만, 선로가 많으면
+    #    이름을 몇 개 걸러 찍으므로(`step`) **누른 막대의 이름이 안 보이는 일이 많다.**
+    if on_pick is not None:
+        def _picked(idx, _bs, _names=names, _br=br):
+            if 0 <= idx < len(_br):
+                on_pick(str(int(_br[idx][0])), str(int(_br[idx][1])))
+        bars.clicked.connect(_picked)
+    return _view(ch, c)
+
+
+def voltage_profile_view(c, times, values, limits, title):
+    """한 버스의 **시간별 전압[pu]** 꺾은선 (2026-09-08 점검 i18).
+
+    선로의 부하율 그림(`loading_profile_view`)과 짝이다 — 계통도에서 버스를
+    누르면 팝업에 담긴다. 한계(Vmin·Vmax)를 점선으로 같이 긋고, 벗어난 시각은
+    점을 주황으로 얹는다. **한계가 없으면 값만 봐서는 높은지 낮은지 알 수 없다.**
+    """
+    ch = _new_chart(c, title)
+    pts = list(zip(times, values))
+    ln = _line(pts, DC_BLUE, 2.2, name="전압 [pu]")
+    ch.addSeries(ln)
+    lo, hi = limits if limits else (None, None)
+    extra = []
+    bad = []
+    if lo is not None and hi is not None:
+        bad = [(x, y) for x, y in pts if y > hi or y < lo]
+        if bad:
+            d = _dots(bad, c["warn"], "한계 밖", 10.0)
+            ch.addSeries(d); extra.append(d)
+        for val, nm in ((hi, f"Vmax {hi:.3f}"), (lo, f"Vmin {lo:.3f}")):
+            g = _line([(times[0], val), (times[-1], val)], c["warn"], 1.2,
+                      dashed=True, name=nm)
+            ch.addSeries(g); extra.append(g)
+
+    xa = _style_axis(QValueAxis(), c, "시간 [H]")
+    xa.setRange(float(times[0]), float(times[-1]))
+    xa.setTickCount(min(len(times), 12))
+    xa.setLabelFormat("%d")
+    ya = _style_axis(QValueAxis(), c, "전압 [pu]")
+    span = [min(values), max(values)]
+    if lo is not None and hi is not None:
+        span = [min(span[0], lo), max(span[1], hi)]
+    pad = max(0.005, (span[1] - span[0]) * 0.12)
+    ya.setRange(span[0] - pad, span[1] + pad)
+    ya.setTickCount(6)
+    ya.setLabelFormat("%.3f")
+    ch.addAxis(xa, Qt.AlignBottom)
+    ch.addAxis(ya, Qt.AlignLeft)
+    for ser in [ln] + extra:
+        ser.attachAxis(xa); ser.attachAxis(ya)
+    if not bad:
+        # 한계 안이면 점선 둘은 범례에서 뺀다 — 부하율 그림과 같은 잣대
+        for ser in extra:
+            _hide_from_legend(ch, ser)
     return _view(ch, c)
 
 
@@ -1291,7 +1371,8 @@ def compare_chart(c, sol, item, axis, targets):
 
 
 def build(name, c, sol, t=0, bus_row=0, show_violations=False, on_toggle=None,
-          on_line_click=None, topo_zoom=1.0, on_topo_zoom=None):
+          on_line_click=None, topo_zoom=1.0, on_topo_zoom=None,
+          on_reset_places=None, on_bus_click=None, on_pick_line=None):
     """그래프 이름에 맞는 그림을 만든다. 아직 못 그리는 것은 None(자리만 표시).
 
     ⚠️ 이름만 앞부분으로 맞추면 안 된다 — 스냅샷의 "전압 … x축 = 버스" 와
@@ -1311,16 +1392,20 @@ def build(name, c, sol, t=0, bus_row=0, show_violations=False, on_toggle=None,
             return (angle_series(c, sol, bus_row) if by_time
                     else angle_chart(c, sol, t))
         if name.startswith("유효전력"):
-            return flow_chart(c, sol, t, "P", "유효전력 P", "MW")
+            return flow_chart(c, sol, t, "P", "유효전력 P", "MW",
+                              on_pick=on_pick_line)
         if name.startswith("무효전력"):
-            return flow_chart(c, sol, t, "Q", "무효전력 Q", "MVAr")
+            return flow_chart(c, sol, t, "Q", "무효전력 Q", "MVAr",
+                              on_pick=on_pick_line)
         if "부하율" in name:
-            return loading_chart(c, sol, t)
+            return loading_chart(c, sol, t, on_pick=on_pick_line)
         if "단선도" in name or "토폴로지" in name:
             import topology
             return topology.topology_view(c, sol, t, show_violations, on_toggle,
                                           on_line_click,
-                                          zoom=topo_zoom, on_zoom=on_topo_zoom)
+                                          zoom=topo_zoom, on_zoom=on_topo_zoom,
+                                          on_reset_places=on_reset_places,
+                                          on_bus_click=on_bus_click)
     except Exception as exc:          # 한 그래프가 죽어도 앱은 살아 있게
         print(f"[그래프] {name} 실패: {exc}")
     return None

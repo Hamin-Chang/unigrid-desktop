@@ -380,6 +380,73 @@ def edge_label(g, edge_index):
     return f"{g.label[a]}–{g.label[b]} 선로"
 
 
+def bus_series(g, sol, node_index):
+    """버스 하나의 **시간별 전압[pu]** → (시각, 값, 한계) (2026-09-08 점검 i18).
+
+    돌려주는 것 = ([1,2,…], [1.03,…], (Vmin, Vmax)) · 그 버스를 못 찾으면 None.
+    한계도 같이 준다 — 값만 보면 1.06 이 높은 건지 알 수 없다.
+    """
+    key = g.keys[node_index]
+    bus = _busno(key)
+    if bus is None:
+        return None
+    which = "DC" if key[:1] == "D" else "AC"
+    arr = getattr(sol, which, None)
+    if arr is None or not arr.size:
+        return None
+    cols = sol.cols(which)
+    if "Bus" not in cols or "VM[pu]" not in cols:
+        return None
+    iB, iV = cols.index("Bus"), cols.index("VM[pu]")
+    a2 = arr[:, :, 0] if arr.ndim == 3 else arr
+    hit = [r for r in range(a2.shape[0]) if int(a2[r, iB]) == bus]
+    if not hit:
+        return None
+    r = hit[0]
+    if arr.ndim == 3:
+        vals = [float(x) for x in arr[r, iV, :]]
+    else:
+        vals = [float(arr[r, iV])]
+    lo = hi = None
+    if "Vmin[pu]" in cols and "Vmax[pu]" in cols:
+        lo, hi = float(a2[r, cols.index("Vmin[pu]")]), float(a2[r, cols.index("Vmax[pu]")])
+    return list(range(1, len(vals) + 1)), vals, (lo, hi)
+
+
+def ic_facts(g, sol, edge_index, t=0):
+    """변환기 하나의 지금 값 → [(이름, 값)] (2026-09-08 점검 i18).
+
+    ⚠️ **24시간 그래프를 못 그린다.** 엔진(`runpfACDC.m:271`)이 VSC 표를 시각별로
+       담아 두고도(`a_VSC_*`) **첫 시각만** 내보낸다 — `all_` 판이 없다.
+       2026-09-08 오전에 고친 `Tap_result` 와 **정확히 같은 자리**다.
+       엔진을 고치고 다시 구우면 그때 그래프로 바꾼다.
+    """
+    a, b, kind = g.edges[edge_index]
+    if kind != "IC":
+        return None
+    ai, di = (a, b) if g.kind[a] != "DC" else (b, a)
+    bus_ac, bus_dc = _busno(g.keys[ai]), _busno(g.keys[di])
+    out = [("AC 버스", str(bus_ac)), ("DC 버스", str(bus_dc))]
+    tbl = getattr(sol, "VSC_grid", None)
+    if tbl is not None and getattr(tbl, "size", 0):
+        cols = sol.cols("VSC_grid")
+        for r in tbl:
+            if int(r[0]) == bus_ac and int(r[1]) == bus_dc:
+                for nm in ("Grid_P[MW]", "Grid_Q[MVAR]", "VSC_P[MW]", "VSC_Q[MVAR]"):
+                    if nm in cols:
+                        out.append((nm, f"{float(r[cols.index(nm)]):,.3f}"))
+                break
+    # 한계에 걸렸나 (0=안 · 2=용량곡선 · 3=전류한계)
+    lim = list(getattr(sol, "IC_lim_mode", []) or [])
+    ics = [i for i, (x, y, k) in enumerate(g.edges) if k == "IC"]
+    if edge_index in ics:
+        n = ics.index(edge_index)
+        if n < len(lim):
+            out.append(("한계", {0: "안 걸림", 2: "용량곡선(S_N) 도달",
+                                 3: "전류한계 도달"}.get(int(lim[n]), "?")))
+    return out
+
+
 def voltage_bad(g, sol, t):
     """시간 t 의 전압 위반 버스 → {노드 인덱스: 방향}. 방향 +1=과전압(Vmax 초과),
     -1=저전압(Vmin 미달). AC·DC 둘 다 본다(같은 열 이름 VM[pu]·Vmin[pu]·Vmax[pu]
@@ -433,6 +500,105 @@ def make_overlay(g, sol, t):
 def _side(g, i):
     """이 버스가 AC 쪽인가 DC 쪽인가. 3권선은 AC 쪽으로 본다."""
     return "DC" if g.kind[i] == "DC" else "AC"
+
+
+def _seg_cross(p, q, r, s):
+    """선분 pq 와 rs 가 (끝점을 뺀) 진짜 교차인가."""
+    def d(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    if (max(p[0], q[0]) < min(r[0], s[0]) - 1e-9
+            or max(r[0], s[0]) < min(p[0], q[0]) - 1e-9
+            or max(p[1], q[1]) < min(r[1], s[1]) - 1e-9
+            or max(r[1], s[1]) < min(p[1], q[1]) - 1e-9):
+        return False
+    d1, d2 = d(r, s, p), d(r, s, q)
+    d3, d4 = d(p, q, r), d(p, q, s)
+    return (d1 * d2 < -1e-12) and (d3 * d4 < -1e-12)
+
+
+def count_crossings(g, pos) -> int:
+    """이 배치에서 선이 서로 몇 번 넘나드는가 (2026-09-08 점검 i16).
+
+    **엉킴을 눈이 아니라 숫자로 잰다.** 「보기 좋다」로는 고쳤는지 알 수 없고,
+    다음에 배치를 손댔을 때 나빠져도 모른다.
+    ⚠️ 여기서 세는 것은 **버스와 버스를 곧게 이은 선**끼리의 교차다. 실제로 그릴 때는
+       가로·세로로 꺾어 돌아가므로(`_route`) 화면의 교차 수와 정확히 같지는 않다.
+       그래도 **배치가 좋아졌는지 나빠졌는지**는 이 수가 말해 준다.
+    """
+    segs = [(pos[a], pos[b]) for a, b, _k in g.edges if a != b]
+    n = 0
+    for i in range(len(segs)):
+        for j in range(i + 1, len(segs)):
+            if _seg_cross(*segs[i], *segs[j]):
+                n += 1
+    return n
+
+
+def _order_by_barycenter(cols, adj, sweeps=8):
+    """층마다 세로 순서를 **이웃의 평균 자리**로 다시 세운다 (2026-09-08 점검 i16).
+
+    🚨 예전에는 같은 층 안 순서가 **버스 번호 순**이었다 — 연결 관계를 아예 안 봤다.
+       그래서 이웃한 층의 짝이 서로 어긋나 선이 길게 가로지르며 엉켰다
+       (실측: `ACDC_case24_MatACDC` 교차 31 · `AConly_case118` 151).
+
+    쓰는 방법은 계층 그리기의 표준인 **barycenter(중점) 쓸기**다 — 한 버스를 그
+    이웃들이 앉은 자리의 **평균 높이**로 옮기고, 왼→오 오른→왼으로 번갈아 여러 번 쓴다.
+    ⚠️ 쓸다 보면 나빠지는 판도 나온다 — **가장 좋았던 판을 따로 들고 있다가 그것을
+       돌려준다.** 안 그러면 마지막 판이 우연히 나쁠 때 그대로 나간다.
+
+    `cols` = {층: [버스 …]} · `adj` = {버스: {이웃 …}}
+    """
+    order = {d: list(items) for d, items in cols.items()}
+    if len(order) < 2:
+        return order
+    depths = sorted(order)
+    where = {}                       # 버스 → 제 층에서의 자리 (0~1)
+
+    def _rerank():
+        where.clear()
+        for d in depths:
+            n = max(1, len(order[d]))
+            for k, i in enumerate(order[d]):
+                where[i] = (k + 0.5) / n
+
+    def _cross_between(d0, d1):
+        """이웃한 두 층 사이에서 선이 몇 번 넘나드나 (계층 그리기의 표준 세기)."""
+        idx1 = {i: k for k, i in enumerate(order[d1])}
+        pairs = [(k, idx1[j]) for k, i in enumerate(order[d0])
+                 for j in adj.get(i, ()) if j in idx1]
+        n = 0
+        for a in range(len(pairs)):
+            for b in range(a + 1, len(pairs)):
+                if (pairs[a][0] - pairs[b][0]) * (pairs[a][1] - pairs[b][1]) < 0:
+                    n += 1
+        return n
+
+    def _total():
+        return sum(_cross_between(depths[k], depths[k + 1])
+                   for k in range(len(depths) - 1))
+
+    _rerank()
+    best = _total()
+    best_order = {d: list(v) for d, v in order.items()}
+    for sweep in range(sweeps):
+        seq = depths if sweep % 2 == 0 else list(reversed(depths))
+        for d in seq:
+            keep = {i: k for k, i in enumerate(order[d])}
+            n_keep = max(1, len(keep))
+
+            def bary(i, _keep=keep, _n=n_keep):
+                # 같은 층 이웃은 뺀다 — 세로로 나란한 것끼리는 순서를 못 정한다
+                vals = [where[j] for j in adj.get(i, ())
+                        if j in where and j not in _keep]
+                return sum(vals) / len(vals) if vals else (_keep[i] + 0.5) / _n
+
+            order[d] = sorted(order[d], key=lambda i: (bary(i), keep[i]))
+            _rerank()
+        now = _total()
+        if now < best:
+            best = now
+            best_order = {d: list(v) for d, v in order.items()}
+    return best_order
 
 
 def layered_layout(g):
@@ -517,6 +683,10 @@ def layered_layout(g):
         cols[name] = {}
         for i in sorted(members, key=lambda k: (depth[k], k)):
             cols[name].setdefault(depth[i], []).append(i)
+        # 🚨 **여기까지는 버스 번호 순이다** — 연결 관계를 안 본 순서라 이웃한 층의
+        #    짝이 어긋나 선이 엉킨다(2026-09-08 점검 i16). 이웃의 평균 자리로 다시
+        #    세워 넘나듦을 줄인다.
+        cols[name] = _order_by_barycenter(cols[name], adj)
 
     # IC 로 이어진 AC·DC 버스를 같은 높이에 놓는다 — 그래야 다리가 곧게 간다.
     # 두 경계 열(양쪽 0층)에서, DC 쪽 순서를 짝인 AC 버스의 순서에 맞춰 다시 세운다.
@@ -553,6 +723,33 @@ def load_places(case_name):
         return {}
 
 
+def clear_places(case_name):
+    """이 계통에 저장해 둔 «끌어 옮긴 자리» 를 지운다 (2026-09-08 점검 i16).
+
+    🚨 **이게 없으면 배치를 고쳐도 화면에 안 보인다.** 버스를 한 번이라도 끌면
+       `on_move` 가 **57개 전부**를 적어 두고, 다음부터 `layered_layout()` 이 낸
+       자리를 통째로 덮는다. 그림 그리는 법을 개선해도 그 계통만 옛 모습 그대로다.
+    """
+    try:
+        all_of = json.loads(paths.places_file().read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if case_name not in all_of:
+        return False
+    all_of.pop(case_name, None)
+    try:
+        paths.places_file().write_text(json.dumps(all_of, ensure_ascii=False),
+                                       encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def has_places(case_name) -> bool:
+    """이 계통에 옮겨 둔 자리가 있나 — 단추를 흐리게 할지 정하는 데 쓴다."""
+    return bool(load_places(case_name))
+
+
 def save_places(case_name, places):
     try:
         all_of = json.loads(paths.places_file().read_text(encoding="utf-8"))
@@ -566,7 +763,7 @@ def save_places(case_name, places):
 
 
 # ─────────────────────────────────────────── 그리기
-from PySide6.QtCore import Qt, QPointF, QRectF                  # noqa: E402
+from PySide6.QtCore import Qt, QPointF, QRectF, QTimer          # noqa: E402
 from PySide6.QtGui import (QPainter, QPen, QColor, QFont,       # noqa: E402
                            QFontMetrics, QPainterPath, QPolygonF)
 from PySide6.QtWidgets import (QFrame, QScrollArea, QSizePolicy,  # noqa: E402
@@ -639,13 +836,16 @@ class TopologyView(QFrame):
     def __init__(self, g, places, case_name, c, on_move=None,
                  show_violations=False, overlay=None,
                  vstyle="badge", cstyle="badge", on_line_click=None,
-                 zoom=1.0, on_zoom=None):
+                 zoom=1.0, on_zoom=None, on_bus_click=None):
         super().__init__()
         self.setObjectName("plot")
         self.g, self.c, self.case_name = g, c, case_name
         self.on_move = on_move
         # 선로를 클릭하면 부르는 콜백 (g, edge_index) — 앱이 24h 부하율 팝업을 띄운다
         self.on_line_click = on_line_click
+        # 버스를 **끌지 않고 그냥 누르면** 부르는 콜백 (g, node_index) — 24h 전압
+        # (2026-09-08 점검 i18). 끌기와 겹치므로 «거의 안 움직이고 뗐을 때» 만 본다.
+        self.on_bus_click = on_bus_click
         self._routes = []        # 마지막으로 그린 선들의 길 (선로 클릭 판정용)
         self._press = None       # (edge_index, 누른 좌표) — 눌렀다 뗐을 때 클릭 판정
         self.show_violations = show_violations
@@ -668,17 +868,59 @@ class TopologyView(QFrame):
             if key in places:
                 self.pos[i] = places[key]
         self.drag = None
+        self._pan = None                 # 휠을 눌러 끄는 중인 자리 (i17)
         self._fit()
 
-    def set_zoom(self, z, from_user=True):
-        """배율을 바꾼다. 그림만 다시 그리고 **화면을 통째로 다시 만들지 않는다**."""
+    def _scroller(self):
+        """이 위젯을 담고 있는 스크롤 상자 (없으면 None).
+
+        확대·이동은 **스크롤 자리를 옮기는 일**이라 그 상자를 알아야 한다.
+        `topology_view` 가 상자를 만들어 담으므로 부모를 두 칸 거슬러 찾는다.
+        """
+        w = self.parentWidget()
+        while w is not None:
+            if isinstance(w, QScrollArea):
+                return w
+            w = w.parentWidget()
+        return None
+
+    def set_zoom(self, z, from_user=True, anchor=None):
+        """배율을 바꾼다. 그림만 다시 그리고 **화면을 통째로 다시 만들지 않는다**.
+
+        🚨 `anchor` = 화면에서 **제자리에 붙들어 둘 점**(위젯 좌표, 2026-09-08 i17).
+           예전에는 그냥 커지기만 해서 **왼쪽 위를 축으로** 벌어졌다 — 가운데를
+           보고 있다가 확대하면 보던 곳이 오른쪽 아래로 밀려 사라졌다
+           (사용자: *"우리 지도 확대하는거처럼"*). 지도는 커서 아래가 안 움직인다.
+           단추로 누를 때는 **지금 보고 있는 한가운데**를 붙든다.
+        """
         z = max(self.ZOOM_MIN, min(self.ZOOM_MAX, float(z)))
         if abs(z - self.zoom) < 1e-9:
             return False
+        sc = self._scroller()
+        old = self.zoom
+        # 붙들 점이 그림 전체에서 어디쯤인가 (0~1). 배율이 바뀌어도 이 비율은 같다.
+        keep = None
+        if sc is not None:
+            hb, vb = sc.horizontalScrollBar(), sc.verticalScrollBar()
+            if anchor is None:            # 단추·휠에 자리가 없으면 화면 한가운데
+                ax = hb.value() + sc.viewport().width() / 2
+                ay = vb.value() + sc.viewport().height() / 2
+            else:
+                ax, ay = anchor.x(), anchor.y()
+            keep = (ax / max(1.0, float(self.width())),
+                    ay / max(1.0, float(self.height())),
+                    ax - hb.value(), ay - vb.value())
         self.zoom = z
         self._fit()
         self.updateGeometry()
         self.update()
+        if keep is not None and sc is not None:
+            # 크기가 늘어난 뒤에 자리를 잡아야 한다 — 그전에는 스크롤 범위가 옛 값이다
+            def _restore(_k=keep, _sc=sc):
+                fx, fy, dx, dy = _k
+                _sc.horizontalScrollBar().setValue(int(fx * self.width() - dx))
+                _sc.verticalScrollBar().setValue(int(fy * self.height() - dy))
+            QTimer.singleShot(0, _restore)
         if from_user and self.on_zoom is not None:
             self.on_zoom(z)
         return True
@@ -691,8 +933,10 @@ class TopologyView(QFrame):
             return
         step = ev.angleDelta().y()
         if step:
+            # 커서 아래를 붙들어 둔다 — 지도 확대와 같게 (2026-09-08 i17)
             self.set_zoom(self.zoom * (self.ZOOM_STEP if step > 0
-                                       else 1 / self.ZOOM_STEP))
+                                       else 1 / self.ZOOM_STEP),
+                          anchor=ev.position())
         ev.accept()
 
     def _fit(self):
@@ -1352,15 +1596,19 @@ class TopologyView(QFrame):
         return float(np.hypot(px - (ax + t * dx), py - (ay + t * dy)))
 
     def _hit_line(self, pt):
-        """마우스가 어느 선로 위인가 → edge 번호. 부하율 데이터가 있는
-        AC·DC 선로(변압기 포함)만 클릭 대상으로 본다(변환기·3권선 지선 제외).
+        """마우스가 어느 선로 위인가 → edge 번호.
+
+        AC·DC 선로(변압기 포함)와 **변환기(IC)** 를 클릭 대상으로 본다.
+        3권선 지선은 뺀다 — 부하율이 갈래별로 안 나온다.
         버스 막대 근처는 버스 잡기를 우선하려고 뺀다."""
         if self._hit(pt) is not None or not self._routes:
             return None
         px, py = pt.x(), pt.y()
         best_ei, best_d = None, 6.0
         for ei, (a, b, kind) in enumerate(self.g.edges):
-            if kind not in ("AC", "변압기", "DC"):
+            # 🚨 **IC 도 넣는다** (2026-09-08 점검 i18 — 사용자: *"IC를 눌러도 선로
+            #    처럼 그래프 팝업 뜨게 하자"*). 여태 빠져 있어 변환기만 못 눌렀다.
+            if kind not in ("AC", "변압기", "DC", "IC"):
                 continue
             if _busno(self.g.keys[a]) is None or _busno(self.g.keys[b]) is None:
                 continue
@@ -1375,16 +1623,34 @@ class TopologyView(QFrame):
         return best_ei
 
     def mousePressEvent(self, ev):
+        # 🚨 **휠을 눌러 끌면 보는 자리가 밀린다** (2026-09-08 점검 i17 — 사용자:
+        #    *"마우스의 휠을 눌러서 보는 곳을 움직이는 기능도 추가"*).
+        #    왼쪽 단추는 이미 «버스 끌어 옮기기» 라 겹칠 수 없어 가운데 단추를 쓴다.
+        if ev.button() == Qt.MiddleButton:
+            self._pan = ev.position()
+            self.setCursor(Qt.ClosedHandCursor)
+            ev.accept()
+            return
         if ev.button() != Qt.LeftButton:
             return
         self.drag = self._hit(ev.position())
         self._press = None
+        self._bus_press = (self.drag, ev.position()) if self.drag is not None else None
         if self.drag is None and self.on_line_click is not None:
             ei = self._hit_line(ev.position())
             if ei is not None:
                 self._press = (ei, ev.position())
 
     def mouseMoveEvent(self, ev):
+        if getattr(self, "_pan", None) is not None:
+            sc = self._scroller()
+            if sc is not None:
+                d = ev.position() - self._pan
+                sc.horizontalScrollBar().setValue(
+                    sc.horizontalScrollBar().value() - int(d.x()))
+                sc.verticalScrollBar().setValue(
+                    sc.verticalScrollBar().value() - int(d.y()))
+            return
         if self.drag is None:
             i = self._hit(ev.position())
             if i is not None:
@@ -1397,6 +1663,8 @@ class TopologyView(QFrame):
                     bits.append(self.g.role[i])
                 if self.g.has_load[i]:
                     bits.append("부하 있음")
+                if self.on_bus_click is not None:
+                    bits.append("클릭 → 24시간 전압 · 끌면 자리 옮김")
                 QToolTip.showText(ev.globalPosition().toPoint(),
                                   "\n".join(bits), self)
                 self.setCursor(Qt.OpenHandCursor)
@@ -1404,8 +1672,10 @@ class TopologyView(QFrame):
             # 버스가 아니면 선로 위인지 본다 — 클릭하면 24h 부하율이 뜬다고 알려준다
             ei = self._hit_line(ev.position()) if self.on_line_click else None
             if ei is not None:
+                kind = self.g.edges[ei][2]
+                what = "변환기 전력" if kind == "IC" else "24시간 부하율"
                 QToolTip.showText(ev.globalPosition().toPoint(),
-                                  f"{edge_label(self.g, ei)}\n클릭 → 24시간 부하율",
+                                  f"{edge_label(self.g, ei)}\n클릭 → {what}",
                                   self)
                 self.setCursor(Qt.PointingHandCursor)
             else:
@@ -1420,9 +1690,24 @@ class TopologyView(QFrame):
         self.update()
 
     def mouseReleaseEvent(self, ev):
+        if getattr(self, "_pan", None) is not None:
+            self._pan = None
+            self.setCursor(Qt.ArrowCursor)
+            return
         if self.drag is not None:
             self.drag = None
             self.setCursor(Qt.ArrowCursor)
+            # 🚨 **끌었나 그냥 눌렀나**를 가른다 (2026-09-08 i18). 거의 안 움직였으면
+            #    자리를 저장하지 않고 «버스를 눌렀다» 로 본다 — 안 그러면 클릭 한 번에
+            #    자리 전부가 저장되어 `layered_layout()` 을 덮는다(i16 에서 겪은 것).
+            bp = getattr(self, "_bus_press", None)
+            self._bus_press = None
+            if bp is not None and self.on_bus_click is not None:
+                i0, p0 = bp
+                if np.hypot(ev.position().x() - p0.x(),
+                            ev.position().y() - p0.y()) <= 5.0:
+                    self.on_bus_click(self.g, i0)
+                    return
             if self.on_move:
                 self.on_move({k: [float(self.pos[i][0]), float(self.pos[i][1])]
                               for i, k in enumerate(self.g.keys)})
@@ -1439,7 +1724,8 @@ class TopologyView(QFrame):
 
 
 def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
-                  on_line_click=None, zoom=1.0, on_zoom=None):
+                  on_line_click=None, zoom=1.0, on_zoom=None,
+                  on_reset_places=None, on_bus_click=None):
     """계통도 위젯. 큰 계통은 화면보다 넓어지므로 스크롤 상자에 담아 준다.
 
     '위반 보기' 를 켜면 고른 시간대(t)의 부하율·전압위반·변환기한계를 계통도에
@@ -1450,12 +1736,21 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
     if not g.keys:
         return None
     name = str(sol.case_name)
-    overlay = make_overlay(g, sol, t) if show_violations else None
+    # 🚨 **전압 위반 버스는 늘 표시한다** (2026-09-08 점검 i18 — 사용자:
+    #    *"그리고 전압 위반된 버스도 표시해줘"*). 여태 「위반 보기」를 켜야 나왔고
+    #    그건 기본이 꺼짐이라, 계통도만 보고서는 어느 버스가 한계를 벗어났는지
+    #    알 수 없었다.
+    #    ⚠️ 「위반 보기」는 그대로 둔다 — 그건 **선을 부하율 색으로 칠하는** 것까지
+    #       켜는 것이라 그림이 확 달라진다. 여기서는 버스 표시만 늘 낸다.
+    if show_violations:
+        overlay = make_overlay(g, sol, t)
+    else:
+        overlay = {"load": {}, "vbad": voltage_bad(g, sol, t), "icbad": set()}
     view = TopologyView(g, load_places(name), name, c,
                         on_move=lambda pl: save_places(name, pl),
                         show_violations=show_violations, overlay=overlay,
                         on_line_click=on_line_click,
-                        zoom=zoom)
+                        zoom=zoom, on_bus_click=on_bus_click)
     box = QScrollArea()
     box.setObjectName("plot")
     box.setWidget(view)
@@ -1538,6 +1833,7 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
                           (None, None, None),
                           ("+", TopologyView.ZOOM_STEP, "계통도를 키운다"),
                           ("⟲", None, "배율을 100% 로 되돌린다")]:
+        # (자리 되돌리기는 이 묶음 **밖**에 따로 둔다 — 배율과 뜻이 다르다)
         if txt is None:
             zh.addWidget(pct)
             continue
@@ -1556,6 +1852,22 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
     bar.addWidget(zwrap)
     view.on_zoom = note_zoom          # 정의가 위젯보다 뒤라 여기서 물린다
     show_pct()
+
+    # ── 자리 되돌리기 (2026-09-08 점검 i16) ──────────────────────────────
+    # 🚨 **이게 없으면 배치를 고쳐도 화면에 안 보인다.** 버스를 한 번이라도 끌면
+    #    그 계통의 자리 57개가 통째로 적히고, 다음부터 `layered_layout()` 이 낸
+    #    자리를 덮는다. 옆의 `⟲` 는 **배율만** 되돌린다 — 뜻이 달라 따로 둔다.
+    if on_reset_places is not None:
+        rb = QPushButton("자리 되돌리기")
+        rb.setFixedHeight(40)
+        rb.setCursor(Qt.PointingHandCursor)
+        moved = has_places(name)
+        rb.setEnabled(moved)
+        rb.setToolTip("끌어서 옮긴 버스 자리를 지우고 처음 배치로 되돌립니다"
+                      if moved else "이 계통은 아직 버스를 옮긴 적이 없습니다")
+        rb.clicked.connect(lambda: on_reset_places(name))
+        bar.addSpacing(6)
+        bar.addWidget(rb)
 
     wv.addLayout(bar)
     wv.addWidget(box, 1)
