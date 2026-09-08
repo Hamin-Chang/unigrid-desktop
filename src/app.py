@@ -496,8 +496,14 @@ def dynamic_table(sol, bus_row):
 
 
 def _tab_base(text: str) -> str:
-    """탭 이름에서 건수를 뗀다 — "점검 (3)" · "계통 데이터 (2)" 는 같은 탭이다."""
-    return text.split(" (")[0].strip()
+    """탭 이름에서 건수를 뗀다 — "점검 (3)" 은 "점검" 과 같은 탭이다.
+
+    🚨 **꼬리가 두 꼴이다** (2026-09-08 점검 i35). 「계통 데이터」는 `(1)` 이
+       무엇의 수인지 안 보여 `· 바꾼 것 1` 로 바꿨는데, 여기가 ` (` 만 떼고 있어
+       그 탭이 통째로 «다른 탭» 이 됐다 — 조건을 하나 바꿀 때마다 화면이 첫 표로
+       튕겼다(`test_tab_keeps` 5건이 잡았다). 둘 다 뗀다.
+    """
+    return text.split(" (")[0].split(" · ")[0].strip()
 
 
 def real_tables(sol, mode, t, show_vsc):
@@ -734,6 +740,53 @@ class AboutDialog(QDialog):
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
         v.addLayout(row)
+
+
+class OpenDialog(QDialog):
+    """[불러오기] 를 누르면 먼저 뜨는 창 — **어떤 형식인가** (2026-09-08 점검 i05).
+
+    예전에는 바로 파일 고르기 창이 떴고 거르개가 `*.xlsx *.m *.raw` 하나였다.
+    🚨 그러면 **MatACDC 를 열 길이 없다** — MatACDC 계통은 AC·DC 두 파일이고 둘 다
+       확장자가 `.m` 이라, AC 파일 하나만 고르면 MATPOWER 로 읽혀
+       「MATPOWER 파일에서 mpc.baseMVA 를 찾을 수 없습니다」 로 끝났다.
+       (사용자 점검 i05: *"차라리 «불러오기»를 누르면 형식을 고르는 버튼이 있어야
+        안 헷갈릴 것 같아"*)
+    꼴은 「엑셀로 만들기」 창(`ConvertDialog`)과 같다 — 같은 것을 묻는 창 둘이
+    서로 다른 꼴이면 그것대로 헷갈린다. 한 번 눌러 고른다(라디오+[다음] 이 아니라).
+    """
+
+    def __init__(self, parent, c):
+        super().__init__(parent)
+        self.setWindowTitle("계통 파일 불러오기")
+        self.setMinimumWidth(520)
+        self.setStyleSheet(parent.styleSheet())
+        self.picked = None            # ("xlsx"|"m"|"raw"|"matacdc")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(11)
+        t = QLabel("어떤 형식입니까")
+        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:700;")
+        v.addWidget(t)
+        for kind, name, desc in [
+                ("xlsx",    "UNIGRID 엑셀  (.xlsx)", "이 앱이 쓰는 형식 · AC/DC 다 담는다"),
+                ("m",       "MATPOWER  (.m)",        "AC 계통"),
+                ("raw",     "PSS/E  (.raw)",         "AC 계통 · 3권선 포함"),
+                ("matacdc", "MatACDC  (.m 두 파일)", "AC/DC 혼합 계통 · AC 와 DC 를 차례로 고른다")]:
+            b = QPushButton(f"{name}\n{desc}")
+            b.setMinimumHeight(60)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _, k=kind: self._take(k))
+            v.addWidget(b)
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("취소")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        v.addLayout(row)
+
+    def _take(self, kind):
+        self.picked = kind
+        self.accept()
 
 
 class ConvertDialog(QDialog):
@@ -1158,7 +1211,7 @@ class Proto(QMainWindow):
         # 변환기를 이상적으로 보았나 (2026-08-31). None=변환기 자체가 없다.
         # 「없음」 칩이 무엇 때문에 없는지 가르는 데 쓴다.
         self.vsc_ideal = None
-        self.show_vsc = False
+        self.show_vsc = True          # 변환기 표는 있으면 늘 낸다 (2026-09-08 i23)
         self.show_violations = False  # 계통도 '위반 보기' 켜짐 여부
         # 계통도 배율 (2026-08-19). 계통도 위젯은 계산할 때마다 새로 만들어지므로
         # **여기에 들고 있다가 다시 넘긴다** — 안 그러면 계산 한 번에 100% 로 돌아간다.
@@ -1172,6 +1225,10 @@ class Proto(QMainWindow):
         # 아래쪽 표 탭도 같이 기억한다. **번호가 아니라 이름**으로 — 모드·VSC 표시에 따라
         # 탭 개수가 달라지고, 이름에도 건수가 붙는다("점검 (3)"·"계통 데이터 (2)").
         self.table_tab = "AC 결과"
+        # 표 위 두 갈래 — "결과" | "시나리오" (2026-09-08 점검 i48).
+        # 시나리오가 「AC 결과」·「점검」과 한 드롭다운에 섞여 있어, **결과 표 하나**
+        # 처럼 보였다(사용자: *"시나리오를 표에 포함하지 말고 탭을 따로 만들어"*).
+        self.pane = "결과"
         # ── 계통 조건 (PDR §7 2단계) ──
         # 원본 케이스는 읽고 나면 바뀌지 않는다. 그 위에 "바꾼 것" 목록만 얹는다.
         self.base_case = None         # 파일에서 읽은 원본 (scenario.apply 의 바탕)
@@ -1198,7 +1255,11 @@ class Proto(QMainWindow):
         self._load_timer = QTimer(self)
         self._load_timer.setSingleShot(True)
         self._load_timer.timeout.connect(lambda: self.scale_loads(self._load_pending))
-        self.visible = {k: {n for n, d in v if d} for k, v in TABLE_SPECS.items()}
+        # 🚨 **처음엔 전부 보인다** (2026-09-08 점검 i26). 예전에는 `TABLE_SPECS` 에서
+        #    기본 표시로 켜 둔 칸만 나왔는데, 꺼진 열이 있다는 것 자체가 화면에 안
+        #    보여서 「그 값은 앱이 안 준다」로 읽혔다(머리줄 「열 선택 8/13」 은 누르기
+        #    전엔 뜻이 안 통한다). 좁히는 것은 사용자가 고르면 된다.
+        self.visible = {k: {n for n, _ in v} for k, v in TABLE_SPECS.items()}
         # 위아래 나눔 자리 — 탭 갈래마다 따로 ("grid" = 계통 데이터 · "other" = 나머지)
         self.split_sizes = {}
         # 계통 데이터 표를 다시 그릴 때 보던 자리로 되돌리려고 들고 있는 것
@@ -1264,6 +1325,15 @@ class Proto(QMainWindow):
             border:none; font-size:14px; border-radius:8px; padding:8px 14px; }}
         QPushButton#seg_off:hover {{ background:{c['accent_soft']};
             color:{c['accent']}; }}
+        /* 🚨 **잠긴 것과 안 고른 것이 생김새가 같았다** (2026-09-08 점검 i61·i67).
+           `#seg_off` 에 `:disabled` 규칙이 없어 잠근 「다이나믹」·「PV·QV 곡선」이
+           그냥 «지금 안 고른 것» 으로 보였다 — 눌러도 아무 일이 없는데 왜 그런지는
+           풍선말을 띄워야 알았다. 점선 테두리로 «여긴 못 간다» 를 눈에 보이게 한다.
+           (`#seg_off:disabled` 로 안 하고 이름을 따로 준 까닭 = 테두리가 생기면서
+            높이가 2px 늘어 옆 단추와 어긋나므로 안쪽 여백을 같이 줄여야 한다.) */
+        QPushButton#seg_lock {{ background:transparent; color:{c['muted']};
+            border:1px dashed {c['border']}; font-size:14px;
+            border-radius:8px; padding:7px 13px; }}
         QPushButton#accentline {{ border:1px solid {c['accent']};
             color:{c['accent']}; font-weight:600; }}
         QPushButton#accentline:hover {{ background:{c['accent_soft']}; }}
@@ -1418,18 +1488,14 @@ class Proto(QMainWindow):
             h.addWidget(b)
         h.addStretch()
 
-        # 「지금 무엇을 보고 있나」 — 시간 · 버스 (2026-08-29 사용자 확정).
-        # 사이드바에 있던 것을 여기로 옮겼다. 사이드바에는 *한 번 정하면 한동안
-        # 안 바꾸는 것*(케이스 · 무엇을 할까 · 보기)만 남긴다.
-        # ⚠️ **그래프 탭 줄이 아니라 맨 위 줄인 까닭** — 「계통 데이터」·「점검」 탭은
-        #    그래프를 무조건 접어(2026-08-28) 그 줄이 **통째로 없다**. 거기 두면 그
-        #    두 탭에서 시간을 못 고른다. 맨 위 줄은 어느 탭에서나 있다.
-        # 📌 앱 스스로 *"그래프와 **표**가 이 시간을 같이 따라갑니다"* 라고 말한다 —
-        #    그래프만의 것이 아니라 화면 전체가 따라가는 것이라 그래프 줄보다 위가 맞다.
-        pick = self.view_picker()
-        if pick is not None:
-            h.addWidget(pick)
-        h.addStretch()
+        # 🚨 「시간 · 버스」 고르개는 **표 줄로 내렸다** (2026-09-08 점검 i56 —
+        #    사용자: *"시간 버튼 위치가 좀 이상해"*). 2026-08-29 에 사이드바에서
+        #    이 맨 위 줄로 올렸던 것인데, 파일 단추(불러오기·내보내기·엑셀로 만들기)
+        #    사이에 끼어 **파일을 다루는 줄에 값을 고르는 것 하나가 섞여** 있었다.
+        #    ⚠️ 그때 그래프 탭 줄을 피한 까닭(계통 데이터·점검에서는 그 줄이 없다)은
+        #       그대로 유효하다 — 그래서 그래프 줄이 아니라 **「표」 고르개 줄**이다.
+        #       그 줄은 어느 탭에서나 있고, 바로 옆에 「표」·「위반」이 있어
+        #       *지금 무엇을 보고 있나* 가 한자리에 모인다.
 
         # 🚨 **「정보」는 넣고 뺄 수 있는 것이 아니다** (2026-08-19).
         #    MathWorks 라이선스가 *"About Box, 또는 그와 비슷한 눈에 띄는 자리"* 에
@@ -1530,6 +1596,46 @@ class Proto(QMainWindow):
             self.side_open = True
         elif not self.side_lock_why():
             self.side_open = False
+        self.rebuild()
+
+    def _pane_strip(self):
+        """표 위 두 갈래 — [결과] [시나리오 N] (2026-09-08 점검 i48).
+
+        시나리오가 하나(원본)뿐이면 만들지 않는다 — 갈래가 하나인 갈림길은
+        군더더기다(`scenario_bar()` 가 두 개 미만이면 안 만드는 것과 같은 잣대).
+        """
+        if len(self.book.items) < 2:
+            self.pane = "결과"
+            return None
+        c = self.c
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(3)
+        seg = QFrame()
+        seg.setObjectName("segwrap")
+        seg.setStyleSheet(
+            f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
+            f"border-radius:8px; }}")
+        sh = QHBoxLayout(seg)
+        sh.setContentsMargins(3, 3, 3, 3)
+        sh.setSpacing(3)
+        for nm, txt in [("결과", "결과"),
+                        ("시나리오", f"시나리오 {len(self.book.items)}")]:
+            b = QPushButton(txt)
+            b.setObjectName("seg_on" if self.pane == nm else "seg_off")
+            b.setCursor(Qt.PointingHandCursor)
+            _fit_button(b)
+            b.clicked.connect(lambda _, x=nm: self.set_pane(x))
+            sh.addWidget(b)
+        h.addWidget(seg)
+        h.addStretch(1)
+        return w
+
+    def set_pane(self, name):
+        if name == getattr(self, "pane", "결과"):
+            return
+        self.pane = name
         self.rebuild()
 
     def side_rail(self):
@@ -1642,16 +1748,29 @@ class Proto(QMainWindow):
             b.setCursor(Qt.PointingHandCursor)
             if name == "PV·QV 곡선" and why:
                 b.setEnabled(False)
+                b.setObjectName("seg_lock")      # 잠겨 보이게 (2026-09-08 i67)
                 b.setToolTip(why)
             else:
                 b.clicked.connect(lambda _, x=name: self.set_task(x))
             th.addWidget(b)
         v.addWidget(tseg)
         if why and self.task != "PV·QV 곡선":
-            wn = QLabel(why)
+            # 「잠김 —」 을 앞에 붙인다 (2026-09-08 i67) — 글줄만 있으면 그냥 설명으로
+            # 읽히고, 위 단추가 «못 누르는 것» 이라는 것과 이어지지 않는다.
+            wn = QLabel("잠김 — " + why)
             wn.setWordWrap(True)
             wn.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             v.addWidget(wn)
+        # ── 해법 (2026-09-08 점검 i10) ────────────────────────────────────
+        # 「무엇을 할까」의 **바로 아래**다 — 조류계산을 *어떻게* 푸느냐라서
+        # 그 갈래에 딸린 설정이고, 곡선을 고르면 뜻이 없어 안 낸다(곡선은 NR 뿐).
+        if self.task != "PV·QV 곡선":
+            v.addSpacing(10)
+            sl = QLabel("해법")
+            sl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+            v.addWidget(sl)
+            v.addLayout(self._solver_picker(heading=False))
+
         # 「무엇을 할까」와 그 아래를 가르는 선 (2026-08-29 사용자 확정 · 안 가-1).
         # 위 = 무엇을 할까 / 아래 = 그 작업 안에서 어떻게 볼까.
         # 셋(케이스·할 일·보기)이 같은 꼴이라 나란한 설정처럼 읽혔는데, 실은
@@ -1686,6 +1805,7 @@ class Proto(QMainWindow):
             if m == "다이나믹" and why_dyn:
                 # `PV·QV 곡선` 과 같은 수법 (2026-08-31 `a46a72a`) — 잠그고 까닭을 붙인다.
                 b.setEnabled(False)
+                b.setObjectName("seg_lock")      # 잠겨 보이게 (2026-09-08 i61)
                 b.setToolTip(why_dyn + "\n시간에 따른 변화가 없어 그래프에 점 하나만 "
                                        "찍힙니다.")
             else:
@@ -1696,7 +1816,7 @@ class Proto(QMainWindow):
         #    (둘 다 `seg_off` 회색) 풍선말을 띄우기 전엔 잠긴 줄 모른다.
         #    「PV·QV 곡선」이 쓰는 것과 같은 줄이다 (2026-09-01).
         if why_dyn:
-            wn2 = QLabel(why_dyn)
+            wn2 = QLabel("잠김 — " + why_dyn)
             wn2.setWordWrap(True)
             wn2.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             v.addWidget(wn2)
@@ -1975,6 +2095,11 @@ class Proto(QMainWindow):
         tv.setContentsMargins(0, 0, 0, 0)
         tv.setSpacing(7)
 
+        # 두 갈래 — [결과] [시나리오 N] (2026-09-08 점검 i48)
+        pane_row = self._pane_strip()
+        if pane_row is not None:
+            tv.addWidget(pane_row)
+
         # 🚨 이 줄은 **따로 한 줄을 쓰지 않는다** (2026-08-15). 표 묶음 186px 중 표에 남는
         #    것이 19px 뿐이었는데, 그 줄 하나가 46px 을 먹고 있었다.
         #    표 탭바 오른쪽 구석으로 옮기면 **세로 자리를 안 쓴다**(그래프 접기 단추와 같은 수법).
@@ -1984,6 +2109,17 @@ class Proto(QMainWindow):
         head = QHBoxLayout(head_w)
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(8)
+
+        # ── 지금 무엇을 보고 있나 — 시간(스냅샷) · 버스(다이나믹) ──
+        #    2026-09-08 에 맨 위 줄에서 여기로 내렸다 (점검 i56). 자세한 까닭은
+        #    `header()` 의 주석. 「표」 왼쪽이다 — 시간을 먼저 고르고 그 시각의
+        #    어느 표를 볼지 고르는 차례라 읽는 순서와 같다.
+        vp = self.view_picker()
+        if vp is not None:
+            head.addWidget(vp)
+            sep0 = QLabel("│")
+            sep0.setStyleSheet(f"color:{c['border']};font-size:15px;")
+            head.addWidget(sep0)
 
         # ── 어느 표를 볼지 고르는 드롭다운 ──
         # 🚨 **이름표를 붙인다** (2026-09-01 전수 조사). 탭 줄일 때는 모양 자체가
@@ -2034,12 +2170,14 @@ class Proto(QMainWindow):
         #    찾기」가 두 벌 나란히 뜨고, 「50줄」이 안 보이는 표를 세고 있었다.
         #    「열 선택」과 같은 수법으로 표에 맞춰 숨긴다(`_update_head_vis`).
         self._head_res = []
-        lab = QLabel("VSC 표")
-        lab.setStyleSheet(f"color:{c['muted']};font-size:13px;")
-        head.addWidget(lab)
-        self._head_res.append(lab)
-
+        # 🚨 「VSC 표」 이름표는 **없을 때만** 낸다 (2026-09-08 i23). 고르개를 없앤
+        #    뒤에도 이름표가 남아 머리줄에 홀로 뜬 글자가 되었다 — 붙을 것이 없는
+        #    이름표다. 변환기가 없는 계통에서는 그 옆 「없음」 과 짝이라 뜻이 있다.
         if not self.case_has_vsc:
+            lab = QLabel("VSC 표")
+            lab.setStyleSheet(f"color:{c['muted']};font-size:13px;")
+            head.addWidget(lab)
+            self._head_res.append(lab)
             off = QLabel("  없음  ")
             off.setStyleSheet(
                 f"background:{c['bg']};color:{c['muted']};border:1px solid "
@@ -2066,30 +2204,12 @@ class Proto(QMainWindow):
             note.setStyleSheet(f"color:{c['muted']};font-size:11.5px;")
             head.addWidget(note)
             self._head_res.append(note)
-        else:
-            seg = QFrame()
-            seg.setObjectName("segwrap")
-            seg.setFixedHeight(34)
-            seg.setStyleSheet(
-                f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
-                f"border-radius:9px; }}")
-            sh = QHBoxLayout(seg)
-            sh.setContentsMargins(3, 3, 3, 3)
-            sh.setSpacing(3)
-            # 🚨 **폭을 글자에서 재서 준다** (2026-09-01). 52px 로 못박아 두었더니
-            #    QSS 안쪽 여백(14px x 2)을 빼고 글자에 24px 밖에 안 남아
-            #    **「OFF」의 O 왼쪽이 잘렸다** — 따로 그려 보니 52px 는 잘리고 66px 는
-            #    멀쩡했다. 2026-08-28 계통도 단추(`49a20cf`)와 같은 결함인데 이 자리를
-            #    빠뜨렸다. ⚠️ 「ON」은 안 잘린다 — 흐린 배율로 「UN」이라 잘못 읽었던 것이다.
-            for txt, val in [("ON", True), ("OFF", False)]:
-                b = QPushButton(txt)
-                b.setObjectName("seg_on" if self.show_vsc == val else "seg_off")
-                b.setCursor(Qt.PointingHandCursor)
-                _fit_button(b)
-                b.clicked.connect(lambda _, x=val: self.set_vsc(x))
-                sh.addWidget(b)
-            head.addWidget(seg)
-            self._head_res.append(seg)
+        # 🚨 보일 것이 있으면 **끄고 켤 것 없이 그냥 낸다** (2026-09-08 점검 i23).
+        #    여기 있던 [ON][OFF] 고르개는 「변환기 표를 볼래 말래」를 물었는데,
+        #    안 볼 까닭이 없는 표다 — 계통에 변환기가 있으면 그 표가 답의 일부다.
+        #    없을 때만 위처럼 **왜 없는지** 적는다.
+        #    (`show_vsc` 는 시험 스크립트가 아직 부르므로 남겨 두되 기본이 켬이고
+        #     화면에는 고르개가 없다.)
         # 버스 번호로 찾기 — 계통 데이터 탭에만 있던 것을 **결과 표에도** (2026-08-18).
         # 1,888버스 계통이면 표가 1,888줄인데 한 화면에 20줄이라 찾을 길이 없었다.
         # 자리는 이 머리 줄 — 원래 비어 있던 자리라 세로를 더 안 쓴다.
@@ -2132,7 +2252,32 @@ class Proto(QMainWindow):
         # 🚨 **구석에 넣지 않는다** (2026-08-31). 구석은 탭 줄 안에 살아서, 탭바를
         #    감추면 **구석도 같이 사라진다**(실측 — 조작 줄이 통째로 없어졌다).
         #    그래서 제 줄로 꺼내고 탭바를 감춘다. 고르는 일은 드롭다운이 한다.
-        tv.addWidget(head_w)
+        # 🚨 **이 줄이 창 최소 가로를 끌어올린다** (2026-09-08). 시간 고르개를 여기로
+        #    내리면서(i56) 창 최소 가로가 **1251 → 1429px** 이 돼 1366·1280 화면에
+        #    안 들어갔다(`test_grid_scroll` [2]가 잡았다).
+        #    계통 데이터의 조작 줄이 2026-08-19 에 밟은 길과 같은 수법으로 푼다 —
+        #    줄을 접거나 감추지 않고 **넘치는 만큼만 밀리게** 한다. 넓은 화면에서는
+        #    막대가 아예 안 생겨 지금과 똑같아 보인다.
+        head_sa = QScrollArea()
+        head_sa.setObjectName("tablebar")     # 시험이 이 줄을 집을 이름
+        head_sa.setWidget(head_w)
+        head_sa.setWidgetResizable(True)
+        head_sa.setFrameShape(QFrame.NoFrame)
+        head_sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        head_sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        def _fit_head():
+            # 막대가 뜰 때만 그 높이를 얹는다 — 세로는 표가 먹을 자리다
+            try:
+                hb = head_sa.horizontalScrollBar()
+                head_sa.setFixedHeight(head_w.sizeHint().height()
+                                       + (hb.sizeHint().height() if hb.isVisible() else 0))
+            except RuntimeError:
+                pass
+
+        head_sa.horizontalScrollBar().rangeChanged.connect(lambda *_: _fit_head())
+        _fit_head()
+        tv.addWidget(head_sa)
         self._tabs = tt
         tt.setTabPosition(QTabWidget.North)
         tt.tabBar().setVisible(False)
@@ -2225,12 +2370,14 @@ class Proto(QMainWindow):
         tt.addTab(conv_tab, "수렴")
         for _t in conv_tab.findChildren(QTableWidget):   # 반복별 블록 표 하나
             _fit_header(_t)
+        # 🚨 `(1)` 이 **무엇의 수인지 안 보였다** (2026-09-08 점검 i35).
+        #    옆의 「점검 (26)」·「시나리오 (4)」 는 그 탭에 든 것의 수인데 여기만
+        #    «아직 계산 안 한 편집» 의 수라, 같은 꼴로 적으면 표가 한 줄이라고 읽힌다.
         n_ch = len(self.changes)
         tt.addTab(self.grid_page(),
-                  f"계통 데이터 ({n_ch})" if n_ch else "계통 데이터")
-        sp = self.scenario_bar()
-        if sp is not None:
-            tt.addTab(_scrollable(sp), f"시나리오 ({len(self.book.items)})")
+                  f"계통 데이터 · 바꾼 것 {n_ch}" if n_ch else "계통 데이터")
+        # 🚨 시나리오는 **여기 안 넣는다** (2026-09-08 점검 i48) — 위 두 갈래 띠로
+        #    올렸다. 「AC 결과」·「점검」과 한 드롭다운에 있으면 결과 표 하나로 읽힌다.
 
         # 보고 있던 탭으로 되돌린다 — 조건을 하나 바꿀 때마다 화면을 다시 그리므로,
         # 이걸 안 하면 매번 첫 탭(AC 결과)으로 튄다.
@@ -2243,6 +2390,16 @@ class Proto(QMainWindow):
         self._update_find_label()
         self._update_head_vis()
         tv.addWidget(tt)
+
+        # 🚨 시나리오 갈래에서는 **표 줄과 표를 통째로 숨긴다** (2026-09-08 i48).
+        #    지우지 않고 숨기는 까닭 = 위에서 만든 `_tab_pick`·`_res_tables` 를
+        #    보는 곳이 여럿이라(찾기·열 선택·정렬) 없애면 그것들이 다 깨진다.
+        if getattr(self, "pane", "결과") == "시나리오" and pane_row is not None:
+            head_sa.setVisible(False)
+            tt.setVisible(False)
+            sp = self.scenario_bar()
+            if sp is not None:
+                tv.addWidget(_scrollable(sp), 1)
         # 표 묶음도 최소치를 못 박는다 — 안 그러면 가장 키 큰 탭이 창의 최소
         # 높이를 정해 버린다(Qt 는 최소치를 손으로 정하면 그것을 먼저 본다).
         tw.setMinimumHeight(170)
@@ -2701,15 +2858,10 @@ class Proto(QMainWindow):
         cap = QLabel("현재 케이스")
         cap.setStyleSheet(f"color:{c['muted']};font-size:12px;font-weight:700;")
         top.addWidget(cap)
+        # 🚨 여기 있던 「바꾸기」를 없앴다 (2026-09-08 점검 i07). 머리줄의
+        #    「불러오기」와 **같은 `do_import` 를 부르는 같은 단추**였다 —
+        #    이름이 다르니 서로 다른 일을 한다고 읽힌다(i29 와 같은 갈래).
         top.addStretch()
-        ch = QPushButton("바꾸기")
-        ch.setFixedHeight(24)
-        ch.setStyleSheet(
-            f"border:none;background:transparent;color:{c['accent']};"
-            f"font-size:12px;padding:0;")
-        ch.setCursor(Qt.PointingHandCursor)
-        ch.clicked.connect(self.do_import)
-        top.addWidget(ch)
         v.addLayout(top)
 
         stem = name.replace(".xlsx", "").replace(".m", "").replace(".raw", "")
@@ -3032,14 +3184,10 @@ class Proto(QMainWindow):
 
         h.addStretch()
 
-        if n:
-            go = QPushButton("자세히 보기  →")
-            go.setCursor(Qt.PointingHandCursor)
-            go.setStyleSheet(
-                f"border:none;background:transparent;color:{c['accent']};"
-                f"font-size:13px;font-weight:600;padding:0;")
-            go.clicked.connect(self.go_check)
-            h.addWidget(go)
+        # 🚨 여기 있던 「자세히 보기 →」 를 없앴다 (2026-09-08 점검 i29).
+        #    머리줄 「⚠ 위반 N」 과 **같은 `go_check` 를 부르는 같은 단추**였다 —
+        #    한 화면에 같은 길이 둘이면 서로 다른 데로 간다고 읽힌다.
+        #    개수까지 말해 주는 머리줄 쪽을 남긴다.
 
     def _with_viol_legend(self, name, table, bad, cols=None):
         """표 위에 띠를 얹어 돌려준다 — **주황이 무슨 뜻인지**와 **정렬 상태**.
@@ -4070,8 +4218,8 @@ class Proto(QMainWindow):
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(3)
         for j, (name, w) in enumerate(
-                [("겹쳐", 46), ("이름", 0), ("", 0), ("", 0),
-                 ("전압 최저", 82), ("원본 대비", 74), ("", 34)]):
+                [("겹쳐 그리기", 74), ("이름", 0), ("", 0), ("", 0),
+                 ("전압 최저", 82), ("원본 대비", 74), ("", 52)]):
             if name:
                 q = QLabel(name)
                 q.setStyleSheet(f"color:{c['muted']};font-size:11px;")
@@ -4098,17 +4246,26 @@ class Proto(QMainWindow):
         c = self.c
         here = list(s.changes) == list(self.applied)     # 지금 화면이 이것인가
 
+        # 🚨 이 칸에 **표시 둘이 붙어 있었다** (2026-09-08 점검 i48 — 사용자:
+        #    *"겹쳐에서 선택하는것도 직관적이지가 않아"*).
+        #      ●/○  = 지금 보는 것인가 (읽기만 하는 표시)
+        #      체크  = 비교에서 겹쳐 그릴까 (누르는 것)
+        #    나란히 있으니 ● 도 누르는 것으로 읽혔다. **●/○ 는 없앤다** —
+        #    「지금 보는 것」은 이름 옆 파란 딱지가 이미 말한다(아래 `tag`).
         left0 = QHBoxLayout()
         left0.setSpacing(4)
-        dot = QLabel("●" if here else "○")
-        dot.setStyleSheet(f"color:{c['accent'] if here else c['border']};font-size:12px;")
-        left0.addWidget(dot)
         if s.solved:
             cb = QCheckBox()
             cb.setChecked((i - 1) in self.overlay if self.overlay else True)
-            cb.setToolTip("비교 모드에서 겹쳐 그릴지")
+            cb.setToolTip("비교 → 시나리오끼리 에서 이 시나리오를 함께 그립니다")
             cb.toggled.connect(lambda on, k=i - 1: self.toggle_overlay(k, on))
             left0.addWidget(cb)
+        else:
+            # 안 풀린 시나리오는 그릴 것이 없다 — 빈 칸이면 왜 없는지 안 보인다.
+            no = QLabel("—")
+            no.setToolTip("답을 못 찾은 조건이라 그릴 것이 없습니다")
+            no.setStyleSheet(f"color:{c['border']};font-size:12px;")
+            left0.addWidget(no)
         left0.addStretch(1)
         g.addLayout(left0, i, 0)
 
@@ -4155,7 +4312,6 @@ class Proto(QMainWindow):
 
         # 🚨 [결과 보기] 단추를 뺐다 — **이름을 누르면 간다.** 단추(34px)가 줄 높이를
         #    42px 로 만들고 있었고, 목록이 그만큼 자리를 먹었다(4줄 248px).
-        #    [지우기] 는 작은 ✕ 로 줄인다.
         if not here:
             name.setCursor(Qt.PointingHandCursor)
             name.clicked.connect(lambda _s=s: self.show_scenario(_s))
@@ -4166,10 +4322,16 @@ class Proto(QMainWindow):
         act.setSpacing(6)
         act.addStretch(1)
         if not s.base:
-            x = QPushButton("✕")
-            x.setFixedSize(22, 22)
+            # 🚨 `✕` 만 있고 무엇을 지우는지는 **풍선말에만** 있었다 (2026-09-08 i50
+            #    — 사용자: *"시나리오 삭제 버튼도 명시가 안되어 있고"*). 글로 적는다.
+            #    줄 높이를 안 키우게 22px 로 눌러 둔다(옛 `✕` 와 같은 키).
+            x = QPushButton("지우기")
+            x.setFixedHeight(22)
             x.setCursor(Qt.PointingHandCursor)
             x.setToolTip("이 시나리오를 목록에서 지웁니다 (계통은 안 건드립니다)")
+            x.setStyleSheet(
+                f"border:none;background:transparent;color:{c['muted']};"
+                f"font-size:12px;padding:0 4px;")
             x.clicked.connect(lambda _, _s=s: self.drop_scenario(_s))
             act.addWidget(x)
         g.addLayout(act, i, 6)
@@ -4512,7 +4674,7 @@ class Proto(QMainWindow):
         return s.strip()
 
     # ── 해법 고르기 (2026-08-12, §7.6 G8) ──
-    def _solver_picker(self):
+    def _solver_picker(self, heading=True):
         """Newton / Gauss-Seidel 을 고르는 자리. 못 쓰는 계통이면 흐리게 하고 까닭을 보여준다.
 
         왜 못 쓰는지 판정은 `app_engine.gs_refusal(case)`(여기서는 `ENGINE`) 이 한다 — 엔진도 같은 것을 검사해
@@ -4521,9 +4683,10 @@ class Proto(QMainWindow):
         c = self.c
         box = QVBoxLayout()
         box.setSpacing(2)
-        lab = QLabel("해법")
-        lab.setStyleSheet(f"color:{c['muted']};font-size:11px;")
-        box.addWidget(lab)
+        if heading:
+            lab = QLabel("해법")
+            lab.setStyleSheet(f"color:{c['muted']};font-size:11px;")
+            box.addWidget(lab)
 
         pick = QComboBox()
         pick.addItem("Newton-Raphson", "nr")
@@ -4617,7 +4780,12 @@ class Proto(QMainWindow):
         hv.addLayout(kv("수렴 기준", f"{conv['threshold']:g}"))
         hv.addLayout(kv("최종 불평형", f"{CONV['mis'][-1]:.2e}"))
         hv.addStretch()
-        hv.addLayout(self._solver_picker())
+        # 🚨 고르는 자리는 **사이드바로 옮겼다** (2026-09-08 점검 i10 — 사용자:
+        #    *"GS / NR 중에 고르는걸 수렴 탭 말고 사이드바에 넣자"*). 여기서 고르면
+        #    「푸는 법」을 정하러 결과 탭 하나를 파고 들어가야 했다. 다만 **이 결과가
+        #    어느 해법으로 나온 것인지**는 수렴 탭에 뜻이 있으므로 글로 남긴다.
+        hv.addLayout(kv("해법", "Gauss-Seidel"
+                        if getattr(sol, "method", "nr") == "gs" else "Newton-Raphson"))
         outer.addWidget(head)
 
         # 불평형이 줄어드는 과정
@@ -5372,6 +5540,10 @@ class Proto(QMainWindow):
         """
         if tt.count() == 0:
             return
+        # 「시나리오」는 2026-09-08 부터 이 목록에 없다 (점검 i48) — 앞 판을 쓰던
+        # 세션이나 시험이 그 이름을 들고 있으면 첫 표로 되돌린다.
+        if getattr(self, "table_tab", None) == "시나리오":
+            self.table_tab = "AC 결과"
         want = getattr(self, "table_tab", None)
         for i in range(tt.count()):
             if _tab_base(tt.tabText(i)) == want:
@@ -5408,6 +5580,10 @@ class Proto(QMainWindow):
         """상태바의 위반 건수 → 점검 탭으로."""
         if self.mode == "비교":       # 비교 모드엔 표가 없으니 스냅샷으로 돌아간다
             self.mode = "스냅샷"
+            self.rebuild()
+        # 시나리오 갈래에 있으면 표가 숨어 있다 — 결과 쪽으로 돌아온다 (2026-09-08 i48)
+        if getattr(self, "pane", "결과") != "결과":
+            self.pane = "결과"
             self.rebuild()
         tt = getattr(self, "_tabs", None)
         if tt is None:
@@ -5691,9 +5867,22 @@ class Proto(QMainWindow):
         # 시작한다(뼈대에서는 케이스가 널려 있던 v14 폴더였다).
         cases = paths.cases_dir()
         start = str(cases if cases.is_dir() else Path.home())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "계통 파일 선택", start,
-            "계통 파일 (*.xlsx *.m *.raw);;모든 파일 (*)")
+
+        # 🚨 **형식을 먼저 묻는다** (2026-09-08 점검 i05·i07). 자세한 까닭은
+        #    `OpenDialog` 주석 — 요는 MatACDC 가 `.m` 두 파일이라 확장자로는 못 가른다.
+        dlg = OpenDialog(self, self.c)
+        if dlg.exec() != QDialog.Accepted or not dlg.picked:
+            return
+        kind = dlg.picked
+
+        if kind == "matacdc":
+            self._open_matacdc(start)
+            return
+
+        patt = {"xlsx": "UNIGRID 케이스 (*.xlsx *.xls)",
+                "m":    "MATPOWER 케이스 (*.m)",
+                "raw":  "PSS/E 계통 (*.raw *.RAW)"}[kind]
+        path, _ = QFileDialog.getOpenFileName(self, "계통 파일 선택", start, patt)
         if not path:
             return
         if load_case is None:
@@ -5707,14 +5896,52 @@ class Proto(QMainWindow):
 
         self._start_solve(path)
 
-    def _start_solve(self, path, case=None, method=None):
+    def _open_matacdc(self, start):
+        """MatACDC 계통을 **읽어서 바로 푼다** (2026-09-08 i05).
+
+        「엑셀로 만들기」(`ConvertDialog._pick`)는 같은 두 파일을 읽어 **엑셀로
+        저장**한다. 여기는 저장 없이 그대로 푸는 길 — 계산만 하려는 사람이
+        엑셀을 한 번 거칠 까닭이 없다.
+        """
+        if QMessageBox.question(
+                self, "파일을 두 개 고릅니다",
+                "MatACDC 계통은 파일이 둘로 나뉘어 있습니다.\n\n"
+                "    첫 번째 — AC 계통 (MATPOWER, bus·gen·branch)\n"
+                "    두 번째 — DC 계통 (MatACDC, busdc·convdc·branchdc)\n\n"
+                "이 순서로 고르셔야 합니다. 둘 다 확장자가 .m 이라\n"
+                "바꿔 고르면 읽지 못합니다.\n\n계속할까요?",
+                QMessageBox.Ok | QMessageBox.Cancel) != QMessageBox.Ok:
+            return
+        ac, _ = QFileDialog.getOpenFileName(
+            self, "1/2 — 먼저 AC 계통 파일 (MATPOWER .m)", start, "MATPOWER 케이스 (*.m)")
+        if not ac:
+            return
+        dc, _ = QFileDialog.getOpenFileName(
+            self, "2/2 — 이제 DC 계통 파일 (MatACDC .m)", str(Path(ac).parent),
+            "MatACDC 케이스 (*.m)")
+        if not dc:
+            return
+        try:
+            import unigrid_convert
+            case = unigrid_convert.matacdc_to_case(ac, dc)
+        except Exception as exc:                       # noqa: BLE001
+            QMessageBox.warning(self, "읽지 못했습니다",
+                                f"MatACDC 케이스를 읽지 못했습니다.\n\n{exc}")
+            return
+        # ⚠️ `case` 를 직접 넘기므로 `_start_solve` 가 **새 파일인 줄 모른다** —
+        #    그 갈래는 `case is None` 일 때만 도는데, 그러면 앞 계통의 「바꾼 것」·
+        #    곡선이 남아 화면과 어긋난다. 새 파일이라고 알려 준다.
+        self._start_solve(ac, case=case, new_file=True)
+
+    def _start_solve(self, path, case=None, method=None, new_file=False):
         # 🚨 **다른 파일**을 열 때는 아직 계산 안 한 "바꾼 것"을 버린다 (2026-08-12 확인).
         #    안 버리면 `_solved` 의 원본 갱신 분기(`not self.changes`)가 건너뛰어져
         #    **화면은 새 계통인데 base_case·시나리오·곡선은 앞 계통 것**으로 남는다
         #    (case14 에서 선로를 끈 채 case118 을 여니 화면 118버스 / base_case case14).
         #    같은 파일을 다시 푸는 것([이 조건으로 계산]·다시 풀기)에는 손대지 않는다 —
         #    거기서 지우면 사용자가 방금 한 편집이 사라진다.
-        if case is None and getattr(self, "_last_path", None) not in (None, path):
+        if new_file or (case is None
+                        and getattr(self, "_last_path", None) not in (None, path)):
             self.changes = []
             self.cur = None
             self.curve_err = ""
