@@ -5187,7 +5187,7 @@ class Proto(QMainWindow):
         ser = topology.ic_series(g, self.sol, ei)
         if ser is not None:
             v.addWidget(charts.ic_profile_view(c, ser[0], ser[1],
-                                               f"{title}  ·  24시간 전력"), 3)
+                                               f"{title}  ·  24시간 조류"), 3)
 
         tb = QTableWidget(len(rows), 2)
         tb.setHorizontalHeaderLabels(["항목", f"{self.t + 1}시 값"])
@@ -5216,27 +5216,25 @@ class Proto(QMainWindow):
                               + 2 * tb.frameWidth() + 2)
         QTimer.singleShot(0, _fit_table)
 
+        # 그래프 갈래를 밝히거나(합계인지 등), 못 그린 까닭을 적는다
+        msg = ser[2] if ser is not None else None
         if ser is None:
             # ⚠️ **왜 그래프가 없는지 갈래마다 다르다.** 처음엔 「시각이 하나라」
             #    한 줄로만 적었다가, 24시각인 71bus 3IC 계통에서 **거짓말**이 됐다
-            #    (2026-09-08 사용자 지적). 이유를 갈라 말한다.
-            if getattr(self.sol, "vsc_ideal", False):
-                msg = ("이 계통은 변환기를 **이상 소자**로 봅니다 — IC 표의 트랜스·"
-                       "리액터 임피던스가 모두 0이라 변환기 안에서 나눌 전압·전력이 "
-                       "없습니다. 그래서 엔진이 변환기별 전력을 아예 내지 않습니다"
-                       "(위 표에 Grid_P·Grid_Q 가 없는 것도 같은 까닭). "
-                       "IC 표에 임피던스를 넣으면 상세 모델로 풀립니다.")
-            elif int(getattr(self.sol, "n_time", 1) or 1) <= 1:
+            #    (2026-09-08 사용자 지적).
+            if int(getattr(self.sol, "n_time", 1) or 1) <= 1:
                 msg = "이 계통은 시각이 하나라 24시간 그래프가 없습니다."
             else:
                 msg = "이 변환기가 계산 결과 표에 없어 시간별 값을 못 그립니다."
+        if msg:
             note = QLabel(msg)
             note.setWordWrap(True)
             note.setTextFormat(Qt.MarkdownText)
             note.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             v.addWidget(note)
+        if ser is None:
             v.addStretch(1)          # 표·문구를 위로 붙인다
-        self._popup(title, w, 660 if ser is not None else 400)
+        self._popup(title, w, 700 if ser is not None else 400)
 
     def show_line_profile(self, g, ei):
         """계통도에서 선로를 클릭하면 그 선로의 24시간 부하율을 팝업으로 띄운다.

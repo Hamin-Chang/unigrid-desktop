@@ -147,6 +147,7 @@ ser_ic = topology.ic_series(g, win.sol, ics[0])
 chk("IC 시간축이 24개", len(ser_ic[0]) if ser_ic else 0, 24)
 chk("유효·무효 둘 다 준다", sorted(ser_ic[1]) if ser_ic else [],
     ["Grid_P[MW]", "Grid_Q[MVAR]"])
+chk("상세 모델은 비고가 없다", ser_ic[2] if ser_ic else "?", None)
 
 from PySide6.QtCharts import QChartView
 win.show_ic_facts(g, ics[0]); pump(0.4)
@@ -167,26 +168,52 @@ rows_found = [topology._ic_row(g, win.sol, e, t0,
               for e in ics]
 chk("변환기마다 다른 행을 집는다", rows_found, list(range(len(ics))))
 
-print("\n[i19] 이상 변환기 계통 — 시각을 탓하지 않는다")
-# 🚨 처음엔 그래프가 없을 때 늘 「시각이 하나라」로만 적었다. 24시각인
-#    71bus 3IC 계통에서 **거짓말**이 됐다(2026-09-08 사용자 지적).
-#    까닭은 시각이 아니라 **이상 변환기 모델**(IC 임피던스 0)이다.
+print("\n[i19] toAC_P 가 곧 변환기 조류인가 — 되돌아가기의 근거")
+# 🚨 이상 변환기 계통은 VSC 표가 아예 없다. 그래도 **AC 표의 `toAC_P`** 로
+#    그릴 수 있는 근거가 이 대조다 — 상세 모델 계통에서 둘이 같아야 한다.
+#    (같지 않으면 되돌아가기가 다른 값을 그리는 셈이 된다.)
+ac0, ca = win.sol.at("AC", 0), win.sol.cols("AC")
+vg0, cg = win.sol.vsc_at("VSC_grid", 0), win.sol.cols("VSC_grid")
+worst = 0.0
+for r in vg0:
+    row = ac0[ac0[:, 0].astype(int) == int(r[0])]
+    if not len(row):
+        continue
+    worst = max(worst,
+                abs(float(row[0][ca.index("toAC_P[MW]")]) - float(r[cg.index("Grid_P[MW]")])),
+                abs(float(row[0][ca.index("toAC_Q[MVAR]")]) - float(r[cg.index("Grid_Q[MVAR]")])))
+chk("toAC_P·Q 가 Grid_P·Q 와 같다", worst < 0.01, True)
+print(f"     가장 큰 차이 {worst:.4f} MW")
+
+print("\n[i19] 이상 변환기 계통도 조류 그래프가 뜬다")
+# 🚨 사용자 요구: *"IC 누르면 선로처럼 조류량이 나타나게 하라고"* (2026-09-08).
+#    앞 판은 「이 계통은 변환기를 이상 소자로 봅니다」로 **설명만** 하고 그래프를
+#    안 그렸다. 값은 AC 표에 있었으므로 그릴 수 있었다.
 from PySide6.QtWidgets import QLabel
-for fn, want_ideal in (("ACDC_71bus_3IC_parallel_24h.xlsx", True),
-                       ("ACDC_CIGRE_MVACMVDCLVDC_24h.xlsx", True)):
+from PySide6.QtCharts import QChartView as _CV
+for fn, n_ic_on_bus in (("ACDC_71bus_3IC_parallel_24h.xlsx", 3),
+                        ("ACDC_CIGRE_MVACMVDCLVDC_24h.xlsx", 1)):
     open_it(fn)
     gi = topology.build_graph(win.sol)
     ei = [i for i, (a, b, k) in enumerate(gi.edges) if k == "IC"]
     tag = fn.split("_")[1]
     chk(f"{tag} 시각 수", int(win.sol.n_time), 24)
-    chk(f"{tag} 이상 변환기로 본다", bool(win.sol.vsc_ideal), want_ideal)
-    chk(f"{tag} 그래프감이 없다", topology.ic_series(gi, win.sol, ei[0]), None)
+    chk(f"{tag} 이상 변환기로 본다", bool(win.sol.vsc_ideal), True)
+    sr = topology.ic_series(gi, win.sol, ei[0])
+    chk(f"{tag} 조류 그래프감이 나온다", sr is not None, True)
+    chk(f"{tag} 24시각이다", len(sr[0]) if sr else 0, 24)
+    chk(f"{tag} P·Q 둘 다", sorted(sr[1]) if sr else [], ["P [MW]", "Q [MVAr]"])
+    chk(f"{tag} 값이 하루 동안 변한다",
+        max(max(v) - min(v) for v in sr[1].values()) > 1e-6 if sr else False, True)
     facts = dict(topology.ic_facts(gi, win.sol, ei[0], 0))
-    chk(f"{tag} 표가 까닭을 밝힌다", facts.get("모델"), "이상 변환기 (임피던스 0)")
+    chk(f"{tag} 표에도 P 가 있다", "P [MW]" in facts, True)
+    chk(f"{tag} 모델을 밝힌다", facts.get("모델"), "이상 변환기 (임피던스 0)")
     win.show_ic_facts(gi, ei[0]); pump(0.3)
+    chk(f"{tag} 팝업에 그래프가 있다", len(shots[-1].findChildren(_CV)) > 0, True)
     txt = " ".join(l.text() for l in shots[-1].findChildren(QLabel))
     chk(f"{tag} 「시각이 하나」라고 안 한다", "시각이 하나" in txt, False)
-    chk(f"{tag} 이상 소자라고 밝힌다", "이상 소자" in txt, True)
+    # 한 버스에 변환기가 여럿이면 합계라고 밝혀야 한다
+    chk(f"{tag} 합계인지 밝힌다", "합친 값" in txt, n_ic_on_bus > 1)
 
 open_it("ACDC_case24_MatACDC_24h.xlsx")     # 뒤 시험이 쓰는 계통으로 되돌린다
 g = topology.build_graph(win.sol)

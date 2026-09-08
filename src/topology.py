@@ -414,9 +414,22 @@ def bus_series(g, sol, node_index):
 
 
 def ic_series(g, sol, edge_index):
-    """변환기 하나의 **시간별 전력** → (시각, {이름: 값들}) (2026-09-08).
+    """변환기 하나의 **시간별 전력** → (시각, {이름: 값들}, 비고) (2026-09-08).
 
-    엔진이 변환기 결과를 시각별로 넘기게 고친 뒤(`all_VSC_*`) 그릴 수 있게 됐다.
+    선로를 누르면 24시간 부하율이 뜨듯, 변환기를 누르면 24시간 조류가 떠야 한다.
+    값을 읽는 자리가 **두 갈래**다.
+
+    | 갈래 | 어디서 읽나 | 언제 | 정확도 |
+    |---|---|---|---|
+    | 상세 | `VSC_grid` 의 `Grid_P`·`Grid_Q` | 변환기 임피던스가 있을 때 | 변환기마다 따로 |
+    | 이상 | `AC` 표의 `toAC_P`·`toAC_Q` | 임피던스가 0 이라 VSC 표가 없을 때 | 그 **AC 버스** 몫 |
+
+    🚨 **둘은 같은 값이다** — case24 일곱 개에서 `toAC_P` 와 `Grid_P` 가 소수
+       셋째 자리까지 일치했다(예: 215-6 이 −123.400 대 −123.400). 그러니 VSC
+       표가 없다고 그래프를 포기할 까닭이 없다.
+    ⚠️ 다만 한 AC 버스에 변환기가 **여럿** 붙으면 `toAC_P` 는 **그 합계**다
+       (71bus 3IC 는 셋이 모두 38–39). 그때 비고로 그 사실을 알린다.
+
     못 그리면 None — 그때는 `ic_facts` 의 표로 돌아간다.
     """
     a, b, kind = g.edges[edge_index]
@@ -424,22 +437,46 @@ def ic_series(g, sol, edge_index):
         return None
     ai, di = (a, b) if g.kind[a] != "DC" else (b, a)
     bus_ac, bus_dc = _busno(g.keys[ai]), _busno(g.keys[di])
+
+    # ── 갈래 1: 변환기별 상세 결과 ──
     cube = getattr(sol, "VSC_grid_all", None)
-    if cube is None or getattr(cube, "ndim", 0) != 3 or not cube.size:
+    if (cube is not None and getattr(cube, "ndim", 0) == 3 and cube.size
+            and cube.shape[2] > 1):
+        cols = sol.cols("VSC_grid")
+        row = _ic_row(g, sol, edge_index, cube[:, :, 0], bus_ac, bus_dc)
+        if row is not None:
+            out = {nm: [float(v) for v in cube[row, cols.index(nm), :]]
+                   for nm in ("Grid_P[MW]", "Grid_Q[MVAR]") if nm in cols}
+            if out:
+                return list(range(1, cube.shape[2] + 1)), out, None
+
+    # ── 갈래 2: AC 버스가 변환기 쪽으로 주고받는 전력 ──
+    ac = getattr(sol, "AC", None)
+    if ac is None or getattr(ac, "ndim", 0) != 3 or ac.shape[2] <= 1:
         return None
-    if cube.shape[2] <= 1:                 # 1시각 계통 — 그릴 것이 없다
+    ca = sol.cols("AC")
+    if "toAC_P[MW]" not in ca:
         return None
-    cols = sol.cols("VSC_grid")
-    row = _ic_row(g, sol, edge_index, cube[:, :, 0], bus_ac, bus_dc)
-    if row is None:
+    hit = [i for i in range(ac.shape[0]) if int(ac[i, 0, 0]) == bus_ac]
+    if not hit:
         return None
+    r = hit[0]
     out = {}
-    for nm in ("Grid_P[MW]", "Grid_Q[MVAR]"):
-        if nm in cols:
-            out[nm] = [float(v) for v in cube[row, cols.index(nm), :]]
+    for key, nm in (("toAC_P[MW]", "P [MW]"), ("toAC_Q[MVAR]", "Q [MVAr]")):
+        if key in ca:
+            out[nm] = [float(v) for v in ac[r, ca.index(key), :]]
     if not out:
         return None
-    return list(range(1, cube.shape[2] + 1)), out
+    n_here = sum(1 for e, (x, y, k) in enumerate(g.edges)
+                 if k == "IC" and bus_ac in (_busno(g.keys[x]), _busno(g.keys[y])))
+    note = None
+    if n_here > 1:
+        note = (f"AC {bus_ac} 버스에 변환기가 {n_here}개 붙어 있어 **{n_here}개를 합친 값**"
+                f"입니다 — 이 계통은 변환기를 이상 소자로 봐서 하나씩 나눈 결과가 없습니다.")
+    else:
+        note = ("이 계통은 변환기를 이상 소자로 봅니다(IC 임피던스 0). "
+                "AC 버스가 변환기 쪽으로 주고받는 전력을 그렸습니다.")
+    return list(range(1, ac.shape[2] + 1)), out, note
 
 
 def _ic_row(g, sol, edge_index, flat, bus_ac, bus_dc):
@@ -488,9 +525,19 @@ def ic_facts(g, sol, edge_index, t=0):
             for nm in ("Grid_P[MW]", "Grid_Q[MVAR]", "VSC_P[MW]", "VSC_Q[MVAR]"):
                 if nm in cols:
                     out.append((nm, f"{float(r[cols.index(nm)]):,.3f}"))
-    elif getattr(sol, "vsc_ideal", False):
-        # 값이 아예 없는 까닭을 표 안에서 바로 알린다 (2026-09-08 사용자 지적)
-        out.append(("모델", "이상 변환기 (임피던스 0)"))
+    else:
+        # VSC 표가 없는 계통(이상 변환기)은 **AC 버스 쪽 값**으로 채운다 —
+        # case24 에서 `toAC_P` = `Grid_P` 임을 확인했다(`ic_series` 주석)
+        ac = sol.at("AC", t) if hasattr(sol, "at") else None
+        ca = sol.cols("AC") if hasattr(sol, "cols") else []
+        if ac is not None and getattr(ac, "size", 0) and "toAC_P[MW]" in ca:
+            hit = [r for r in ac if int(r[0]) == bus_ac]
+            if hit:
+                for key, nm in (("toAC_P[MW]", "P [MW]"), ("toAC_Q[MVAR]", "Q [MVAr]")):
+                    if key in ca:
+                        out.append((nm, f"{float(hit[0][ca.index(key)]):,.3f}"))
+        if getattr(sol, "vsc_ideal", False):
+            out.append(("모델", "이상 변환기 (임피던스 0)"))
     # 한계에 걸렸나 (0=안 · 2=용량곡선 · 3=전류한계)
     lim = list(getattr(sol, "IC_lim_mode", []) or [])
     ics = [i for i, (x, y, k) in enumerate(g.edges) if k == "IC"]
