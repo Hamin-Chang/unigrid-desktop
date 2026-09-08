@@ -56,8 +56,12 @@ def _new_chart(c, title):
 def _view(ch, c):
     v = QChartView(ch)
     v.setRenderHint(QPainter.Antialiasing)
-    v.setStyleSheet(f"background:{c['plot']};border:1px solid {c['border']};"
-                    f"border-radius:9px;")
+    # 🍎 **그래프 판도 유리다** (2026-09-08 사용자: *"결과 나오는 곳이 유리면 좋겠어"*).
+    #    `QChart` 자체는 `setBackgroundVisible(False)` 라 안 칠하므로, 판의
+    #    배경만 반투명으로 주면 뒤 얼룩이 그대로 비친다.
+    #    ⚠️ 표(0.34)보다 **덜 비치게** 한다 — 선과 점이 얼룩과 겹치면 읽기 어렵다.
+    v.setStyleSheet(f"background:{c.get('glass_plot', c['plot'])};"
+                    f"border:1px solid {c['glass_edge']};border-radius:14px;")
     v.setMinimumHeight(150)
     return v
 
@@ -478,7 +482,7 @@ class NoData(QFrame):
         v.setContentsMargins(14, 12, 14, 12)
         t = QLabel(title)
         t.setAlignment(Qt.AlignHCenter)
-        t.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:700;")
+        t.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:600;")
         v.addWidget(t)
         v.addStretch()
         m = QLabel(why)

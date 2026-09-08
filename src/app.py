@@ -34,11 +34,13 @@ import random
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, QUrl, QPointF
+from PySide6.QtCore import (Qt, QThread, QTimer, Signal, QUrl, QPointF,
+                            QPropertyAnimation, QEasingCurve)
 from PySide6.QtGui import (QColor, QGuiApplication, QDesktopServices,
-                          QPainter, QPen)
+                          QPainter, QPen, QRadialGradient, QLinearGradient)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
     QComboBox, QSpinBox, QDialog, QCheckBox, QLineEdit, QButtonGroup,
     QHeaderView, QScrollArea, QSizePolicy, QSplitter, QSplitterHandle,
@@ -361,15 +363,33 @@ VERSION = "2.1.1"
 
 
 # ─────────────────────────────────────────── 색
+# 🍎 **맥 앱 색을 그대로 쓴다** (2026-09-08 사용자: *"난 애플 앱처럼 디자인하고 싶어"*).
+#    값은 애플 시스템 색이다 — systemBlue `#007AFF`/`#0A84FF` · systemGreen
+#    `#34C759`/`#30D158` · systemOrange `#FF9500`/`#FF9F0A` · 구분선 `#D1D1D6`/`#38383A`.
+#    ⭐ 맥 앱의 뼈대 = **바탕은 옅은 회색 · 내용은 흰 카드 · 카드에 테두리를 안 쓴다.**
+#    그래서 `bg` 가 창 전체(사이드바 포함) 바탕이고 `surface` 가 카드다 — 지금까지
+#    사이드바가 흰색이고 본문이 회색이라 **맥과 반대**였다.
 LIGHT = dict(
-    bg="#eef1f5", surface="#ffffff", border="#d5dae2", text="#1b2430",
-    muted="#6b7684", accent="#0b6ab8", accent_soft="#e3eefb",
-    ok="#1a7f4b", warn="#c2570e", plot="#f7f9fc",
+    bg="#f2f2f7", surface="#ffffff", border="#d8d8dd", text="#1d1d1f",
+    muted="#55555a", accent="#007aff", accent_soft="#e8f1ff",
+    ok="#248a3d", warn="#c93400", plot="#ffffff",
+    side="#ececf0", hair="#e5e5ea",   # 사이드바 바탕 · 표 가로 구분선
+    # 유리 — 뒤 얼룩이 비치는 정도. `glass_solid` 는 표·그래프가 앉는 판이라 덜 비친다.
+    # `glass_solid` = **결과 판**(표·그래프)이라 가장 많이 비친다. `glass_bar`
+    # = 틀(사이드바·머리줄·바닥줄)이라 거의 불투명하다 — 이름과 반대로 들리지만
+    # 이름은 «어디에 쓰나» 이고 값은 «얼마나 비치나» 다.
+    glass="rgba(255,255,255,0.90)", glass_solid="rgba(255,255,255,0.34)",
+    glass_plot="rgba(255,255,255,0.58)",
+    glass_bar="rgba(255,255,255,0.93)", glass_edge="rgba(255,255,255,0.65)",
 )
 DARK = dict(
-    bg="#161a20", surface="#1e242c", border="#333c47", text="#e6ebf2",
-    muted="#95a1b1", accent="#4da3ff", accent_soft="#22303f",
-    ok="#3ecf8e", warn="#e0873f", plot="#232a33",
+    bg="#1c1c1e", surface="#2c2c2e", border="#3a3a3c", text="#f5f5f7",
+    muted="#a8a8ae", accent="#0a84ff", accent_soft="#0a2540",
+    ok="#30d158", warn="#ff9f0a", plot="#2c2c2e",
+    side="#242426", hair="#38383a",
+    glass="rgba(58,58,62,0.92)", glass_solid="rgba(44,44,46,0.40)",
+    glass_plot="rgba(44,44,46,0.62)",
+    glass_bar="rgba(44,44,46,0.94)", glass_edge="rgba(255,255,255,0.16)",
 )
 
 MODES = ["스냅샷", "다이나믹", "비교"]
@@ -681,7 +701,7 @@ class AboutDialog(QDialog):
         v.setSpacing(11)
 
         t = QLabel("UNIGRID")
-        t.setStyleSheet(f"color:{c['text']};font-size:23px;font-weight:800;"
+        t.setStyleSheet(f"color:{c['text']};font-size:23px;font-weight:600;"
                         "letter-spacing:1.4px;")
         v.addWidget(t)
 
@@ -768,7 +788,7 @@ class OpenDialog(QDialog):
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(11)
         t = QLabel("어떤 형식입니까")
-        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:700;")
+        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:600;")
         v.addWidget(t)
         for kind, name, desc in [
                 ("xlsx",    "UNIGRID 엑셀  (.xlsx)", "이 앱이 쓰는 형식 · AC/DC 다 담는다"),
@@ -864,7 +884,7 @@ class ConvertDialog(QDialog):
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(11)
         t = QLabel("UNIGRID 엑셀로 만들기")
-        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:700;")
+        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:600;")
         v.addWidget(t)
         s = QLabel("계산만 하려면 이 창은 필요 없습니다 — 파일을 바로 열면 됩니다.\n"
                    "여기서 만든 엑셀에 DC 버스·변환기·24시간 부하를 직접 넣어\n"
@@ -970,7 +990,7 @@ class ImportDialog(QDialog):
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(11)
         t = QLabel("불러오기 — 계통 파일 선택")
-        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:700;")
+        t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:600;")
         v.addWidget(t)
 
         drop = QFrame()
@@ -1039,7 +1059,7 @@ class ExportDialog(QDialog):
 
         if self.sol is None:
             t = QLabel("내보내기")
-            t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:700;")
+            t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:600;")
             v.addWidget(t)
             n = QLabel("저장할 결과가 없습니다. 먼저 케이스를 불러와 계산하세요.")
             n.setStyleSheet(f"color:{c['muted']};font-size:14px;")
@@ -1047,7 +1067,7 @@ class ExportDialog(QDialog):
         elif mode == "비교":
             t = QLabel("내보내기 — 비교 표만 (그림은 여기서 저장하지 않습니다)")
             t.setWordWrap(True)
-            t.setStyleSheet(f"color:{c['text']};font-size:17px;font-weight:700;")
+            t.setStyleSheet(f"color:{c['text']};font-size:17px;font-weight:600;")
             v.addWidget(t)
             # 여기서는 **표만** 저장한다. 비교 그림은 왼쪽 아래
             # "이 비교 그림 저장" 버튼이 따로 맡는다(사용자가 그렇게 나누기로 함).
@@ -1066,7 +1086,7 @@ class ExportDialog(QDialog):
                 self.compares.append((name, cb))
         else:
             t = QLabel("내보내기 — 무엇을 저장할까요?")
-            t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:700;")
+            t.setStyleSheet(f"color:{c['text']};font-size:18px;font-weight:600;")
             v.addWidget(t)
             l1 = QLabel("엑셀   (한 시간에 시트 하나)")
             l1.setStyleSheet(f"color:{c['muted']};font-size:14px;")
@@ -1233,6 +1253,145 @@ def dropped_path(event):
     return None
 
 
+# ─────────────────────────────────────────── 유리 바탕
+# 🍎 **애플 글래스모피즘** (2026-09-08 사용자: *"애플의 글래스모피즘을 하고싶다"*).
+#
+# 유리는 **뒤에 무언가 비쳐야** 유리로 보인다. 애플 앱은 벽지가 비치지만, 창을
+# 반투명으로 만들면 ⓐ맥에만 되고(윈도우 설치본에서 안 먹는다) ⓑ화면 기록 권한이
+# 없으면 캡처로 확인할 수도 없다. ⇒ **비칠 것을 앱 안에 만든다** — 바탕에 부드러운
+# 색 얼룩을 깔고 그 위 카드를 반투명으로 두면, 카드가 뒤 색을 머금는다.
+# 어디서나 같게 보이고 `grab()` 으로 찍힌다.
+GLASS_BLOBS = [          # (x비율, y비율, 반지름비율, 밝은색, 어두운색)
+    (0.34, 0.14, 0.46, "#7cc4ff", "#1d4a7a"),
+    (0.88, 0.10, 0.42, "#ffb3d9", "#6d2a52"),
+    (0.46, 0.88, 0.50, "#b9a8ff", "#3c3470"),
+    (0.92, 0.72, 0.44, "#8ee6c8", "#1f5c4a"),
+]
+
+
+class Ground(QWidget):
+    """유리가 비출 바탕 — 옅은 바탕색 위에 부드러운 색 얼룩.
+
+    얼룩 진하기는 `alpha` 하나로 조절한다(밝은 화면 0.34 · 어두운 화면 0.30).
+    ⚠️ 얼룩을 진하게 하면 그 위 **글자 대비가 떨어진다** — 08-27 에 유리를 붙였다
+       되돌린 까닭이 그것이다(사이드바 글자가 1.31:1 까지 떨어졌다). 카드를
+       반투명 흰색으로 덮어 글자 자리는 밝게 유지한다.
+    """
+
+    # 🚨 **얼룩은 «있는 줄 모를 만큼» 옅다** (2026-09-08 사용자: *"왜 배경이 꼭
+    #    저렇게 무지개 같은거여야해"* → 넷을 견줘 「아주 옅게」 확정).
+    #    0.55 로 깔았더니 배경이 무지개가 되어 **계통 그림의 AC 빨강·DC 파랑과
+    #    색이 경쟁**했다. 유리가 «비칠 것» 만 있으면 되지 배경이 주인공일 이유는 없다.
+    #    ⚠️ 어두운 화면에서는 같은 값이 더 안 보인다 — 한 단 올려 준다.
+    ALPHA_LIGHT = 0.16
+    ALPHA_DARK = 0.24
+
+    def __init__(self, c, dark, alpha=None):
+        super().__init__()
+        if alpha is None:
+            alpha = self.ALPHA_DARK if dark else self.ALPHA_LIGHT
+        self.c, self.dark, self.alpha = c, dark, alpha
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        base = QColor(self.c["bg"])
+        g = QLinearGradient(0, 0, 0, H)
+        g.setColorAt(0.0, base if not self.dark else base.lighter(115))
+        g.setColorAt(1.0, base.darker(103) if not self.dark else base)
+        p.fillRect(self.rect(), g)
+        for fx, fy, fr, light, dark in GLASS_BLOBS:
+            col = QColor(dark if self.dark else light)
+            r = fr * max(W, H)          # 긴 변 기준 — 넓은 창에서도 색이 돈다
+            rg = QRadialGradient(QPointF(fx * W, fy * H), r)
+            col.setAlphaF(self.alpha)
+            rg.setColorAt(0.0, col)
+            fade = QColor(col)
+            fade.setAlphaF(0.0)
+            rg.setColorAt(1.0, fade)
+            p.setBrush(rg)
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QPointF(fx * W, fy * H), r, r)
+
+
+class Combo(QComboBox):
+    """🍎 맥식 드롭다운 — 오른쪽에 **쉐브론(⌄)** 을 직접 그린다 (2026-09-08).
+
+    🚨 **Qt QSS 로는 삼각형을 못 만든다.** `width:0; height:0` 에 `border` 를 얹어
+       삼각형을 만드는 것은 **웹 CSS 기법**이고, Qt 는 그대로 네모를 그린다(실측 —
+       화살표 자리에 회색 사각형이 떴다). Qt 가 아는 길은 `image:url(...)` 뿐인데
+       그러면 그림 파일이 따라다녀야 한다 ⇒ **직접 그린다.**
+    🚨 그리고 `QComboBox` 에 배경·테두리 QSS 를 주면 **네이티브 화살표가 아예 꺼진다**
+       — 그래서 「표」 드롭다운에는 화살표가 하나도 없었다(사용자 지적).
+    """
+
+    def __init__(self, color, parent=None):
+        super().__init__(parent)
+        self._chev = QColor(color)
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(self._chev)
+        pen.setWidthF(1.7)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        cx = self.width() - 15
+        cy = self.height() / 2
+        w, h = 4.4, 2.6
+        p.drawPolyline([QPointF(cx - w, cy - h + 1), QPointF(cx, cy + h),
+                        QPointF(cx + w, cy - h + 1)])
+
+
+def fade_in(w, ms=200):
+    """새로 뜬 내용을 **살짝 밝아지며** 들어오게 한다 (2026-09-08).
+
+    사용자: *"버튼 같은거나 그래프 바뀔때 전환 모션도 애플처럼 바꿀 수 있나?"*
+
+    🍎 애플의 전환은 **짧고(0.2s 안팎) 끝에서 느려진다**(ease-out). 길게 끌거나
+       가운데가 빠른 곡선(ease-in-out)을 쓰면 «웹 애니메이션» 티가 난다.
+    ⚠️ **위젯 하나에 효과는 하나뿐이다** — 이미 그림자가 걸린 판(`float_panel`)에는
+       못 건다. 그래서 판이 아니라 **판 안의 내용**에 건다.
+    ⚠️ 애니메이션 객체를 지역 변수로 두면 함수가 끝나며 사라져 **아무 일도 안 일어난다**.
+       위젯에 매달아 둔다.
+    """
+    if w is None:
+        return w
+    eff = QGraphicsOpacityEffect(w)
+    eff.setOpacity(0.0)
+    w.setGraphicsEffect(eff)
+    a = QPropertyAnimation(eff, b"opacity", w)
+    a.setDuration(ms)
+    a.setStartValue(0.0)
+    a.setEndValue(1.0)
+    a.setEasingCurve(QEasingCurve.OutCubic)
+    # 끝나면 효과를 뗀다 — 남겨 두면 그 위젯이 계속 오프스크린 버퍼를 거쳐 느려진다
+    a.finished.connect(lambda: w.setGraphicsEffect(None))
+    a.start()
+    w._fade_anim = a
+    return w
+
+
+def float_panel(w, dark, strong=False):
+    """판을 **떠 있게** 만든다 — 그림자 (2026-09-08).
+
+    사용자: *"사이드바, 그래프, 표 영역으로 해서 각각 floating 느낌이 나면 좋겠어"*.
+    Qt 위젯에는 `box-shadow` 가 없다. `QGraphicsDropShadowEffect` 가 유일한 길이다.
+
+    ⚠️ 그림자만으로는 안 뜬다 — **판 사이에 여백**이 있어야 각각이 따로 보인다.
+       여백은 `build`(판 사이 12px · 창 가장자리 14px)가 담당한다.
+    """
+    eff = QGraphicsDropShadowEffect(w)
+    eff.setBlurRadius(34 if strong else 26)
+    eff.setOffset(0, 7 if strong else 5)
+    eff.setColor(QColor(0, 0, 0, 110 if dark else 42))
+    w.setGraphicsEffect(eff)
+    return w
+
+
 class Proto(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1354,7 +1513,14 @@ class Proto(QMainWindow):
     def qss(self):
         c = self.c
         return f"""
-        QMainWindow, QWidget, QDialog {{ background:{c['bg']}; color:{c['text']};
+        /* 🚨 **중간 위젯이 불투명하면 유리가 막힌다** (2026-09-08).
+           예전에는 `QMainWindow, QWidget, QDialog` 를 한 줄로 묶어 **모든 위젯**에
+           `bg` 를 칠했다. 그래서 바탕(`Ground`)이 얼룩을 그려도 그 위에 얹힌 이름
+           없는 QWidget 들이 전부 덮어 **결과 판이 `#f2f2f7` 그대로**였다(실측).
+           ⇒ 바탕을 칠하는 것은 **창과 대화상자뿐**이고, 보통 위젯은 **투명**이다.
+              색과 글꼴은 그대로 물려준다. */
+        QMainWindow, QDialog {{ background:{c['bg']}; }}
+        QWidget {{ background:transparent; color:{c['text']};
             font-family:'Apple SD Gothic Neo','Helvetica Neue',sans-serif; }}
         QLabel, QCheckBox {{ background:transparent; }}
         /* 툴팁 — 전용 규칙이 없으면 macOS 는 배경을 어둡게 그리는데 위 QWidget
@@ -1365,29 +1531,59 @@ class Proto(QMainWindow):
             border:1px solid {c['border']}; padding:6px 9px; font-size:13px; }}
         #dropzone {{ background:{c['surface']}; border:2px dashed {c['border']};
             border-radius:14px; }}
-        #card, #plot {{ background:{c['surface']};
-            border:1px solid {c['border']}; border-radius:9px; }}
-        #plot {{ background:{c['plot']}; }}
-        #topbar {{ background:{c['surface']}; border-bottom:1px solid {c['border']}; }}
-        #sidebar {{ background:{c['surface']}; border-right:1px solid {c['border']}; }}
-        #statusbar {{ background:{c['surface']}; border-top:1px solid {c['border']}; }}
-        QPushButton {{ background:{c['surface']}; color:{c['text']};
-            border:1px solid {c['border']}; border-radius:7px;
-            padding:10px 17px; font-size:14px; }}
-        QPushButton:hover {{ border-color:{c['accent']}; }}
+        /* 🍎 **유리** — 카드는 불투명 판이 아니라 **반투명 유리**다. 뒤 바탕의
+           색 얼룩(`Ground`)이 비쳐 들어온다. 테두리는 선이 아니라 **밝은
+           하이라이트** — 애플 유리의 가장자리 빛을 흉내낸다.
+           ⚠️ 표·그래프가 앉는 판은 **덜 비치게**(0.86) 한다 — 숫자와 선이
+              얼룩과 겹치면 읽기 어렵다. 유리는 «틀» 에 쓰고 «내용» 에는 덜 쓴다. */
+        #card {{ background:{c['glass']}; border:1px solid {c['glass_edge']};
+            border-radius:14px; }}
+        #plot {{ background:{c['glass_plot']}; border:1px solid {c['glass_edge']};
+            border-radius:14px; }}
+        /* 🍎 **머리줄·바닥줄은 판이 아니다** — 바탕 위에 글자만 얹는다. 이 둘까지
+           판으로 만들면 화면이 판 다섯 장으로 갈려 어느 것이 «내용» 인지 흐려진다.
+           떠 있는 판은 셋뿐이다 — **사이드바 · 그래프 · 표**(2026-09-08 사용자 지정). */
+        #topbar, #statusbar {{ background:transparent; border:none; }}
+        /* 사이드바는 떠 있는 **판**이다 — 둥근 모서리에 옅은 가장자리 빛.
+           결과가 아니므로 거의 불투명하다. */
+        #sidebar {{ background:{c['glass_bar']};
+            border:1px solid {c['glass_edge']}; border-radius:16px; }}
+        /* 결과가 나오는 두 판 — 여기가 유리다. */
+        /* ⚠️ `top:-1px` 은 판을 탭 줄 **위로 끌어올려 붙이는** 값이다(웹 탭의 관습).
+           떠 있는 판에서는 탭이 판을 파고든 것처럼 보인다(2026-09-08 사용자 지적).
+           양수로 바꿔 **탭 줄과 판 사이를 벌린다.** */
+        QTabWidget#graphpanel::pane {{ background:{c['glass_plot']};
+            border:1px solid {c['glass_edge']}; border-radius:16px; top:6px; }}
+        QWidget#tablepanel {{ background:{c['glass_solid']};
+            border:1px solid {c['glass_edge']}; border-radius:16px; }}
+        /* 🍎 맥 단추 = **테두리 없는 옅은 판**. 누를 수 있다는 것은 테두리가 아니라
+           바탕색이 알린다. 굵기는 500 까지만 쓴다(600 이상은 맥에서 무겁다). */
+        QPushButton {{ background:{c['glass']}; color:{c['text']};
+            border:1px solid {c['glass_edge']}; border-radius:9px;
+            padding:10px 17px; font-size:14px; font-weight:500; }}
+        QPushButton:hover {{ background:{c['accent_soft']}; color:{c['accent']}; }}
+        /* 🍎 맥 단추는 누르는 **그 순간** 어두워진다. Qt QSS 에는 전환 시간이 없어
+           애니메이션은 못 넣지만, `:pressed` 상태 하나로 «눌렸다» 는 느껴진다. */
+        QPushButton:pressed {{ background:{c['accent']}; color:#ffffff; }}
+        QPushButton#seg_off:pressed {{ background:{c['accent_soft']};
+            color:{c['accent']}; }}
         QPushButton#primary {{ background:{c['accent']}; color:#ffffff;
-            border:none; font-weight:600; }}
+            border:none; font-weight:500; }}
+        QPushButton#primary:hover {{ background:{c['accent']}; color:#ffffff; }}
         /* 🚨 잠긴 단추가 **잠겨 보이게** (2026-08-31). 이 규칙이 없어 `setEnabled(False)`
            를 걸어도 파란색 그대로였다 — 눌러도 아무 일 없는 파란 단추가 된다. */
-        QPushButton:disabled {{ background:{c['bg']}; color:{c['muted']};
-            border:1px solid {c['border']}; }}
-        QPushButton#primary:disabled {{ background:{c['bg']}; color:{c['muted']};
-            border:1px solid {c['border']}; font-weight:600; }}
+        QPushButton:disabled {{ background:{c['side']}; color:{c['border']};
+            border:none; }}
+        QPushButton#primary:disabled {{ background:{c['side']}; color:{c['border']};
+            border:none; font-weight:500; }}
+        /* ⚠️ 세로 여백 8px 은 **표 셀 안**(행 30px)에서 넘친다 — 「켜짐」이
+           24px 자리에 33px 을 요구했다. 5px 으로 줄여 두 자리 다 맞춘다. */
         QPushButton#seg_on {{ background:{c['accent']}; color:#ffffff;
-            border:none; font-weight:700; font-size:14px;
-            border-radius:8px; padding:8px 14px; }}
+            border:none; font-weight:500; font-size:14px;
+            border-radius:8px; padding:5px 14px; }}
         QPushButton#seg_off {{ background:transparent; color:{c['muted']};
-            border:none; font-size:14px; border-radius:8px; padding:8px 14px; }}
+            border:none; font-size:14px; font-weight:400;
+            border-radius:8px; padding:5px 14px; }}
         QPushButton#seg_off:hover {{ background:{c['accent_soft']};
             color:{c['accent']}; }}
         /* 🚨 **잠긴 것과 안 고른 것이 생김새가 같았다** (2026-09-08 점검 i61·i67).
@@ -1398,7 +1594,7 @@ class Proto(QMainWindow):
             높이가 2px 늘어 옆 단추와 어긋나므로 안쪽 여백을 같이 줄여야 한다.) */
         QPushButton#seg_lock {{ background:transparent; color:{c['muted']};
             border:1px dashed {c['border']}; font-size:14px;
-            border-radius:8px; padding:7px 13px; }}
+            border-radius:8px; padding:4px 13px; }}
         /* 🚨 **그래프와 표 사이 손잡이가 안 보였다** (2026-09-08 사용자 지적 —
            *"여기 파란색 박스 쳐놓은 곳을 드래그하면 그래프 크기를 늘리고 줄일 수
            있잖아. 이거의 역할을 조금 더 티나게 해줘"*).
@@ -1414,6 +1610,13 @@ class Proto(QMainWindow):
             border-top:1px solid {c['accent']};
             border-bottom:1px solid {c['accent']}; }}
         QSplitter::handle:vertical:pressed {{ background:{c['accent_soft']}; }}
+        /* 🚨 **탭 줄 구석 단추는 탭 높이에 눌린다** (2026-09-08 실측 —
+           「그래프 접기」가 32px 자리에 39px 을 요구해 **「그래쁘 섭기」로 잘렸다**).
+           08-28 에 `[전압|위상각]` 이 「선압」·「뷔상삭」이 된 것과 같은 자리다.
+           ⇒ 이 자리 단추는 **안쪽 여백을 줄여** 요구 높이를 자리에 맞춘다.
+           ⚠️ 한글은 라틴 글자보다 위아래로 크다 — 같은 여백에서 라틴은 멀쩡한데
+              한글만 잘리므로, 영문 단추로 시험하면 안 걸린다. */
+        QPushButton#corner {{ padding:5px 13px; font-size:14px; }}
         QPushButton#accentline {{ border:1px solid {c['accent']};
             color:{c['accent']}; font-weight:600; }}
         QPushButton#accentline:hover {{ background:{c['accent_soft']}; }}
@@ -1425,27 +1628,86 @@ class Proto(QMainWindow):
            2026-09-01 「잠긴 단추가 안 고른 단추와 생김새가 같다」와 같은 자리다
            (접기 단추가 비교·곡선에서 잠기는데 회색 링크 그대로였다). */
         QPushButton#link:disabled {{ color:{c['border']}; text-decoration:none; }}
-        QComboBox, QSpinBox, QLineEdit {{ background:{c['surface']}; color:{c['text']};
-            border:1px solid {c['border']}; border-radius:6px;
-            padding:9px 12px; font-size:16px; }}
-        QTabWidget::pane {{ border:1px solid {c['border']}; border-radius:8px;
-            background:{c['surface']}; top:-1px; }}
+        QComboBox, QSpinBox, QLineEdit {{ background:{c['glass']}; color:{c['text']};
+            border:1px solid {c['glass_edge']}; border-radius:9px;
+            padding:9px 12px; font-size:15px; }}
+        QComboBox:focus, QSpinBox:focus, QLineEdit:focus {{
+            border:2px solid {c['accent']}; padding:7px 10px; }}
+        /* 🚨 **펼친 목록은 창이 따로다** — `QWidget` 을 투명으로 바꾼 뒤 이 창이
+           바탕을 잃고 **검게** 떴다(2026-09-08 사용자 지적). 목록은 판 위가 아니라
+           떠 있는 창이므로 **불투명**으로 못 박는다. */
+        QComboBox QAbstractItemView {{ background:{c['surface']}; color:{c['text']};
+            border:1px solid {c['border']}; border-radius:10px;
+            padding:5px; outline:none;
+            selection-background-color:{c['accent_soft']};
+            selection-color:{c['text']}; }}
+        QComboBox QAbstractItemView::item {{ padding:7px 10px; border-radius:6px;
+            min-height:22px; }}
+        QComboBox QAbstractItemView::item:selected {{
+            background:{c['accent_soft']}; color:{c['accent']}; }}
+        QMenu {{ background:{c['surface']}; color:{c['text']};
+            border:1px solid {c['border']}; border-radius:10px; padding:5px; }}
+        QMenu::item {{ padding:7px 14px; border-radius:6px; }}
+        QMenu::item:selected {{ background:{c['accent_soft']}; color:{c['accent']}; }}
+        /* 화살표는 `Combo` 가 직접 그린다 — QSS 로는 삼각형을 못 만든다.
+           여기서는 **자리만** 비워 둔다(오른쪽 26px). */
+        QComboBox::drop-down {{ subcontrol-origin:padding; subcontrol-position:right;
+            width:26px; border:none; background:transparent; }}
+        QComboBox::down-arrow {{ image:none; width:0; height:0; }}
+        QComboBox:hover {{ background:{c['accent_soft']}; }}
+        /* 🍎 맥 탭은 **밑줄이 아니라 알약**이다(Finder 보기 전환·설정 창).
+           밑줄은 웹 쪽 관습이고, 맥에서는 고른 것에 옅은 판을 깐다. */
+        /* ⚠️ 안쪽 탭은 **판이 아니다** — 표 판 안에 또 판이 생기면 테두리가 겹쳐
+           «상자 속 상자» 가 된다. 판 노릇은 `#tablepanel`·`#graphpanel` 만 한다. */
+        QTabWidget::pane {{ border:none; background:transparent; top:6px; }}
+        /* ⚠️ 탭 높이가 곧 **구석 위젯이 쓸 수 있는 자리**다 — 구석의 `[전압|위상각]`
+           이 넘쳐 아래 판과 겹쳤다(2026-09-08 사용자 지적). 세로 여백을 한 단
+           올려 구석에 34px 을 만들어 준다. */
         QTabBar::tab {{ background:transparent; color:{c['muted']};
-            padding:10px 18px; font-size:14px; border:none;
-            margin-right:3px; min-width:96px; }}
-        QTabBar::tab:selected {{ color:{c['accent']};
-            border-bottom:2px solid {c['accent']}; font-weight:700; }}
-        QTableWidget {{ background:{c['surface']}; border:none;
-            gridline-color:{c['border']}; font-size:14px;
-            /* 🚨 줄무늬 색을 **팔레트에서** 준다 (2026-09-08 점검 i63).
-               안 주면 Qt 기본값(밝은 회색)이 쓰여, 어두운 화면에서 한 줄 걸러
-               배경이 밝아지고 밝은 글자를 삼켰다 — 짝수 줄이 안 읽혔다. */
-            alternate-background-color:{c['bg']}; color:{c['text']}; }}
-        QHeaderView::section {{ background:{c['bg']}; color:{c['muted']};
+            padding:15px 18px; font-size:14px; border:none;
+            margin-right:4px; min-width:96px; border-radius:7px; }}
+        QTabBar::tab:hover {{ background:{c['accent_soft']}; color:{c['accent']}; }}
+        QTabBar::tab:selected {{ background:{c['surface']}; color:{c['text']};
+            font-weight:500; }}
+        /* 🍎 **맥 표에는 세로 격자선이 없다** — 가로 구분선만 아주 옅게 긋고,
+           숫자는 오른쪽·이름은 왼쪽으로 맞춘다(활성 상태 보기가 색을 딱 두 곳만
+           쓰고도 안 답답한 까닭 · `디자인_참고/갈래별/다1_ActivityMonitor.png`).
+           줄무늬도 뺀다 — 구분선이 이미 줄을 가른다.
+           🚨 줄무늬 색은 **팔레트에서** 준다(2026-09-08 점검 i63). 안 주면 Qt
+              기본값(밝은 회색)이 쓰여 어두운 화면에서 짝수 줄이 안 읽혔다.
+              지금은 바탕과 같은 값을 줘 «줄무늬 없음» 을 만든다. */
+        QTableWidget {{ background:transparent; border:none;
+            gridline-color:transparent; font-size:14px;
+            alternate-background-color:transparent; color:{c['text']}; }}
+        QTableWidget::item {{ border-bottom:1px solid {c['hair']};
+            padding:0px 4px; }}
+        QTableWidget::item:selected {{ background:{c['accent_soft']};
+            color:{c['text']}; }}
+        QHeaderView::section {{ background:transparent; color:{c['muted']};
             border:none; border-bottom:1px solid {c['border']};
-            padding:9px; font-size:14px; font-weight:600; }}
+            padding:9px; font-size:13px; font-weight:500; }}
         QCheckBox {{ font-size:14px; color:{c['text']}; spacing:7px; }}
+        /* 🚨 **계산 중 창이 비어 보였다** (2026-09-08 사용자: *"조류해석하는 중이
+           아무것도 안떠"*). `QProgressDialog` 는 자기 라벨과 진행 막대를 직접
+           만드는데, `QWidget` 을 투명으로 돌린 뒤 그 막대에 아무 규칙이 없어
+           **아무것도 안 그려졌다.** 창·글자·막대를 다 못 박는다. */
+        QProgressDialog {{ background:{c['surface']}; }}
+        QProgressDialog QLabel {{ color:{c['text']}; font-size:15px;
+            padding:4px 2px; }}
+        QProgressBar {{ background:{c['bg']}; border:none; border-radius:5px;
+            height:8px; text-align:center; color:transparent; }}
+        QProgressBar::chunk {{ background:{c['accent']}; border-radius:5px; }}
         QScrollArea {{ border:none; background:transparent; }}
+        /* 🍎 맥 스크롤 막대 = **가는 알약**, 홈은 안 그린다. */
+        QScrollBar:vertical {{ background:transparent; width:11px; margin:0; }}
+        QScrollBar:horizontal {{ background:transparent; height:11px; margin:0; }}
+        QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+            background:{c['border']}; border-radius:5px; min-height:28px;
+            min-width:28px; }}
+        QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
+            background:{c['muted']}; }}
+        QScrollBar::add-line, QScrollBar::sub-line {{ height:0; width:0; }}
+        QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
         """
 
     # ── 전체 다시 그리기 ──
@@ -1459,17 +1721,26 @@ class Proto(QMainWindow):
         if self.mode == "다이나믹" and self.dynamic_why():
             self.mode = "스냅샷"
         if self.sol is None:
-            self.setCentralWidget(self.start_page())
+            # 🚨 **시작 화면도 `Ground` 위에 얹는다** (2026-09-08 사용자: *"시작 화면도
+            #    왜 검은색이라 이상하고"*). `QWidget` 을 투명으로 바꾼 뒤로 바탕을
+            #    그리는 것은 `Ground` 뿐인데, 시작 화면은 그걸 안 거쳐서 **아무도
+            #    안 칠한 검은 창**이 됐다. 계산 중 화면도 같은 자리다.
+            g = Ground(self.c, self.dark)
+            gv = QVBoxLayout(g)
+            gv.setContentsMargins(0, 0, 0, 0)
+            gv.addWidget(self.start_page())
+            self.setCentralWidget(g)
             return
-        root = QWidget()
+        root = Ground(self.c, self.dark)
         self.setCentralWidget(root)
         v = QVBoxLayout(root)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         v.addWidget(self.topbar())
         mid = QHBoxLayout()
-        mid.setContentsMargins(0, 0, 0, 0)
-        mid.setSpacing(0)
+        # 판이 «떠» 보이려면 가장자리와 판 사이에 바탕이 보여야 한다
+        mid.setContentsMargins(14, 8, 14, 12)
+        mid.setSpacing(12)
         # 왼쪽 줄도 스크롤에 담는다 — 카드를 다섯 장 쌓아 665px 이라, 안 담으면
         # 이것 하나로 창 최소 높이가 781px 이 된다(2026-08-13 실측).
         side = QScrollArea()
@@ -1479,8 +1750,10 @@ class Proto(QMainWindow):
         side.setWidget(self.sidebar() if self.side_open else self.side_rail())
         side.setFixedWidth(280 if self.side_open else 56)
         side.setMinimumHeight(0)
+        float_panel(side, self.dark)
         mid.addWidget(side)
-        mid.addWidget(self.center(), 1)
+        self._center_w = self.center()      # 전환 모션을 걸 자리
+        mid.addWidget(self._center_w, 1)
         v.addLayout(mid, 1)
         v.addWidget(self.statusbar())
 
@@ -1548,7 +1821,7 @@ class Proto(QMainWindow):
 
         logo = QLabel("UNIGRID")
         logo.setStyleSheet(
-            f"color:{c['text']};font-size:23px;font-weight:800;letter-spacing:1.4px;")
+            f"color:{c['text']};font-size:23px;font-weight:600;letter-spacing:1.4px;")
         h.addWidget(logo)
         h.addSpacing(14)
 
@@ -1642,9 +1915,9 @@ class Proto(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         lb = QLabel(cap)
-        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         lay.addWidget(lb)
-        cb = QComboBox()
+        cb = Combo(self.c['muted'])
         cb.addItems(items)
         cb.setCurrentIndex(max(0, idx))
         cb.setMinimumWidth(118)
@@ -1805,7 +2078,7 @@ class Proto(QMainWindow):
 
         # ── 무엇을 할까 — 케이스 다음으로 큰 갈림이라 맨 위에 둔다 (F1d)
         tl = QLabel("무엇을 할까")
-        tl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        tl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         v.addWidget(tl)
         tseg = QFrame()
         tseg.setObjectName("segwrap")
@@ -1847,7 +2120,7 @@ class Proto(QMainWindow):
         if self.task != "PV·QV 곡선":
             v.addSpacing(10)
             sl = QLabel("해법")
-            sl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+            sl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
             v.addWidget(sl)
             v.addLayout(self._solver_picker(heading=False))
 
@@ -1867,7 +2140,7 @@ class Proto(QMainWindow):
 
         # 모드 3분할 — 가장 큰 선택이라 이름표를 붙인다
         ml = QLabel("보기")
-        ml.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        ml.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         v.addWidget(ml)
         seg = QFrame()
         seg.setObjectName("segwrap")
@@ -1912,7 +2185,7 @@ class Proto(QMainWindow):
 
         else:  # 비교
             lb = QLabel("무엇끼리 비교")
-            lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+            lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
             v.addWidget(lb)
             seg2 = QFrame()
             seg2.setObjectName("segwrap")
@@ -1940,7 +2213,7 @@ class Proto(QMainWindow):
 
             if self.compare_axis == "시나리오끼리":
                 lb3 = QLabel("겹쳐 볼 시나리오")
-                lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+                lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
                 v.addWidget(lb3)
                 n3 = QLabel("위의 시나리오 목록에서 체크한 것을 겹쳐 그립니다.\n"
                             "전압·위상각은 x축이 버스, 주파수·손실은 x축이 시간입니다.")
@@ -1961,7 +2234,7 @@ class Proto(QMainWindow):
             what = (" · ".join(CI.UNIT_NAME[k] for k in kinds) or "버스") \
                 if self.compare_axis == "버스끼리" else "시간"
             lb2 = QLabel(f"비교할 {what}")
-            lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+            lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
             v.addWidget(lb2)
             # 🚨 **타이핑 칸이었다** (2026-08-30 사용자 확정으로 고르개가 됐다).
             #    타이핑 칸일 때 네 가지가 조용히 어긋났다 —
@@ -1992,7 +2265,7 @@ class Proto(QMainWindow):
         c = self.c
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(16, 14, 16, 12)
+        v.setContentsMargins(0, 0, 0, 0)   # 바깥 `mid` 가 여백을 맡는다 (floating)
         v.setSpacing(11)
 
         if self.task == "PV·QV 곡선":
@@ -2065,10 +2338,11 @@ class Proto(QMainWindow):
                         if lo == "v" and len(pl) > 1}
             self._plot_seg = None
 
-            def _on_graph_tab(i, _stack=stack_of):
+            def _on_graph_tab(i, _stack=stack_of, _gt=gt):
                 self.graph_tab = int(i)
                 if self._plot_seg is not None:
                     self._plot_seg.setVisible(int(i) in _stack)
+                fade_in(_gt.widget(int(i)))      # 🍎 새 그래프가 밝아지며 들어온다
             gt.currentChanged.connect(_on_graph_tab)
             # 그래프가 낮으면 QtCharts 가 x축 글자를 "..." 로 줄여 버린다. 그래서
             # **평소 높이**(아래 setSizes 620)는 넉넉히 준다. 다만 이걸 최소치로
@@ -2093,6 +2367,7 @@ class Proto(QMainWindow):
             #    몰랐다. **2026-08-18 에 그 위쪽 단추를 아예 없애 여기가 유일한 길이 됐다.**
             #    탭 줄 오른쪽 구석에 둔다 — **세로 자리를 안 먹는다.**
             fold = QPushButton("그래프 접기")
+            fold.setObjectName("corner")
             fold.setToolTip("그래프를 접고 표를 넓게 씁니다.")
             fold.setCursor(Qt.PointingHandCursor)
             fold.clicked.connect(lambda: self.set_numbers(True))
@@ -2110,12 +2385,20 @@ class Proto(QMainWindow):
                 #    안 남고, 잘린 윗부분 때문에 「전압」이 **「선압」**, 「위상각」이
                 #    **「뷔상삭」** 으로 보였다(ㅈ 의 윗줄·ㄱ 의 윗줄이 사라진다).
                 #    VSC 표의 [ON|OFF] 는 같은 34 인데 라틴 대문자라 티가 안 났다.
-                seg.setFixedHeight(40)
+                # 🚨 **40 은 이번엔 반대로 넘쳤다** (2026-09-08 사용자: *"이거 겹쳐"*).
+                #    탭 구석 자리가 32px 인데 40px 을 못 박아 **8px 이 아래 판 위로**
+                #    삐져나갔다. 같은 날 seg 단추 여백을 8→5px 로 줄여 요구 높이가
+                #    33px 로 내려왔으므로 34 면 든다.
+                #    ⭐ 교훈 = **못 박은 높이는 한 번 맞으면 끝이 아니다** — 여백을
+                #      건드릴 때마다 다시 재야 한다. ⇒ **아예 못 박지 않는다.**
+                #      단추가 요구하는 만큼 묶음이 커지고, 탭 줄이 거기 맞춘다.
                 seg.setStyleSheet(
                     f"#segwrap {{ background:{c['bg']};border:1px solid {c['border']};"
                     f"border-radius:9px; }}")
                 sh = QHBoxLayout(seg)
-                sh.setContentsMargins(3, 3, 3, 3)
+                # 4px — 2px 이면 고른 단추(파란 판)가 묶음 테두리에 닿아 «여백이
+                # 없다» 로 보인다 (2026-09-08 사용자 지적)
+                sh.setContentsMargins(4, 4, 4, 4)
                 sh.setSpacing(3)
                 # 🚨 **폭을 글자에서 재서 준다.** 그냥 두면 「전압」이 53px 로 나와
                 #    QSS 안쪽 여백(14px x 2)을 빼면 글자에 25px 밖에 안 남아
@@ -2136,11 +2419,15 @@ class Proto(QMainWindow):
                 self._plot_seg = seg
                 corner = QWidget()
                 ch = QHBoxLayout(corner)
-                ch.setContentsMargins(0, 0, 0, 0)
+                # 아래 여백 = **판과 벌리는 거리** (2026-09-08 사용자: *"조금 더 위로
+                # 띄우자"*). 0 이면 `[전압|위상각]` 이 그래프 판에 닿아 붙어 보인다.
+                ch.setContentsMargins(0, 0, 0, 7)
                 ch.setSpacing(10)
                 ch.addWidget(seg)
                 ch.addWidget(fold)
             gt.setCornerWidget(corner, Qt.TopRightCorner)
+            gt.setObjectName("graphpanel")
+            float_panel(gt, self.dark)
             split.addWidget(gt)
         else:
             note = QFrame()
@@ -2169,6 +2456,7 @@ class Proto(QMainWindow):
             nv.addWidget(t)
             nv.addStretch()
             b = QPushButton("그래프 펼치기")
+            b.setObjectName("corner")
             b.setToolTip("큰 계통에서는 점이 겹쳐 덩어리로 보입니다. 그래도 보시려면 누르세요.")
             b.clicked.connect(lambda: self.set_numbers(False))
             nv.addWidget(b)
@@ -2177,7 +2465,10 @@ class Proto(QMainWindow):
         # ── 표 ──
         tw = QWidget()
         tv = QVBoxLayout(tw)
-        tv.setContentsMargins(0, 0, 0, 0)
+        # 판 안쪽 여백 — 0 이면 도구 줄과 표가 둥근 모서리에 붙어 판 밖처럼 보인다.
+        # ⚠️ 가로는 **표 열을 그만큼 밀어낸다**(실측: 12px 씩 주니 열 넘침이 24px
+        #    늘었다). 둥근 모서리를 가리지 않을 만큼만 준다.
+        tv.setContentsMargins(8, 10, 8, 10)
         tv.setSpacing(7)
 
         # 두 갈래 — [결과] [시나리오 N] (2026-09-08 점검 i48)
@@ -2211,20 +2502,20 @@ class Proto(QMainWindow):
         #    「여기서 고른다」를 말했는데, 드롭다운이 되니 값(「AC 결과」)만 남아
         #    뭘 고르는 자리인지 안 보였다. 다른 고르개(시간·버스·해법)와 같은 꼴.
         tl = QLabel("표")
-        tl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        tl.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         head.addWidget(tl)
         # 🚨 **탭 줄로는 원래 안 되는 일이었다** (2026-08-31 실측). 다이나믹은 탭이
         #    8 개인데 창이 1920px 이 돼야 다 보인다 — 맥북 14인치 5/8 · 사이드카 2/8.
         #    구석을 줄여도(561 → 245px) 탭바가 요구하는 폭이 그대로라 안 풀린다.
         #    ⚠️ 목록은 **탭을 다 만든 뒤** 채운다 — 아래 `_fill_tab_pick` 참조.
-        pick = QComboBox()
+        pick = Combo(self.c['muted'])
         pick.setFixedHeight(34)
         pick.setMinimumWidth(180)
         pick.setCursor(Qt.PointingHandCursor)
         pick.setStyleSheet(
             f"QComboBox {{ background:{c['surface']};color:{c['text']};"
             f"border:1px solid {c['border']};border-radius:9px;padding:0 12px;"
-            f"font-size:14px;font-weight:700; }}"
+            f"font-size:14px;font-weight:600; }}"
             f"QComboBox:hover {{ border-color:{c['accent']}; }}"
             f"QComboBox::drop-down {{ border:none;width:24px; }}")
         self._tab_pick = pick
@@ -2243,7 +2534,7 @@ class Proto(QMainWindow):
             vb.setFixedHeight(34)
             vb.setToolTip(f"한계를 벗어난 것이 {n_v:,}건 있습니다 — 누르면 점검으로 갑니다")
             vb.setStyleSheet(
-                f"background:{c['surface']};color:{c['warn']};font-weight:700;"
+                f"background:{c['surface']};color:{c['warn']};font-weight:600;"
                 f"border:1px solid {c['warn']};border-radius:9px;"
                 f"padding:0 12px;font-size:13px;")
             vb.clicked.connect(self.go_check)
@@ -2497,6 +2788,8 @@ class Proto(QMainWindow):
         # 표 묶음도 최소치를 못 박는다 — 안 그러면 가장 키 큰 탭이 창의 최소
         # 높이를 정해 버린다(Qt 는 최소치를 손으로 정하면 그것을 먼저 본다).
         tw.setMinimumHeight(170)
+        tw.setObjectName("tablepanel")
+        float_panel(tw, self.dark)
         split.addWidget(tw)
 
         if not self.numbers:
@@ -2505,13 +2798,13 @@ class Proto(QMainWindow):
             self._apply_split(split)
             # 탭을 옮기면 **그 탭에 맞는 자리**로 바꾼다 (화면은 다시 안 그린다)
             tt.currentChanged.connect(
-                lambda i, w=tt, s=split: self._table_tab_changed(
-                    _tab_base(w.tabText(i)), s))
+                lambda i, w=tt, s=split: (self._table_tab_changed(
+                    _tab_base(w.tabText(i)), s), fade_in(w.widget(int(i)))))
             split.splitterMoved.connect(lambda *_: self._save_split(split))
         else:
             tt.currentChanged.connect(
                 lambda i, w=tt: (setattr(self, "table_tab", _tab_base(w.tabText(i))),
-                                 self._update_head_vis()))
+                                 self._update_head_vis(), fade_in(w.widget(int(i)))))
         v.addWidget(split, 1)
         return w
 
@@ -2750,7 +3043,7 @@ class Proto(QMainWindow):
         title = QLabel("UNIGRID")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
-            f"color:{c['text']};font-size:44px;font-weight:800;letter-spacing:4px;")
+            f"color:{c['text']};font-size:44px;font-weight:600;letter-spacing:4px;")
         v.addWidget(title)
         sub = QLabel("AC/DC 통합 조류계산")
         sub.setAlignment(Qt.AlignCenter)
@@ -2783,7 +3076,7 @@ class Proto(QMainWindow):
         dv.setSpacing(7)
         d1 = QLabel("계통 파일을 여기로 끌어다 놓으세요")
         d1.setAlignment(Qt.AlignCenter)
-        d1.setStyleSheet(f"color:{c['text']};font-size:19px;font-weight:700;")
+        d1.setStyleSheet(f"color:{c['text']};font-size:19px;font-weight:600;")
         dv.addWidget(d1)
         self.dropzone = drop        # 끌어다 놓을 때 밝히려고 들고 있는다
         self.drop_label = d1
@@ -2823,7 +3116,7 @@ class Proto(QMainWindow):
         recent = load_recent()
         if recent:
             cap = QLabel("최근에 연 파일")
-            cap.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+            cap.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
             cw = QWidget()
             cw.setMaximumWidth(720)
             cvv = QVBoxLayout(cw)
@@ -2920,13 +3213,13 @@ class Proto(QMainWindow):
             if self.drop_label is not None:
                 self.drop_label.setText("놓으면 바로 계산합니다")
                 self.drop_label.setStyleSheet(
-                    f"color:{c['accent']};font-size:19px;font-weight:700;")
+                    f"color:{c['accent']};font-size:19px;font-weight:600;")
         else:
             self.dropzone.setStyleSheet("")
             if self.drop_label is not None:
                 self.drop_label.setText("계통 파일을 여기로 끌어다 놓으세요")
                 self.drop_label.setStyleSheet(
-                    f"color:{c['text']};font-size:19px;font-weight:700;")
+                    f"color:{c['text']};font-size:19px;font-weight:600;")
 
     def open_path(self, path):
         """최근 파일에서 바로 열기."""
@@ -2950,7 +3243,7 @@ class Proto(QMainWindow):
 
         top = QHBoxLayout()
         cap = QLabel("현재 케이스")
-        cap.setStyleSheet(f"color:{c['muted']};font-size:12px;font-weight:700;")
+        cap.setStyleSheet(f"color:{c['muted']};font-size:12px;font-weight:600;")
         top.addWidget(cap)
         # 🚨 여기 있던 「바꾸기」를 없앴다 (2026-09-08 점검 i07). 머리줄의
         #    「불러오기」와 **같은 `do_import` 를 부르는 같은 단추**였다 —
@@ -2964,7 +3257,7 @@ class Proto(QMainWindow):
         f = QLabel(stem.replace("_", "_​"))
         f.setWordWrap(True)
         f.setToolTip(str(getattr(self, "_last_path", "") or name))
-        f.setStyleSheet(f"color:{c['text']};font-size:16px;font-weight:700;")
+        f.setStyleSheet(f"color:{c['text']};font-size:16px;font-weight:600;")
         v.addWidget(f)
 
         ext = QLabel(name.split(".")[-1].upper() + " 파일")
@@ -2975,7 +3268,7 @@ class Proto(QMainWindow):
         pill = QLabel("  " + mode_txt + "  ")
         pill.setStyleSheet(
             f"background:{c['accent_soft']};color:{c['accent']};"
-            f"border-radius:9px;padding:4px 6px;font-size:12px;font-weight:700;")
+            f"border-radius:9px;padding:4px 6px;font-size:12px;font-weight:600;")
         pr = QHBoxLayout()
         pr.addWidget(pill)
         pr.addStretch()
@@ -2999,7 +3292,7 @@ class Proto(QMainWindow):
                 a.setStyleSheet(f"color:{c['muted']};font-size:11px;")
                 b = QLabel(num)
                 b.setStyleSheet(
-                    f"color:{c['text']};font-size:18px;font-weight:700;")
+                    f"color:{c['text']};font-size:18px;font-weight:600;")
                 col.addWidget(a)
                 col.addWidget(b)
                 cr.addLayout(col)
@@ -3011,7 +3304,7 @@ class Proto(QMainWindow):
                 a.setStyleSheet(f"color:{c['muted']};font-size:11px;")
                 b = QLabel(f"{self.sol.baseMVA:g}")
                 b.setStyleSheet(
-                    f"color:{c['text']};font-size:18px;font-weight:700;")
+                    f"color:{c['text']};font-size:18px;font-weight:600;")
                 col.addWidget(a)
                 col.addWidget(b)
                 cr.addLayout(col)
@@ -3594,14 +3887,14 @@ class Proto(QMainWindow):
         #    0.01 이라 «정확히 ×1.37» 을 맞추기가 어렵다. 그리고 **범위 밖**
         #    (×2.5 로 어디서 무너지나)은 아예 못 넣었다.
         vx = QLabel("×")
-        vx.setStyleSheet(f"color:{c['accent']};font-size:14px;font-weight:700;")
+        vx.setStyleSheet(f"color:{c['accent']};font-size:14px;font-weight:600;")
         h.addWidget(vx)
         val = QLineEdit(f"{now:.2f}")
         val.setFixedWidth(52)
         val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         val.setToolTip("바로 적어도 됩니다 — 슬라이더 범위(0.50~2.00) 밖도 넣을 수 있습니다")
         val.setStyleSheet(
-            f"QLineEdit {{ color:{c['accent']};font-size:14px;font-weight:700;"
+            f"QLineEdit {{ color:{c['accent']};font-size:14px;font-weight:600;"
             f"background:{c['surface']};border:1px solid {c['border']};"
             f"border-radius:6px;padding:2px 5px; }}"
             f"QLineEdit:focus {{ border-color:{c['accent']}; }}")
@@ -3755,7 +4048,7 @@ class Proto(QMainWindow):
         #    AC/DC 는 여덟아홉이다 — 실측 **603px**. 표 탭에서 쓴 수법과 같게 간다.
         #    ⚠️ 「⚙ AC 조정」·「⚙ 부하」는 **여기 안 넣는다** — 표가 아니라 조건을 고치는
         #       판이라 성격이 다르고, 「⚙ 부하 ×1.37」 은 **안 눌러도 값이 보여야** 한다.
-        pick = QComboBox()
+        pick = Combo(self.c['muted'])
         pick.setFixedHeight(34)
         # 폭 180 = 위 표 드롭다운과 같게. 190 이던 것을 「N줄」 단위를 넣으며
         # 줄였다 — 929px 창 여유가 0 이라 이 줄은 1px 도 못 늘린다 (2026-09-01).
@@ -3764,7 +4057,7 @@ class Proto(QMainWindow):
         pick.setStyleSheet(
             f"QComboBox {{ background:{c['surface']};color:{c['text']};"
             f"border:1px solid {c['border']};border-radius:9px;padding:0 12px;"
-            f"font-size:14px;font-weight:700; }}"
+            f"font-size:14px;font-weight:600; }}"
             f"QComboBox:hover {{ border-color:{c['accent']}; }}"
             f"QComboBox::drop-down {{ border:none;width:24px; }}")
         # 🚨 「AC 선로 77」 은 **77번 선로**로 읽힌다 — 뒤 숫자는 줄 수이므로
@@ -4558,7 +4851,7 @@ class Proto(QMainWindow):
         hv.addWidget(dot)
         msg = QLabel(f"한계를 벗어난 항목 {n}건" if n else "한계를 벗어난 항목 없음")
         msg.setStyleSheet(
-            f"color:{c['warn'] if n else c['ok']};font-size:15px;font-weight:700;")
+            f"color:{c['warn'] if n else c['ok']};font-size:15px;font-weight:600;")
         hv.addWidget(msg)
         hv.addStretch()
         sub = QLabel("전압 한계 · 선로 용량 · 변환기 한계 · 발전기 한계를 계산 결과에서 걸러낸 것입니다")
@@ -4621,7 +4914,7 @@ class Proto(QMainWindow):
                                f"다시 정해지므로 위 시간을 바꾸면 이 표도 바뀝니다.")
             ttl.setStyleSheet(
                 f"color:{c['warn'] if warn_on else c['text']};"
-                f"font-size:14px;font-weight:700;")
+                f"font-size:14px;font-weight:600;")
             hh.addWidget(ttl)
             hh.addStretch()
             note = QLabel("굵은 값은 계산이 정한 것입니다"
@@ -4710,13 +5003,13 @@ class Proto(QMainWindow):
             wv = QHBoxLayout(warn)
             wv.setContentsMargins(14, 10, 14, 10)
             wicon = QLabel("⚠")
-            wicon.setStyleSheet(f"color:{c['warn']};font-size:16px;font-weight:700;")
+            wicon.setStyleSheet(f"color:{c['warn']};font-size:16px;font-weight:600;")
             wv.addWidget(wicon)
             # 엔진이 보낸 문구를 **그대로** 쓴다. 앞에 "한계 적용 시 수렴 실패 —" 를
             # 붙이던 것은 문구 안에 이미 그 말이 들어 있어 겹쳤다 (2026-08-12).
             wtxt = QLabel(qmsg)
             wtxt.setWordWrap(True)
-            wtxt.setStyleSheet(f"color:{c['warn']};font-size:13px;font-weight:700;")
+            wtxt.setStyleSheet(f"color:{c['warn']};font-size:13px;font-weight:600;")
             wv.addWidget(wtxt, 1)
             outer.addWidget(warn)
 
@@ -4731,7 +5024,7 @@ class Proto(QMainWindow):
             iv = QHBoxLayout(info)
             iv.setContentsMargins(14, 9, 14, 9)
             icon = QLabel("ⓘ")
-            icon.setStyleSheet(f"color:{c['muted']};font-size:15px;font-weight:700;")
+            icon.setStyleSheet(f"color:{c['muted']};font-size:15px;font-weight:600;")
             iv.addWidget(icon)
             itxt = QLabel(note)
             itxt.setWordWrap(True)
@@ -4751,7 +5044,7 @@ class Proto(QMainWindow):
             iv2 = QHBoxLayout(info2)
             iv2.setContentsMargins(14, 9, 14, 9)
             ic2 = QLabel("ⓘ")
-            ic2.setStyleSheet(f"color:{c['muted']};font-size:15px;font-weight:700;")
+            ic2.setStyleSheet(f"color:{c['muted']};font-size:15px;font-weight:600;")
             iv2.addWidget(ic2)
             it2 = QLabel(
                 f"선로 {n_unrated}개는 정격(용량)이 안 적혀 있어 부하율을 재지 못했습니다 — "
@@ -4769,7 +5062,7 @@ class Proto(QMainWindow):
             bv.setSpacing(8)
             th = QHBoxLayout()
             t = QLabel(title)
-            t.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:700;")
+            t.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:600;")
             th.addWidget(t)
             cnt = QLabel(f"{len(rows)}건")
             cnt.setStyleSheet(
@@ -4863,7 +5156,7 @@ class Proto(QMainWindow):
             lab.setStyleSheet(f"color:{c['muted']};font-size:11px;")
             box.addWidget(lab)
 
-        pick = QComboBox()
+        pick = Combo(self.c['muted'])
         pick.addItem("Newton-Raphson", "nr")
         pick.addItem("Gauss-Seidel", "gs")
         pick.setCurrentIndex(1 if getattr(self, "solver", "nr") == "gs" else 0)
@@ -4943,7 +5236,7 @@ class Proto(QMainWindow):
             a.setStyleSheet(f"color:{c['muted']};font-size:11px;")
             d = QLabel(v)
             d.setStyleSheet(
-                f"color:{color or c['text']};font-size:17px;font-weight:700;")
+                f"color:{color or c['text']};font-size:17px;font-weight:600;")
             b.addWidget(a)
             b.addWidget(d)
             return b
@@ -4969,7 +5262,7 @@ class Proto(QMainWindow):
         bv = QVBoxLayout(box)
         bv.setContentsMargins(14, 11, 14, 13)
         t = QLabel("반복에 따른 최대 불평형")
-        t.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:700;")
+        t.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:600;")
         bv.addWidget(t)
         sub = QLabel("실제 그래프가 들어갈 자리 — 세로축은 로그 눈금")
         sub.setStyleSheet(f"color:{c['muted']};font-size:11px;")
@@ -4986,7 +5279,7 @@ class Proto(QMainWindow):
             d = QLabel(f"{m:.2e}")
             d.setStyleSheet(
                 f"color:{c['ok'] if m < conv['threshold'] else c['text']};"
-                f"font-size:15px;font-weight:700;")
+                f"font-size:15px;font-weight:600;")
             cv.addWidget(a)
             cv.addWidget(d)
             bar.addWidget(cell)
@@ -5001,7 +5294,7 @@ class Proto(QMainWindow):
         b2.setContentsMargins(14, 11, 14, 13)
         b2.setSpacing(8)
         t2 = QLabel("무엇이 수렴을 늦추나 — 반복별 블록 최대 불평형")
-        t2.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:700;")
+        t2.setStyleSheet(f"color:{c['text']};font-size:14px;font-weight:600;")
         b2.addWidget(t2)
         tb = QTableWidget(len(conv["block_hist"]), len(conv["blocks"]) + 2)
         tb.setHorizontalHeaderLabels(["반복"] + conv["blocks"] + ["가장 큰 블록"])
@@ -5843,7 +6136,7 @@ class Proto(QMainWindow):
         col = c["warn"] if n else c["ok"]
         vb.setStyleSheet(
             f"border:none;background:transparent;color:{col};"
-            f"font-size:14px;font-weight:700;padding:0;text-align:left;")
+            f"font-size:14px;font-weight:600;padding:0;text-align:left;")
         vb.clicked.connect(self.go_check)
         h.addWidget(vb)
 
@@ -5999,7 +6292,7 @@ class Proto(QMainWindow):
     def curve_controls(self, v):
         c = self.c
         lb = QLabel("부하를 늘릴 버스")
-        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        lb.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         v.addWidget(lb)
         le = QLineEdit(self.curve_load)
         le.setPlaceholderText("비우면 부하가 있는 버스 전부")
@@ -6012,7 +6305,7 @@ class Proto(QMainWindow):
         v.addSpacing(10)
 
         lb2 = QLabel("곡선을 그릴 버스")
-        lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        lb2.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         v.addWidget(lb2)
         le2 = QLineEdit(self.curve_pick)
         le2.setPlaceholderText("비우면 늘린 버스와 같게 (최대 8개)")
@@ -6021,7 +6314,7 @@ class Proto(QMainWindow):
         v.addSpacing(10)
 
         lb3 = QLabel("가로축")
-        lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:700;")
+        lb3.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
         v.addWidget(lb3)
         seg = QFrame()
         seg.setObjectName("segwrap")
@@ -6158,7 +6451,7 @@ class Proto(QMainWindow):
             k = QLabel(name)
             k.setStyleSheet(f"color:{c['muted']};font-size:12px;")
             val_l = QLabel(val)
-            val_l.setStyleSheet(f"color:{c['text']};font-size:17px;font-weight:800;")
+            val_l.setStyleSheet(f"color:{c['text']};font-size:17px;font-weight:600;")
             box.addWidget(k)
             box.addWidget(val_l)
             h.addLayout(box)
@@ -6199,10 +6492,16 @@ class Proto(QMainWindow):
             if isinstance(self.split_sizes, dict):
                 self.split_sizes.pop(self._split_slot(), None)
         self.rebuild()
+        # 🍎 접거나 펼치면 그래프 자리가 통째로 바뀐다 — 딱 끊기지 않게 **밝아지며**
+        #    들어오게 한다 (2026-09-08 사용자: *"그래프 펼치고 접는것도 애플처럼
+        #    모션 넣고"*). 판마다 걸지 않고 **가운데 전체**에 한 번 건다 — 판에는
+        #    이미 그림자가 걸려 있어 효과를 겹칠 수 없다.
+        fade_in(getattr(self, "_center_w", None), 230)
 
     def toggle_theme(self):
         self.dark = not self.dark
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None), 230)
 
     def do_import(self):
         # 파일 고르기 창이 처음 보여 줄 자리. 저장소의 검증용 케이스 폴더가 있으면 거기서
