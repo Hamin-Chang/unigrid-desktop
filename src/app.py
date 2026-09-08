@@ -1375,6 +1375,29 @@ def fade_in(w, ms=200):
     return w
 
 
+def slide_width(w, start, end, ms=240):
+    """가로 폭을 **부드럽게** 바꾼다 — 사이드바 접기/펼치기 (2026-09-08).
+
+    🍎 맥 사이드바는 폭이 «툭» 바뀌지 않고 밀려 들어간다. 페이드로는 그 느낌이
+       안 난다 — 사라지는 게 아니라 **좁아지는** 것이기 때문이다.
+    ⚠️ `setFixedWidth` 가 걸려 있으면 애니메이션이 안 먹는다(최소=최대라 움직일
+       자리가 없다). 최소를 풀고 **최대만** 움직인 뒤, 끝나면 다시 못 박는다.
+    """
+    if w is None:
+        return w
+    w.setMinimumWidth(0)
+    w.setMaximumWidth(start)
+    a = QPropertyAnimation(w, b"maximumWidth", w)
+    a.setDuration(ms)
+    a.setStartValue(start)
+    a.setEndValue(end)
+    a.setEasingCurve(QEasingCurve.OutCubic)
+    a.finished.connect(lambda: w.setFixedWidth(end))
+    a.start()
+    w._slide_anim = a
+    return w
+
+
 def float_panel(w, dark, strong=False):
     """판을 **떠 있게** 만든다 — 그림자 (2026-09-08).
 
@@ -1751,6 +1774,7 @@ class Proto(QMainWindow):
         side.setFixedWidth(280 if self.side_open else 56)
         side.setMinimumHeight(0)
         float_panel(side, self.dark)
+        self._side_sa = side                # 접기/펼치기 모션을 걸 자리
         mid.addWidget(side)
         self._center_w = self.center()      # 전환 모션을 걸 자리
         mid.addWidget(self._center_w, 1)
@@ -1945,11 +1969,17 @@ class Proto(QMainWindow):
 
     def toggle_side(self):
         """왼쪽 줄을 접었다 폈다. 펴는 쪽은 언제나 된다."""
+        was = self.side_open
         if not self.side_open:
             self.side_open = True
         elif not self.side_lock_why():
             self.side_open = False
         self.rebuild()
+        if was != self.side_open:
+            # 🍎 **좁아지는 것이지 사라지는 게 아니다** — 페이드가 아니라 폭을 민다
+            slide_width(getattr(self, "_side_sa", None),
+                        56 if self.side_open else 280,
+                        280 if self.side_open else 56)
 
     def _pane_strip(self):
         """표 위 두 갈래 — [결과] [시나리오 N] (2026-09-08 점검 i48).
@@ -1990,6 +2020,7 @@ class Proto(QMainWindow):
             return
         self.pane = name
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 결과 ↔ 시나리오
 
     def side_rail(self):
         """접힌 왼쪽 띠 — 폭 56px (2026-09-02 사용자 확정, 안 (나)).
@@ -3800,6 +3831,7 @@ class Proto(QMainWindow):
         self.changes = []
         self.applied = []
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 원본으로 되돌리기
 
     # ── ② 부하 일괄 증감 ──────────────────────────────────────────────
     # 칸을 하나씩 고치는 대신 **부하 전체에 한 수를 곱한다**. 부하 여유(margin)를 보는
@@ -4532,6 +4564,7 @@ class Proto(QMainWindow):
             self._grid_last_table = key
         self.grid_key = key
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 계통 데이터 표 갈아끼우기
 
     def flip_row(self, row):
         """그 줄을 켜거나 끈다. **계산은 안 한다** — 목록에만 얹는다."""
@@ -4818,6 +4851,7 @@ class Proto(QMainWindow):
                 f"「{s.name}」 은 답을 못 찾은 조건입니다.\n조건만 깔아 두었으니 "
                 f"여기서 더 바꿔 다시 계산해 보세요.\n\n화면의 결과는 그대로 둡니다.")
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 시나리오 보기
 
     def rename_scenario(self, s):
         name, ok = QInputDialog.getText(self, "이름 바꾸기", "시나리오 이름", text=s.name)
@@ -4832,6 +4866,7 @@ class Proto(QMainWindow):
                 self.show_scenario(back)          # 보고 있던 것을 지우면 원본으로
         self.book.remove(s)
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 시나리오 지우기
 
     def check_page(self):
         c = self.c
@@ -6220,6 +6255,7 @@ class Proto(QMainWindow):
         if getattr(self, "pane", "결과") != "결과":
             self.pane = "결과"
             self.rebuild()
+            fade_in(getattr(self, "_center_w", None))   # 점검 탭으로
         tt = getattr(self, "_tabs", None)
         if tt is None:
             return
@@ -6237,6 +6273,7 @@ class Proto(QMainWindow):
         if self.side_lock_why():
             self.side_open = True
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 보기 갈래(스냅샷·다이나믹·비교)
 
     def set_axis(self, a):
         self.compare_axis = a
@@ -6364,6 +6401,7 @@ class Proto(QMainWindow):
         if self.side_lock_why():        # 곡선 입력이 왼쪽에 있다 — 접혀 있으면 편다
             self.side_open = True
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 할 일 갈래(조류계산·PV·QV 곡선)
 
     def run_curve(self):
         case = self.curve_case()
@@ -6386,6 +6424,7 @@ class Proto(QMainWindow):
         self.cur = cur
         self.curve_err = ""
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 곡선 다 그림
 
     def _curve_failed(self, msg):
         self.curve_busy = False
@@ -6695,6 +6734,7 @@ class Proto(QMainWindow):
         if not self.case_has_vsc:
             self.show_vsc = False
         self.rebuild()
+        fade_in(getattr(self, "_center_w", None))   # 계산이 끝나 화면이 처음 뜰 때
 
     def _when_tag(self, sol=None) -> str:
         """시나리오 이름에 붙일 시각 꼬리표 — **여러 시각짜리 계통에서만** (2026-09-08).
