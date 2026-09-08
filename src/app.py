@@ -5738,13 +5738,14 @@ class Proto(QMainWindow):
     def _solved(self, sol):
         if getattr(self, "prog", None) is not None:
             self.prog.close()
+        fresh_file = False
         # 조건을 안 바꾸고 푼 것이면 이 케이스가 **원본**이다 (바꿔서 푼 것은 원본이 아니다).
         loaded = getattr(getattr(self, "thread", None), "loaded_case", None)
         pending = getattr(self, "_pending", None)
         if pending:
             # [이 조건으로 계산] 으로 푼 것 — 시나리오 한 줄로 담고 바꾼 목록을 비운다
             self.book.add(self.base_case, pending, solution=sol,
-                          name=self._new_name(pending))
+                          name=self._new_name(pending, sol))
             self.applied = list(pending)      # 이제 이것이 화면의 조건이다
             self.changes = []
             self._pending = None
@@ -5759,11 +5760,16 @@ class Proto(QMainWindow):
                 self.numbers_auto = True
                 self.numbers_why = "changed"
         elif loaded is not None and not self.changes:
+            fresh_file = True
             self.base_case = loaded
             self.applied = []
             self.changes = []
             self.book = SC.Book()
-            self.book.add(loaded, [], solution=sol, name="원본")
+            # 🚨 원본도 시각을 단다 — 「모든 시나리오에」 (2026-09-08 사용자 지시).
+            #    파일을 막 열었으므로 `self.t` 는 아직 앞 계통 것일 수 있다 ⇒ 0 으로.
+            self.t = 0
+            self.book.add(loaded, [], solution=sol,
+                          name=f"원본{' (1 H)' if int(getattr(sol, 'n_time', 1) or 1) > 1 else ''}")
             # 새 계통을 열면 곡선은 버린다 — **앞 계통의 곡선**이라 지금 화면과 상관없다.
             self.cur = None
             self.curve_err = ""
@@ -5803,7 +5809,14 @@ class Proto(QMainWindow):
         if self.task == "PV·QV 곡선" and self.curve_why():
             self.task = "조류계산"
             self.cur = None
-        self.t = 0
+        # 🚨 조건만 바꿔 다시 푼 것이면 **보던 시각을 지킨다** (2026-09-08).
+        #    여태 풀 때마다 0 으로 돌려서, 5 H 를 보다가 선로 하나 끄고 다시 풀면
+        #    화면이 1 H 로 튕겼다 — 24시각 계통에서 조건을 견주려면 같은 시각을
+        #    봐야 한다. 시나리오 이름에 담을 때의 시각이 붙게 되면서(같은 날)
+        #    이름은 `(5 H)` 인데 화면은 1 H 인 어긋남이 눈에 띄어 드러났다.
+        #    새 파일을 열 때는 그대로 0 이다. `bus_row`·`show_violations` 는 안 건드린다.
+        n_t_new = int(getattr(sol, "n_time", 1) or 1)
+        self.t = 0 if fresh_file else min(max(int(self.t), 0), n_t_new - 1)
         self.bus_row = 0
         self.show_violations = False      # 새 케이스는 위반 보기 꺼진 채로 시작
         self.case = (Path(sol.case_name).name or "case",
@@ -5815,11 +5828,25 @@ class Proto(QMainWindow):
             self.show_vsc = False
         self.rebuild()
 
-    def _new_name(self, pending):
+    def _when_tag(self, sol=None) -> str:
+        """시나리오 이름에 붙일 시각 꼬리표 — **여러 시각짜리 계통에서만** (2026-09-08).
+
+        한 시각짜리면 빈 문자열이라 이름이 예전 그대로다.
+        담을 때의 «지금 보는 시각» 을 쓴다 — 계통 변경 자체는 모든 시각에 함께
+        걸리지만, 그 시나리오를 만들며 **무엇을 보고 있었나**가 목록에서 갈린다.
+        """
+        s = sol if sol is not None else getattr(self, "sol", None)
+        n_t = int(getattr(s, "n_time", 1) or 1)
+        if n_t <= 1:
+            return ""
+        return f"{min(max(int(self.t), 0), n_t - 1) + 1} H"
+
+    def _new_name(self, pending, sol=None):
         """시나리오 이름 — 이번에 새로 얹은 것으로 짓고, 없으면 전체로."""
         fresh = getattr(self, "_pending_new", None)
         self._pending_new = None
-        return SC.auto_name(self.base_case, fresh if fresh else pending)
+        return SC.auto_name(self.base_case, fresh if fresh else pending,
+                            when=self._when_tag(sol))
 
     # 🚨 **MATLAB 속사정을 첫 화면에 쏟지 않는다** (2026-09-08 점검 i37·i39).
     #    여태 `msg` 를 통째로 붙여서, 선로 하나 껐다가 안 풀리면 이런 것이 떴다 —

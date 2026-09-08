@@ -442,14 +442,22 @@ class Scenario:
         return b - a if not (np.isnan(a) or np.isnan(b)) else float("nan")
 
 
-def auto_name(case: Any, changes: Sequence[Change]) -> str:
-    """담을 때 자동으로 붙는 이름 — 사용자가 고칠 수 있다."""
+def auto_name(case: Any, changes: Sequence[Change], when: str = "") -> str:
+    """담을 때 자동으로 붙는 이름 — 사용자가 고칠 수 있다.
+
+    `when` 은 **여러 시각짜리 계통에서만** 붙는 시각 꼬리표(예: `"5 H"`).
+    한 시각짜리면 빈 문자열이라 이름이 예전과 같다 (2026-09-08 사용자 지시:
+    *"모든 시나리오에 이름을 붙이라는거지 만약 시간이 1개인 계통데이터가 아니면"*).
+    ⚠️ 이름은 **담을 때 한 번 정해지고 그대로 남는다** — 두 번 눌러 고칠 수 있는
+       칸이라 시간을 바꿀 때마다 따라 변하면 고쳐 놓은 이름이 지워진다.
+    """
+    tail = f" ({when})" if when else ""
     if not changes:
-        return "원본"
+        return f"원본{tail}"
     if len(changes) == 1:
-        return changes[0].label
+        return f"{changes[0].label}{tail}"
     # 곱하기가 섞여 있어도 첫 줄 이름을 쓴다 — "바꾼 것 2건" 은 무엇인지 안 보인다.
-    return f"{changes[0].label} 외 {len(changes) - 1}건"
+    return f"{changes[0].label} 외 {len(changes) - 1}건{tail}"
 
 
 @dataclass
