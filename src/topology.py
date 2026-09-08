@@ -430,12 +430,7 @@ def ic_series(g, sol, edge_index):
     if cube.shape[2] <= 1:                 # 1시각 계통 — 그릴 것이 없다
         return None
     cols = sol.cols("VSC_grid")
-    flat = cube[:, :, 0]
-    row = None
-    for r in range(flat.shape[0]):
-        if int(flat[r, 0]) == bus_ac and int(flat[r, 1]) == bus_dc:
-            row = r
-            break
+    row = _ic_row(g, sol, edge_index, cube[:, :, 0], bus_ac, bus_dc)
     if row is None:
         return None
     out = {}
@@ -445,6 +440,26 @@ def ic_series(g, sol, edge_index):
     if not out:
         return None
     return list(range(1, cube.shape[2] + 1)), out
+
+
+def _ic_row(g, sol, edge_index, flat, bus_ac, bus_dc):
+    """이 변환기가 VSC 표의 **몇 번째 행**인가 (2026-09-08).
+
+    🚨 **짝(AC버스, DC버스)으로만 찾으면 병렬 변환기를 구분 못 한다** — 71bus
+       3IC 계통은 셋이 모두 `38–39` 라 늘 첫 행이 잡힌다. 계통도의 IC 순서와
+       VSC 표의 행 순서는 둘 다 `IC_dat` 차례라 **순번이 맞는다**(case24 7/7
+       실측 확인). 그래서 순번을 먼저 보고, 그 행의 짝이 어긋날 때만 짝으로
+       되돌아간다 — 꺼진 변환기가 있어 줄이 밀리는 계통을 대비한 안전장치다.
+    """
+    ics = [i for i, (x, y, k) in enumerate(g.edges) if k == "IC"]
+    if edge_index in ics:
+        n = ics.index(edge_index)
+        if n < flat.shape[0] and int(flat[n, 0]) == bus_ac and int(flat[n, 1]) == bus_dc:
+            return n
+    for r in range(flat.shape[0]):
+        if int(flat[r, 0]) == bus_ac and int(flat[r, 1]) == bus_dc:
+            return r
+    return None
 
 
 def ic_facts(g, sol, edge_index, t=0):
@@ -467,12 +482,15 @@ def ic_facts(g, sol, edge_index, t=0):
         else getattr(sol, "VSC_grid", None)
     if tbl is not None and getattr(tbl, "size", 0):
         cols = sol.cols("VSC_grid")
-        for r in tbl:
-            if int(r[0]) == bus_ac and int(r[1]) == bus_dc:
-                for nm in ("Grid_P[MW]", "Grid_Q[MVAR]", "VSC_P[MW]", "VSC_Q[MVAR]"):
-                    if nm in cols:
-                        out.append((nm, f"{float(r[cols.index(nm)]):,.3f}"))
-                break
+        row = _ic_row(g, sol, edge_index, tbl, bus_ac, bus_dc)
+        if row is not None:
+            r = tbl[row]
+            for nm in ("Grid_P[MW]", "Grid_Q[MVAR]", "VSC_P[MW]", "VSC_Q[MVAR]"):
+                if nm in cols:
+                    out.append((nm, f"{float(r[cols.index(nm)]):,.3f}"))
+    elif getattr(sol, "vsc_ideal", False):
+        # 값이 아예 없는 까닭을 표 안에서 바로 알린다 (2026-09-08 사용자 지적)
+        out.append(("모델", "이상 변환기 (임피던스 0)"))
     # 한계에 걸렸나 (0=안 · 2=용량곡선 · 3=전류한계)
     lim = list(getattr(sol, "IC_lim_mode", []) or [])
     ics = [i for i, (x, y, k) in enumerate(g.edges) if k == "IC"]

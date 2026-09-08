@@ -155,11 +155,48 @@ chk("IC 팝업 안에 그래프가 있다",
     len(shots[-1].findChildren(QChartView)) > 0, True)
 chk("표도 같이 있다", len(shots[-1].findChildren(QTableWidget)) > 0, True)
 
+# 🚨 **병렬 변환기를 구분하나** (2026-09-08).
+#    짝(AC버스, DC버스)으로만 찾으면 `38–39` 셋이 전부 첫 행을 집는다.
+#    계통도 순서 = VSC 표 행 순서라 순번으로 집어야 맞다.
+t0 = win.sol.vsc_at("VSC_grid", 0)
+rows_found = [topology._ic_row(g, win.sol, e, t0,
+                               *[topology._busno(g.keys[x]) for x in
+                                 ((g.edges[e][0], g.edges[e][1])
+                                  if g.kind[g.edges[e][0]] != "DC"
+                                  else (g.edges[e][1], g.edges[e][0]))])
+              for e in ics]
+chk("변환기마다 다른 행을 집는다", rows_found, list(range(len(ics))))
+
+print("\n[i19] 이상 변환기 계통 — 시각을 탓하지 않는다")
+# 🚨 처음엔 그래프가 없을 때 늘 「시각이 하나라」로만 적었다. 24시각인
+#    71bus 3IC 계통에서 **거짓말**이 됐다(2026-09-08 사용자 지적).
+#    까닭은 시각이 아니라 **이상 변환기 모델**(IC 임피던스 0)이다.
+from PySide6.QtWidgets import QLabel
+for fn, want_ideal in (("ACDC_71bus_3IC_parallel_24h.xlsx", True),
+                       ("ACDC_CIGRE_MVACMVDCLVDC_24h.xlsx", True)):
+    open_it(fn)
+    gi = topology.build_graph(win.sol)
+    ei = [i for i, (a, b, k) in enumerate(gi.edges) if k == "IC"]
+    tag = fn.split("_")[1]
+    chk(f"{tag} 시각 수", int(win.sol.n_time), 24)
+    chk(f"{tag} 이상 변환기로 본다", bool(win.sol.vsc_ideal), want_ideal)
+    chk(f"{tag} 그래프감이 없다", topology.ic_series(gi, win.sol, ei[0]), None)
+    facts = dict(topology.ic_facts(gi, win.sol, ei[0], 0))
+    chk(f"{tag} 표가 까닭을 밝힌다", facts.get("모델"), "이상 변환기 (임피던스 0)")
+    win.show_ic_facts(gi, ei[0]); pump(0.3)
+    txt = " ".join(l.text() for l in shots[-1].findChildren(QLabel))
+    chk(f"{tag} 「시각이 하나」라고 안 한다", "시각이 하나" in txt, False)
+    chk(f"{tag} 이상 소자라고 밝힌다", "이상 소자" in txt, True)
+
+open_it("ACDC_case24_MatACDC_24h.xlsx")     # 뒤 시험이 쓰는 계통으로 되돌린다
+g = topology.build_graph(win.sol)
+
 print("\n[i14·i15] 그래프에서 눌러 그 선로로")
 br = win.sol.at("Branch", 0)
 fr, to = int(br[0][0]), int(br[0][1])
+n_before = len(shots)
 win.pick_line_by_bus(str(fr), str(to)); pump(0.4)
-chk("선로 팝업이 떴다", len(shots), 4)
+chk("선로 팝업이 떴다", len(shots), n_before + 1)
 print(f"     {fr}–{to} 로 눌러 봄")
 
 print("\n[i17] 확대는 보던 자리 기준 · 휠 눌러 밀기")
