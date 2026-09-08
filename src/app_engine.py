@@ -35,10 +35,10 @@ _HERE = Path(__file__).resolve().parent
 # 결과 표의 열 이름 (result_columns.py 와 동일 · 폭으로 고른다)
 COLUMNS: dict[str, dict[int, list[str]]] = {
     "AC": {
-        13: ["Bus", "VM[pu]", "Freq[pu]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
+        13: ["Bus", "VM[pu]", "Freq[Hz]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
              "Load_P[MW]", "Load_Q[MVAR]", "toAC_P[MW]", "toAC_Q[MVAR]",
              "baseKV[kV]", "Vmin[pu]", "Vmax[pu]"],
-        11: ["Bus", "VM[pu]", "Freq[pu]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
+        11: ["Bus", "VM[pu]", "Freq[Hz]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
              "Load_P[MW]", "Load_Q[MVAR]", "baseKV[kV]", "Vmin[pu]", "Vmax[pu]"],
     },
     "DC": {
@@ -251,12 +251,39 @@ def solve(case: Any, *, mwpython: str | Path | None = None,
     sol.method = method
     sol.freq_nominal = _nominal_freq(case)
     sol.freq_db = _freq_deadband(case)
+    _freq_to_hz(sol)
     try:
         sol.case_tables = {k: np.asarray(v, dtype=float)
                            for k, v in case.tables.items()}
     except Exception:
         sol.case_tables = {}
     return sol
+
+
+def _freq_to_hz(sol) -> None:
+    """AC 결과 표의 주파수를 **pu 에서 Hz 로** 바꾼다 (2026-09-08 사용자 지시).
+
+    엔진은 이 열을 pu 로 준다. 그런데 화면 어디에도 pu 로 쓰는 곳이 없다 —
+    주파수 그래프도(`charts.py`), 아래 띠도, 비교 항목도 전부 **Hz** 다.
+    표만 pu 라 `1.000000` 이 24 줄 늘어서고, 무엇을 곱해야 Hz 가 되는지
+    화면에서는 알 수 없었다.
+
+    🚨 여기서 한 번만 바꾼다 — 표·엑셀 내보내기·시간별 표가 모두 이 배열을
+       보므로, 표시하는 쪽마다 곱하면 한 곳을 빠뜨린다.
+    기준 주파수는 케이스마다 다르다 (60 Hz / 50 Hz).
+    """
+    nom = float(getattr(sol, "freq_nominal", 60.0) or 60.0)
+    arr = getattr(sol, "AC", None)
+    if arr is None or not getattr(arr, "size", 0):
+        return
+    cols = sol.cols("AC")
+    if "Freq[Hz]" not in cols:
+        return
+    j = cols.index("Freq[Hz]")
+    # 이미 Hz 면 (두 번 부르면) 그대로 둔다 — pu 는 1 언저리다
+    if float(np.nanmax(np.abs(arr[:, j, ...]))) > 5.0:
+        return
+    arr[:, j, ...] *= nom
 
 
 def gs_refusal(case: Any) -> str | None:

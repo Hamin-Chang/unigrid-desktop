@@ -394,7 +394,7 @@ GRAPHS = {
 # 열 이름은 result_columns.py 그대로. show=기본으로 보이는 열
 TABLE_SPECS = {
     "AC 결과": [
-        ("Bus", 1), ("VM[pu]", 1), ("Freq[pu]", 0), ("Angle[deg]", 1),
+        ("Bus", 1), ("VM[pu]", 1), ("Freq[Hz]", 0), ("Angle[deg]", 1),
         ("Gen_P[MW]", 1), ("Gen_Q[MVAR]", 1), ("Load_P[MW]", 1),
         ("Load_Q[MVAR]", 1), ("toAC_P[MW]", 0), ("toAC_Q[MVAR]", 0),
         ("baseKV[kV]", 0), ("Vmin[pu]", 0), ("Vmax[pu]", 0),
@@ -480,9 +480,9 @@ def dynamic_table(sol, bus_row):
     else:
         return "시간별 값", [], np.zeros((0, 0))
     row = max(0, min(row, arr.shape[0] - 1))
-    # `Freq[pu]` 가 빠져 있었다 — 슬랙 없는 계통에서 시간마다 움직이는 값인데
-    # 그래프에만 있고 표에는 없었다 (2026-09-08 점검 i58).
-    keep = [c for c in ("VM[pu]", "Freq[pu]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
+    # `Freq` 가 빠져 있었다 — 슬랙 없는 계통에서 시간마다 움직이는 값인데
+    # 그래프에만 있고 표에는 없었다 (2026-09-08 점검 i58). 단위는 **Hz** 다.
+    keep = [c for c in ("VM[pu]", "Freq[Hz]", "Angle[deg]", "Gen_P[MW]", "Gen_Q[MVAR]",
                         "Load_P[MW]", "Load_Q[MVAR]", "toAC_P[MW]", "toDC_P[MW]")
             if c in cols]
     idx = [cols.index(c) for c in keep]

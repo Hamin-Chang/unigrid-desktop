@@ -908,7 +908,10 @@ def _cmp_by_bus(c, sol, item, nos):
     """
     s = CI.spec(item)
     col = s[2]
-    ch = _new_chart(c, f"{item} 비교   ·   x축 = 시간")
+    import compare_items as _CI
+    _u = _CI.unit(item)
+    ch = _new_chart(c, f"{item}" + (f"  [{_u}]" if _u else "")
+                       + "   ·   x축 = 시간")
     lo = hi = None
     n = 0
     which, rows, skipped = _pick_rows(sol, item, nos)
@@ -1036,7 +1039,11 @@ def _cmp_freq(c, sol, times):
         return _note(c, "고른 시간이 결과 범위를 벗어났습니다")
     y = np.asarray([sol.freq[h - 1] for h in keep], dtype=float)
     x = np.arange(1, len(keep) + 1)
-    ch = _new_chart(c, "주파수 비교   ·   x축 = 고른 시간")
+    # 🚨 **단위를 제목에 적는다** (2026-09-08 점검) — 다른 주파수 그래프는
+    #    「주파수 [Hz]」인데 비교 쪽만 빠져서, 49.343 이 Hz 인지 pu 인지
+    #    화면에서 알 수 없었다.
+    ch = _new_chart(c, f"주파수  [Hz]   ·   x축 = 고른 시간   ·   기준 "
+                       f"{float(sol.freq_nominal):g} Hz")
     ch.addSeries(_line(zip(x, y), "#d95f0e", 1.8, name="주파수"))
     d = _dots(list(zip(x, y)), "#d95f0e", "주파수", size=8.0)
     ch.addSeries(d)
@@ -1195,7 +1202,10 @@ def _cmp_by_scenario(c, pairs, item, t):
 
 def _cmp_scen_scalar(c, pairs, item):
     """주파수·손실을 시나리오끼리 — 이 둘은 계통에 하나뿐이라 x축이 **시간**이다."""
-    ch = _new_chart(c, f"{item} 비교   ·   x축 = 시간")
+    import compare_items as _CI
+    _u = _CI.unit(item)
+    ch = _new_chart(c, f"{item}" + (f"  [{_u}]" if _u else "")
+                       + "   ·   x축 = 시간")
     ys = []
     for k, (label, sol) in enumerate(pairs):
         if sol is None:
