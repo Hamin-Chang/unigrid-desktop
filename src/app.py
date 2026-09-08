@@ -34,13 +34,15 @@ import random
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, QUrl
-from PySide6.QtGui import QColor, QGuiApplication, QDesktopServices
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QUrl, QPointF
+from PySide6.QtGui import (QColor, QGuiApplication, QDesktopServices,
+                          QPainter, QPen)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
     QComboBox, QSpinBox, QDialog, QCheckBox, QLineEdit, QButtonGroup,
-    QHeaderView, QScrollArea, QSizePolicy, QSplitter, QFileDialog,
+    QHeaderView, QScrollArea, QSizePolicy, QSplitter, QSplitterHandle,
+    QFileDialog,
     QProgressDialog, QMessageBox, QInputDialog, QSlider,
 )
 
@@ -790,6 +792,68 @@ class OpenDialog(QDialog):
         self.accept()
 
 
+class _GripHandle(QSplitterHandle):
+    """가운데에 **잡는 표시**를 그리는 나눔 손잡이 (2026-09-08).
+
+    QSS 로는 띠 색과 테두리까지만 되고 **가운데 무늬는 못 그린다**. 그런데 색만
+    바꾸면 「선이 하나 있네」로 끝나고, 그것이 *끌 수 있는 것* 인 줄은 모른다.
+    ⇒ 가운데에 짧은 가로 막대 셋을 겹쳐 그린다 — 어느 앱에서나 「여기를 잡아라」로
+      읽히는 모양이다. 마우스를 올리면 강조색으로 바뀐다.
+    """
+
+    def __init__(self, orientation, parent, c):
+        super().__init__(orientation, parent)
+        self.c = c
+        self._hot = False
+        self.setCursor(Qt.SplitVCursor if orientation == Qt.Vertical
+                       else Qt.SplitHCursor)
+        self.setToolTip("위아래로 끌면 그래프와 표의 크기가 바뀝니다")
+
+    def enterEvent(self, ev):
+        self._hot = True
+        self.update()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hot = False
+        self.update()
+        super().leaveEvent(ev)
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)          # QSS 가 칠한 띠·테두리를 먼저 살린다
+        if self.orientation() != Qt.Vertical:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        col = QColor(self.c["accent"] if self._hot else self.c["muted"])
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        # 가로 막대 셋 — 마우스를 올리면 굵고 길어진다(만질 수 있다는 신호)
+        half = 30.0 if self._hot else 24.0
+        p.setPen(QPen(col, 2.6 if self._hot else 2.2, Qt.SolidLine, Qt.RoundCap))
+        for dy in (-3.6, 0.0, 3.6):
+            p.drawLine(QPointF(cx - half, cy + dy), QPointF(cx + half, cy + dy))
+        # 올렸을 때는 **어느 쪽으로 끄는지**까지 알려 준다 — 위아래 화살촉
+        if self._hot:
+            p.setPen(QPen(col, 2.0, Qt.SolidLine, Qt.RoundCap))
+            for x0 in (cx - half - 13.0, cx + half + 13.0):
+                p.drawLine(QPointF(x0 - 4, cy - 1.5), QPointF(x0, cy - 5.0))
+                p.drawLine(QPointF(x0, cy - 5.0), QPointF(x0 + 4, cy - 1.5))
+                p.drawLine(QPointF(x0 - 4, cy + 1.5), QPointF(x0, cy + 5.0))
+                p.drawLine(QPointF(x0, cy + 5.0), QPointF(x0 + 4, cy + 1.5))
+        p.end()
+
+
+class _GripSplitter(QSplitter):
+    """손잡이를 `_GripHandle` 로 만드는 나눔 상자."""
+
+    def __init__(self, orientation, c):
+        super().__init__(orientation)
+        self._c = c
+
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self, self._c)
+
+
 class ConvertDialog(QDialog):
     def __init__(self, parent, c):
         super().__init__(parent)
@@ -1335,6 +1399,21 @@ class Proto(QMainWindow):
         QPushButton#seg_lock {{ background:transparent; color:{c['muted']};
             border:1px dashed {c['border']}; font-size:14px;
             border-radius:8px; padding:7px 13px; }}
+        /* 🚨 **그래프와 표 사이 손잡이가 안 보였다** (2026-09-08 사용자 지적 —
+           *"여기 파란색 박스 쳐놓은 곳을 드래그하면 그래프 크기를 늘리고 줄일 수
+           있잖아. 이거의 역할을 조금 더 티나게 해줘"*).
+           `QSplitter::handle` 규칙이 **QSS 에 하나도 없어** Qt 기본값(빈 띠)으로
+           그려졌다 — 끌 수 있는 것인 줄 모른다.
+           ⇒ 옅은 띠 + 위아래 가는 선, 그리고 **가운데에 잡는 표시**를 그린다
+             (`_GripHandle` — QSS 로는 가운데 무늬를 못 그린다).
+           마우스를 올리면 강조색으로 바뀐다. */
+        QSplitter::handle:vertical {{ background:{c['bg']};
+            border-top:1px solid {c['border']};
+            border-bottom:1px solid {c['border']}; }}
+        QSplitter::handle:vertical:hover {{ background:{c['accent_soft']};
+            border-top:1px solid {c['accent']};
+            border-bottom:1px solid {c['accent']}; }}
+        QSplitter::handle:vertical:pressed {{ background:{c['accent_soft']}; }}
         QPushButton#accentline {{ border:1px solid {c['accent']};
             color:{c['accent']}; font-weight:600; }}
         QPushButton#accentline:hover {{ background:{c['accent_soft']}; }}
@@ -1938,9 +2017,11 @@ class Proto(QMainWindow):
         #    (4줄 248px) 그래프와 표를 밀어냈다 ⇒ **아래 탭 하나로** 내려보냈다.
         #    위에는 `change_bar` 가 「지금 조건 + [⟲ 원본으로]」 한 줄만 남긴다.
 
-        split = QSplitter(Qt.Vertical)
+        split = _GripSplitter(Qt.Vertical, c)
         split.setChildrenCollapsible(False)
-        split.setHandleWidth(10)
+        # 14px — 잡는 표시(막대 셋 + 위아래 화살촉, 세로 11px)가 들어갈 만큼.
+        # 10px 이던 것을 넓혔다. 잡기도 그만큼 쉬워진다.
+        split.setHandleWidth(14)
         # 🚨 `findChildren` 으로 찾으면 **지워지기를 기다리는 옛 것**이 먼저 잡힌다.
         #    지금 화면의 것은 여기에 들고 있는다(표 `_grid_tb` 와 같은 이유).
         self._split = split
@@ -6002,9 +6083,9 @@ class Proto(QMainWindow):
             return w
 
         v.addWidget(self.curve_summary())
-        split = QSplitter(Qt.Vertical)
+        split = _GripSplitter(Qt.Vertical, c)
         split.setChildrenCollapsible(False)
-        split.setHandleWidth(10)
+        split.setHandleWidth(12)
         pick = self._bus_list(self.curve_pick)
         split.addWidget(charts.curve_chart(c, self.cur, pick, self.curve_x))
         split.addWidget(charts.curve_q_chart(c, self.cur, self.curve_x))
