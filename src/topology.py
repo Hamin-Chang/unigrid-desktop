@@ -945,25 +945,58 @@ class TopologyView(QFrame):
         폭을 화면에 억지로 맞추면 긴 계통(71버스는 열이 38개)이 열당 26px 로
         눌려 막대와 번호가 겹친다. 그래서 **줄이지 않고 넘치게** 두고 밀어 본다.
 
-        다만 **꼭 필요한 만큼만** 요구한다. 처음엔 행당 u*3.4 를 잡았다가
-        25버스(5행)가 630px 을 요구해 391px 짜리 화면에서 세로로도 잘렸다.
-        한 행에 실제로 필요한 건 버스 막대(u*1.25) + 번호(15) + 숨 쉴 틈이다.
+        🚨 **세로를 «한 행 = u*1.25 + 20» 로 잡던 것이 틀렸다** (2026-09-08 —
+           사용자: *"버스들끼리 너무 붙어있는것만 해결해줘"*).
+           버스 막대는 길이가 고정이 아니다 — **붙은 선 수에 비례**해서
+           `half = max(u*0.70, min(u*1.60, u*0.45*선수))` 만큼 위아래로 뻗는다
+           (`_edge_layout`). 즉 긴 막대는 `u*3.2` 인데 한 행에 `u*1.25+20`(48px)
+           밖에 안 줬다. ⇒ 실측 `ACDC_case24_MatACDC` 에서 **이웃 50쌍 중 28쌍이
+           겹쳤다**(가장 심한 것 25.9px).
+        ⇒ 이제 **열마다 실제 막대 길이를 재서** 필요한 세로를 정한다.
+        ⚠️ 예전에 행당 u*3.4 를 잡았다가 「391px 화면에서 세로로 잘린다」고 되돌린
+           적이 있다. 그때는 밀어 볼 길이 마땅치 않았지만, 지금은 스크롤과
+           **지도식 확대·휠 눌러 밀기**(2026-09-08 i17)가 있어 넘쳐도 볼 수 있다.
+           겹쳐서 못 읽는 것보다 넘쳐서 미는 편이 낫다.
         """
         u = self.unit()
-        col = {}
+        cols_of = {}
         for i in range(len(self.g.keys)):
             k = round(float(self.pos[i][0]), 3)
-            col[k] = col.get(k, 0) + 1
-        ncol = max(1, len(col))
-        nrow = max(1, max(col.values()) if col else 1)
+            cols_of.setdefault(k, []).append(i)
+        ncol = max(1, len(cols_of))
         L, m = self._pads()
+
+        # 버스마다 막대가 위아래로 뻗는 길이 — `_edge_layout` 과 **같은 셈**이어야 한다
+        inc = {i: 0 for i in range(len(self.g.keys))}
+        for a, b, _k in self.g.edges:
+            inc[a] += 1
+            inc[b] += 1
+
+        def _half(i):
+            if self.g.role[i] == "3권선":
+                return u * 0.55
+            return max(u * 0.70, min(u * 1.60, u * 0.45 * inc[i]))
+
+        # 같은 열의 버스는 `0.06 + 0.88*k/(m-1)` 로 **균등**하게 놓이므로,
+        # 가장 빡빡한 이웃쌍이 안 겹칠 만큼 전체 높이를 준다.
+        GAP = 16.0                      # 막대 사이 숨 쉴 틈 (번호가 들어갈 자리)
+        need_rows = u * 2.0
+        for items in cols_of.values():
+            items.sort(key=lambda i: float(self.pos[i][1]))
+            top_bot = _half(items[0]) + _half(items[-1])
+            if len(items) < 2:
+                need_rows = max(need_rows, top_bot + GAP)
+                continue
+            worst = max(_half(a) + _half(b) for a, b in zip(items, items[1:]))
+            need_rows = max(need_rows,
+                            (worst + GAP) * (len(items) - 1) / 0.88 + top_bot)
         # 논리로 필요한 크기 × 배율 — 배율만큼 정확히 커져야 «지도 확대» 가 된다.
         # ⚠️ **지금 논리 크기보다 작게 잡으면 안 된다** — 뷰포트에 맞춰 넓게 그리던
         #    계통이 확대하는 순간 좁아진다. 둘 중 큰 것을 쓴다.
         z = float(getattr(self, "zoom", 1.0))
         bw, bh_ = self._logical()
         need_w = max(L + m + ncol * u * 2.9, bw)
-        need_h = max(2 * m + nrow * (u * 1.25 + 20), bh_)
+        need_h = max(2 * m + need_rows, bh_)
         self.setMinimumWidth(int(need_w * z))
         self.setMinimumHeight(int(need_h * z))
 

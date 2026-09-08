@@ -48,6 +48,44 @@ for f, want_max in (("ACDC_case24_MatACDC.xlsx", 20),
     chk(f"{f.split('.')[0]} 교차가 {want_max} 아래", n < want_max, True)
     print(f"     교차 {n}개")
 
+print("\n[i16] 버스 막대가 서로 겹치지 않나")
+# 🚨 **막대 길이는 고정이 아니다** — 붙은 선 수에 비례해 위아래로 뻗는다
+#    (`half = max(u*0.70, min(u*1.60, u*0.45*선수))`). `_fit()` 이 한 행에
+#    `u*1.25+20` 만 잡던 탓에 case24 는 **이웃 50쌍 중 28쌍이 겹쳤다**
+#    (가장 심한 것 25.9px · 2026-09-08 사용자: *"버스들끼리 너무 붙어있다"*).
+#    눈으로는 「좀 빽빽하네」로 넘어가던 것이라 **숫자로 박아 둔다.**
+def _overlap(view):
+    gg, u = view.g, view.unit()
+    xy = view._px()
+    inc = {i: 0 for i in range(len(gg.keys))}
+    for a, b, _k in gg.edges:
+        inc[a] += 1; inc[b] += 1
+    def half(i):
+        return (u * 0.55 if gg.role[i] == "3권선"
+                else max(u * 0.70, min(u * 1.60, u * 0.45 * inc[i])))
+    cols = {}
+    for i in range(len(gg.keys)):
+        cols.setdefault(round(float(xy[i][0]), 1), []).append(i)
+    n_over, worst, pairs = 0, 0.0, 0
+    for items in cols.values():
+        items.sort(key=lambda i: xy[i][1])
+        for a, b in zip(items, items[1:]):
+            pairs += 1
+            short = (half(a) + half(b)) - (float(xy[b][1]) - float(xy[a][1]))
+            if short > 0:
+                n_over += 1; worst = max(worst, short)
+    return pairs, n_over, worst
+
+for f in ("ACDC_case24_MatACDC.xlsx", "AConly_case118.xlsx",
+          "ACDC_CIGRE_MVACMVDCLVDC.xlsx"):
+    sol_ = app_engine.solve(load_case(str(REPO / "cases" / f)))
+    wrap_ = charts.build("계통 단선도", win.c, sol_, 0, 0, False, None, None)
+    wrap_.resize(1100, 560); wrap_.show(); pump(0.8)
+    vv_ = wrap_.findChild(QScrollArea).widget()
+    pairs, n_over, worst = _overlap(vv_)
+    chk(f"{f.split('.')[0]} 막대가 안 겹친다", n_over, 0)
+    print(f"     이웃 {pairs}쌍 · 겹침 {n_over}쌍 · 가장 심한 것 {worst:.1f}px")
+
 print("\n[i16] 자리 되돌리기")
 topology.save_places("__시험__.xlsx", {"A1": [0.1, 0.2]})
 chk("옮긴 자리가 있다고 안다", topology.has_places("__시험__.xlsx"), True)
