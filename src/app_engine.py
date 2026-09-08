@@ -141,6 +141,11 @@ class Solution:
     #   [선로번호, 제어버스, 목표전압, 최종탭, 살아있나]
     #   ⚠️ **살아있나 = 0 이면 목표를 못 맞춘 것**(탭이 한계에 걸려 놓아줬다).
     tap_ctrl: np.ndarray = field(default_factory=lambda: np.empty((0, 9)))
+    # 🚨 **시각마다 탭이 다르다** (2026-09-08). 엔진은 시각 루프 안에서 조정하므로
+    #    24시각 계통이면 답이 24벌 나온다. `tap_ctrl` 은 그중 첫 시각 하나뿐이라,
+    #    앱이 하루 내내 첫 시각 탭을 보여주고 있었다 — 화면이 계산과 달랐다.
+    #    ⇒ `tap_all` [줄수 x 11 x 시각] 을 받고 `tap_at(t)` 로 골라 쓴다.
+    tap_all: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0)))
     method: str = "nr"            # 어느 해법으로 푼 결과인가
     seconds: float = 0.0        # 파일 읽기 + 계산까지 걸린 전체 시간
     warm_start: bool = True     # 계산 엔진이 이미 켜져 있었나 (아니면 기동 시간이 섞임)
@@ -166,6 +171,18 @@ class Solution:
         if arr.ndim == 3:
             return arr[:, :, min(t, arr.shape[2] - 1)]
         return arr
+
+    # ── 한 시각의 탭·위상·SVC 조정 결과 ──
+    def tap_at(self, t: int = 0) -> np.ndarray:
+        """`t` 시각에 실제로 쓰인 조정 결과 (2026-09-08).
+
+        옛 엔진(`Tap_all` 을 안 주는 것)이면 첫 시각 표를 그대로 돌려준다 —
+        1시각 계통에서는 그것이 곧 답이므로 화면이 달라지지 않는다.
+        """
+        a = self.tap_all
+        if a is not None and getattr(a, "ndim", 0) == 3 and a.size:
+            return a[:, :, min(max(int(t), 0), a.shape[2] - 1)]
+        return self.tap_ctrl
 
     # ── 한 버스의 시간 변화 ──
     def series(self, which: str, col: int, bus_row: int) -> np.ndarray:
@@ -947,15 +964,14 @@ TAP_COLS = 11
 방식 1 = 탭 조정(목표 pu · 값 탭비) · 2 = 위상 조정기(목표 MW · 값 deg, 보는버스 0)."""
 
 
-def _tap_arr(raw: dict) -> np.ndarray:
-    """탭 자동 조정 결과를 항상 (줄수, 8) 모양으로 (2026-08-13, A1).
+def _tap_norm(a: np.ndarray) -> np.ndarray:
+    """탭 자동 조정 표의 **열 수를 11로** 맞춘다 (2026-08-13, A1).
 
     한 대뿐이면 MATLAB 이 1차원으로 넘긴다 — 모양을 여기서 맞춘다.
     옛 엔진(그 필드가 없는 것)이면 빈 표가 된다.
     ⚠️ 옛 엔진도 받는다 — 5열(15차)·8열(16차). 모자란 칸은 비워 채우되 **방식은 1**
        로 둔다(그 엔진들엔 탭밖에 없었다). 앱이 안 죽고 새 안내만 안 뜬다.
     """
-    a = _arr(raw, "Tap_result")
     if a.size == 0:
         return np.empty((0, TAP_COLS))
     # 🚨 **옛 엔진의 열 수를 여기 다 적어 둬야 한다.** 하나라도 빠지면 표를 통째로
@@ -977,6 +993,39 @@ def _tap_arr(raw: dict) -> np.ndarray:
         a[:, 9] = 0.0                         # 한 단 크기 없음 = 연속
         a[:, 10] = 0.0                        # 계단으로 내린 적 없음
     return a
+
+
+def _tap_arr(raw: dict) -> np.ndarray:
+    """첫 시각의 탭 조정 표 (옛 이름을 그대로 둔다)."""
+    return _tap_norm(_arr(raw, "Tap_result"))
+
+
+def _tap_cube(raw: dict) -> np.ndarray:
+    """시각마다 다른 탭 조정 표를 [줄수 x 11 x 시각] 으로 (2026-09-08).
+
+    🚨 엔진은 **시각 루프 안에서** 조정한다. 그래서 24시각 계통이면 답이 24벌이다.
+       예전 엔진은 그중 첫 벌만 앱으로 넘겼고, 앱은 그걸 하루 내내 보여줬다 —
+       5시 화면이 "탭 0.96875" 라고 말하지만 5시 계산은 다른 값으로 풀린 상태였다.
+       (실측 `ACDC_case24_MatACDC_24h`: 첫 시각 탭으로 고정하면 17시 전압이
+        0.031 pu 어긋난다.)
+
+    옛 `.ctf`(`Tap_all` 을 안 주는 것)를 만나면 빈 배열을 돌려준다 —
+    그러면 `Solution.tap_at()` 이 첫 시각 표로 되돌아간다.
+    """
+    a = _arr(raw, "Tap_all")
+    dims = _arr(raw, "Tap_dims").reshape(-1)
+    if a.size == 0 or dims.size < 3:
+        return np.zeros((0, 0, 0))
+    nr, nc, T = (int(x) for x in dims[:3])
+    if nr <= 0 or nc <= 0 or T <= 0 or a.ndim != 2 or a.shape[0] < nr * T:
+        return np.zeros((0, 0, 0))
+    out = np.zeros((nr, TAP_COLS, T))
+    for t in range(T):
+        slab = _tap_norm(a[t * nr:(t + 1) * nr, :])
+        if slab.shape != (nr, TAP_COLS):       # 열 수가 이상하면 그 시각만 비운다
+            return np.zeros((0, 0, 0))
+        out[:, :, t] = slab
+    return out
 
 
 def _gen_limit_arr(raw: dict) -> np.ndarray:
@@ -1078,6 +1127,7 @@ def _build(raw: dict[str, Any], seconds: float) -> Solution:
         IC_lim_mode=_flat(raw, "IC_lim_mode"),
         gen_limit=_gen_limit_arr(raw),
         tap_ctrl=_tap_arr(raw),
+        tap_all=_tap_cube(raw),
         qlim_enforced=bool(np.ravel(raw.get("qlim_enforced", [1]))[0]),
         qlim_message=str(raw.get("qlim_message", "") or ""),
         qlim_bound=int(float(np.ravel(raw.get("qlim_bound", [0]))[0] or 0)),

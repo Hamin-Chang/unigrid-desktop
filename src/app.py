@@ -4232,7 +4232,11 @@ class Proto(QMainWindow):
         # ── 탭 자동 조정 결과 (2026-08-13, §7 5단계 A1) ──────────────────
         # 탭은 **계산이 정한 값**이라 사용자가 볼 데가 없으면 결과를 못 읽는다.
         # 특히 한계에 걸려 목표를 못 맞춘 경우를 모르면 "목표대로 됐겠지" 하고 넘어간다.
-        tap = getattr(self.sol, "tap_ctrl", None) if self.sol else None
+        # 🚨 **지금 보고 있는 시각의** 탭을 쓴다 (2026-09-08). 엔진은 시각마다 따로
+        #    조정하는데, 예전에는 첫 시각 표 하나(`tap_ctrl`)를 하루 내내 보여줬다.
+        #    화면이 "0.96875 를 썼다"고 말하는 동안 5시 계산은 다른 값으로 풀렸다.
+        #    `tap_at()` 은 옛 `.ctf`(시각별 표를 안 주는 것)면 첫 시각으로 되돌아간다.
+        tap = self.sol.tap_at(self.t) if self.sol is not None else None
         if tap is not None and len(tap):
             tap_a = np.asarray(tap, dtype=float)
             miss = int((tap_a[:, 4] == 0).sum())
@@ -4268,9 +4272,16 @@ class Proto(QMainWindow):
             names = [n for k, n in ((1, "탭"), (2, "위상"), (3, "SVC"))
                      if (kind_col == k).any()]
             what = "·".join(names) + " 자동 조정"
-            ttl = QLabel(f"{what} {len(tap)}대"
+            # 시각이 여럿이면 **어느 시각의 조정인지** 밝힌다 (2026-09-08).
+            # 탭은 시각마다 다시 정해지므로, 시간을 바꾸면 이 표의 값도 바뀐다.
+            n_t = int(getattr(self.sol, "n_time", 1) or 1)
+            when = f" ({min(self.t, n_t - 1) + 1} H)" if n_t > 1 else ""
+            ttl = QLabel(f"{what} {len(tap)}대{when}"
                          + (f" — {miss}대가 목표를 못 맞췄습니다" if miss else "")
                          + (f" — {nofit}대는 계단으로 못 내렸습니다" if nofit else ""))
+            if n_t > 1:
+                ttl.setToolTip(f"이 계통은 {n_t}시각짜리입니다. 탭은 시각마다 "
+                               f"다시 정해지므로 위 시간을 바꾸면 이 표도 바뀝니다.")
             ttl.setStyleSheet(
                 f"color:{c['warn'] if warn_on else c['text']};"
                 f"font-size:14px;font-weight:700;")

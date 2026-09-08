@@ -112,6 +112,12 @@ def tap_print(sol) -> dict:
        그래도 **정해진 탭비 자체**를 담는다 — 같은 전압을 다른 탭으로 내는 경우가
        있을 수 있고, 한계에 걸려 놓아준 것(5열)은 전압만으로는 안 보인다.
     """
+    # 🚨 **시각마다** 담는다 (2026-09-08). 예전에는 `tap_ctrl`(첫 시각) 하나만
+    #    담아서, 24시각 계통에서 2~24시 탭이 통째로 바뀌어도 회귀가 조용했다.
+    #    실제로 그 구멍으로 「앱이 첫 시각 탭을 하루 내내 보여준다」가 지나갔다.
+    t = np.asarray(getattr(sol, "tap_all", np.zeros((0, 0, 0))), dtype=float)
+    if t.size:
+        return {"tap_all": t}
     t = np.asarray(getattr(sol, "tap_ctrl", np.empty((0, 5))), dtype=float)
     return {} if t.size == 0 else {"tap_ctrl": t}
 

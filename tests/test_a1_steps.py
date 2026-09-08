@@ -82,14 +82,12 @@ def scan(path: str) -> dict:
             if to and to not in gen_bus:            # 제어 버스는 PQ 여야 한다
                 row, bus = i + 1, to                # MATLAB 은 1부터
                 break
-    # 🚨 **시각이 여럿이면 「자기 대조」가 성립하지 않는다** (2026-09-08).
-    #    아래 대조는 계단으로 나온 탭을 고정으로 넣고 다시 풀어 견주는데,
-    #    가져오는 것은 `TRs(1,4)` — **첫 시각의 탭 하나**다. 24 시각 계통은
-    #    시각마다 탭이 다르므로 그 하나를 전부에 고정하면 당연히 어긋난다.
-    #    (`ACDC_case24_MatACDC_24h` 이 2 권선 변압기가 있는 유일한 24 시각
-    #     계통이라, 부하를 낮춰 계단이 걸리기 시작하자 처음 드러났다.)
-    #    ⇒ 계단이 제대로 걸렸는지(자리 위·한계 안·표시·연속과 반 단)는 그대로
-    #      보고, **자기 대조만** 건너뛴다.
+    # 시각 수 — 자기 대조가 몇 시각을 갈라 보는지 화면에 밝히는 데 쓴다.
+    # ⚠️ 하루(2026-09-08 오전)만 이 값으로 **자기 대조를 건너뛰게** 해 뒀었다.
+    #    그때 진단은 "첫 시각 탭 하나를 24시각 전부에 고정하니 어긋나는 게 당연"
+    #    이었는데, 어긋난 진짜 이유는 **엔진이 시각별 탭을 앱에 안 넘긴 것**이었다
+    #    (`runpf_unigrid_app.m` 이 `Tap_result` 하나만 실어 보냈다).
+    #    ⇒ 엔진을 고치고 대조를 시각별로 돌렸다. 건너뛰기는 없앴다.
     nt = 1
     P = T.get("AC_PLoad_dat")
     if P is not None and P.ndim == 2 and P.shape[1] > 1:
@@ -137,7 +135,36 @@ ORD = {{{ORD}}};
 STEP = {STEP};  TMIN = {TMIN};  TMAX = {TMAX};
 {rows}
 
-function [V, F, TR, err, BN] = solve_with(S, ORD, L, tag, MODE, B)
+function M = slab(r, name, ti)
+%SLAB  [nr*T x nc] 로 쌓여 온 표에서 ti 시각의 [nr x nc] 를 뽑는다 (2026-09-08).
+%   `runpf_unigrid_app` 은 전 시각을 **세로로 쌓아** 2차원으로 넘긴다(`*_dims`
+%   가 [nr nc T]). 그래서 `r.AC_all(:,2)` 는 「첫 시각 전압」이 아니라
+%   **24시각 전압을 전부 이어붙인 것**이다 — 이걸 첫 시각으로 착각한 것이
+%   이 시험이 24시각 계통에서 깨진 원인이었다.
+    M = [];
+    if ~isfield(r, name) || isempty(r.(name)), return; end
+    A = r.(name);
+    dn = strrep(name, '_all', '_dims');
+    if isfield(r, dn) && numel(r.(dn)) >= 3
+        d = r.(dn);  nr = d(1);  T = d(3);
+    else
+        nr = size(A,1);  T = 1;
+    end
+    if nr <= 0 || T <= 0 || size(A,1) < nr*T, return; end
+    ti = max(1, min(ti, T));
+    M = A((ti-1)*nr + (1:nr), :);
+end
+
+function T = n_times(r)
+    T = 1;
+    if isfield(r,'Tap_dims') && numel(r.Tap_dims) >= 3 && r.Tap_dims(3) > 0
+        T = double(r.Tap_dims(3));
+    elseif isfield(r,'AC_dims') && numel(r.AC_dims) >= 3 && r.AC_dims(3) > 0
+        T = double(r.AC_dims(3));
+    end
+end
+
+function [V, F, TR, err, BN, r] = solve_with(S, ORD, L, tag, MODE, B)
     if nargin < 6, B = []; end
     a = cell(1,numel(ORD));
     for k = 1:numel(ORD)
@@ -149,7 +176,7 @@ function [V, F, TR, err, BN] = solve_with(S, ORD, L, tag, MODE, B)
             a{{k}} = S.(ORD{{k}});
         end
     end
-    V = []; F = []; TR = []; err = ''; BN = [];
+    V = []; F = []; TR = []; err = ''; BN = []; r = struct();
     try
         % 🚨 두 번째 인자는 **Mode** 다(0 혼합 · 1 AC · 2 DC). 늘 1 을 넘기면
         %    AC/DC 케이스를 AC 로 풀어 버린다(2026-08-14 에 그랬다).
@@ -159,6 +186,53 @@ function [V, F, TR, err, BN] = solve_with(S, ORD, L, tag, MODE, B)
         if isfield(r,'Tap_result'), TR = r.Tap_result; end
     catch ME
         err = ME.message;
+    end
+end
+
+function [sV, sF, sFn, err, nt, nT] = self_check(rs, S, ORD, mode, tag, kind, L13, BB, row, br)
+%SELF_CHECK  조정이 답한 값을 **고정으로** 넣고 손 안 댄 길로 다시 풀어 견준다.
+%   kind 1 = 탭(선로 7열) · 2 = 위상(선로 8열, 도) · 3 = 션트(버스 3열, Mvar)
+%
+% 🚨 2026-09-08 — **시각마다** 한다. 엔진은 시각 루프 안에서 조정하므로 24시각
+%    계통이면 답이 24벌이다. 예전에는 첫 벌 하나를 24시각 전압 전부와 견줘
+%    당연히 어긋났고(17시에 0.031 pu), 그것을 「시험의 한계」로 보고 건너뛰게
+%    해 두었다 — 잘못된 판단이었다. 앱이 화면에 적는 값이 그 시각 계산에 실제로
+%    쓰인 값인지가 이 시험의 본론이다.
+%    ⇒ 첫·가운데·끝 세 시각을 뽑아 각각 대조한다(24벌 전부 하면 풀이가 24배).
+    nT = n_times(rs);
+    tl = unique([1, max(1,ceil(nT/2)), nT]);
+    nt = numel(tl);
+    sV = 0;  sF = 0;  sFn = 0;  err = '';
+    for q = 1:numel(tl)
+        ti = tl(q);
+        Tq = slab(rs, 'Tap_all', ti);
+        if isempty(Tq)
+            err = 'Tap_all 이 없다 — 엔진이 낡았다(시각별 조정 결과를 안 넘긴다)';
+            return
+        end
+        Lx = L13;  Bx = BB;
+        switch kind
+            case 1, Lx(row,7) = Tq(1,4);
+            case 2, Lx(row,8) = Tq(1,4);
+            case 3, Bx(br,3)  = Tq(1,4);
+        end
+        [~, ~, ~, ef, ~, rf] = solve_with(S, ORD, Lx, sprintf('%s_%d', tag, ti), mode, Bx);
+        if ~isempty(ef), err = ef;  return; end
+        As = slab(rs, 'AC_all', ti);  Af = slab(rf, 'AC_all', ti);
+        if isempty(As) || isempty(Af) || size(As,1) ~= size(Af,1)
+            err = 'AC_all 모양이 다르다';  return
+        end
+        % 🚨 NaN 자리를 뺀다 — 혼합 계통 결과표에는 값이 없는 줄이 섞인다
+        %    (2026-08-19 에 탭 갈래에만 이게 빠져 있었다).
+        v1 = As(:,2);  v2 = Af(:,2);
+        mv = isfinite(v1) & isfinite(v2);
+        sV = max(sV, max([abs(v1(mv) - v2(mv)); 0]));
+        Bs = slab(rs, 'Branch_all', ti);  Bf2 = slab(rf, 'Branch_all', ti);
+        if ~isempty(Bs) && ~isempty(Bf2) && size(Bs,1) == size(Bf2,1)
+            f1 = Bs(:,3);  f2 = Bf2(:,3);
+            mf = isfinite(f1) & isfinite(f2);
+            sF = max(sF, max([abs(f1(mf) - f2(mf)); 0]));  sFn = sum(mf);
+        end
     end
 end
 
@@ -231,7 +305,7 @@ for n = 1:numel(P)
 
     % ── 계단으로 ───────────────────────────────────────────────────
     LS = LC;  LS(P(n).row,19) = STEP;
-    [Vs, Fs, TRs, es] = solve_with(S, ORD, LS, sprintf('step%d', n), P(n).mode, BB);
+    [Vs, Fs, TRs, es, ~, rs] = solve_with(S, ORD, LS, sprintf('step%d', n), P(n).mode, BB);
     R(n).e_step = es;
     if isempty(es) && ~isempty(TRs)
         R(n).t_step  = TRs(1,4);
@@ -242,27 +316,20 @@ for n = 1:numel(P)
             R(n).sz  = NaN;        R(n).state = NaN;
         end
         % ── 자기 대조: 그 탭을 고정으로 넣고 **손 안 댄 길**로 다시 ────
-        LF = L13;  LF(P(n).row,7) = R(n).t_step;
-        [Vf, Ff, ~, ef] = solve_with(S, ORD, LF, sprintf('fix%d', n), P(n).mode, BB);
-        R(n).e_fix = ef;
+        [sV, sF, sFn, ef, nt_, nT_] = self_check(rs, S, ORD, P(n).mode, ...
+            sprintf('fix%d', n), 1, L13, BB, P(n).row, 0);
+        R(n).e_fix = ef;  R(n).self_nt = nt_;  R(n).self_T = nT_;
         if isempty(ef)
-            % 🚨 NaN 자리를 뺀다 — 혼합 계통 결과표에는 값이 없는 줄이 섞인다.
-            %    (위상·션트 대조에는 원래 있었는데 탭에만 빠져 있었다. AC 전용만
-            %     돌 때는 드러나지 않던 구멍이다 — 2026-08-19.)
-            mv = isfinite(Vs) & isfinite(Vf);
-            R(n).self_V = max([abs(Vs(mv) - Vf(mv)); 0]);
-            if ~isempty(Fs) && numel(Fs)==numel(Ff)
-                mf = isfinite(Fs) & isfinite(Ff);
-                R(n).self_F = max([abs(Fs(mf) - Ff(mf)); 0]);  R(n).self_Fn = sum(mf);
-            else
-                R(n).self_F = NaN;  R(n).self_Fn = 0;
-            end
+            R(n).self_V = sV;
+            if sFn > 0, R(n).self_F = sF;  R(n).self_Fn = sFn;
+            else,       R(n).self_F = NaN; R(n).self_Fn = 0;  end
         else
             R(n).self_V = NaN;  R(n).self_F = NaN;  R(n).self_Fn = 0;
         end
     else
         R(n).t_step = NaN;  R(n).sz = NaN;  R(n).state = NaN;
         R(n).self_V = NaN;  R(n).self_F = NaN;  R(n).self_Fn = 0;  R(n).ncol = 0;
+        R(n).self_nt = 0;   R(n).self_T = 0;
     end
 
     % ══ 위상 계단 (Ctrl Mode = 2 · 한 단 0.5도) ═══════════════════════════
@@ -274,22 +341,18 @@ for n = 1:numel(P)
         LPH = L19;
         LPH(P(n).row,14)=2;  LPH(P(n).row,16)=F13(P(n).row) - 2;
         LPH(P(n).row,17)=-20; LPH(P(n).row,18)=20; LPH(P(n).row,19)=PH_STEP;
-        [Vp, Fp, TRp, ep] = solve_with(S, ORD, LPH, sprintf('ph%d', n), P(n).mode, BB);
+        [~, ~, TRp, ep, ~, rp] = solve_with(S, ORD, LPH, sprintf('ph%d', n), P(n).mode, BB);
         R(n).e_ph = ep;
         if isempty(ep) && ~isempty(TRp)
             R(n).ph_done = 1;
             R(n).ph_val  = TRp(1,4);          % deg
             R(n).ph_sz   = TRp(1,10);
             R(n).ph_state= TRp(1,11);
-            % 자기 대조 — 그 위상을 고정으로 넣고 손 안 댄 길로
-            LPF = L13;  LPF(P(n).row,8) = R(n).ph_val;   % 엑셀과 같은 **도**
-            [Vpf, Fpf, ~, epf] = solve_with(S, ORD, LPF, sprintf('phf%d', n), P(n).mode, BB);
+            % 자기 대조 — 그 위상을 고정으로 넣고 손 안 댄 길로 (시각별)
+            [pV, pF, pFn, epf] = self_check(rp, S, ORD, P(n).mode, ...
+                sprintf('phf%d', n), 2, L13, BB, P(n).row, 0);
             if isempty(epf)
-                mv = isfinite(Vp) & isfinite(Vpf);
-                R(n).ph_selfV = max([abs(Vp(mv) - Vpf(mv)); 0]);
-                mf = isfinite(Fp) & isfinite(Fpf);
-                R(n).ph_selfF = max([abs(Fp(mf) - Fpf(mf)); 0]);
-                R(n).ph_selfN = sum(mf);
+                R(n).ph_selfV = pV;  R(n).ph_selfF = pF;  R(n).ph_selfN = pFn;
             else
                 R(n).ph_selfV = NaN; R(n).ph_selfF = NaN; R(n).ph_selfN = 0;
             end
@@ -307,22 +370,18 @@ for n = 1:numel(P)
             SH_STEP = 5;
             B22(br,18)=1; B22(br,19)=V13(bi)+0.005;
             B22(br,20)=-50; B22(br,21)=50; B22(br,22)=SH_STEP;
-            [Vh, Fh, TRh, eh] = solve_with(S, ORD, L19, sprintf('sh%d', n), P(n).mode, B22);
+            [~, ~, TRh, eh, ~, rh] = solve_with(S, ORD, L19, sprintf('sh%d', n), P(n).mode, B22);
             R(n).e_sh = eh;
             if isempty(eh) && ~isempty(TRh)
                 R(n).sh_done = 1;
                 R(n).sh_val  = TRh(1,4);        % Mvar
                 R(n).sh_sz   = TRh(1,10);
                 R(n).sh_state= TRh(1,11);
-                % 자기 대조 — 그 Bs 를 **고정 션트**로 넣고 조정 없이
-                BF = B17;  BF(br,3) = R(n).sh_val;
-                [Vhf, Fhf, ~, ehf] = solve_with(S, ORD, L13, sprintf('shf%d', n), P(n).mode, BF);
+                % 자기 대조 — 그 Bs 를 **고정 션트**로 넣고 조정 없이 (시각별)
+                [hV, hF, hFn, ehf] = self_check(rh, S, ORD, P(n).mode, ...
+                    sprintf('shf%d', n), 3, L13, B17, 0, br);
                 if isempty(ehf)
-                    mv = isfinite(Vh) & isfinite(Vhf);
-                    R(n).sh_selfV = max([abs(Vh(mv) - Vhf(mv)); 0]);
-                    mf = isfinite(Fh) & isfinite(Fhf);
-                    R(n).sh_selfF = max([abs(Fh(mf) - Fhf(mf)); 0]);
-                    R(n).sh_selfN = sum(mf);
+                    R(n).sh_selfV = hV;  R(n).sh_selfF = hF;  R(n).sh_selfN = hFn;
                 else
                     R(n).sh_selfV = NaN; R(n).sh_selfF = NaN; R(n).sh_selfN = 0;
                 end
@@ -417,16 +476,20 @@ disp('DONE');
                f"연속값에서 반 단 안으로 옮겼다 — 연속 {tc:.6f} → 계단 {t:.6f}",
                f"(차 {abs(t-tc):.2e}, 반 단 {STEP/2})")
 
-        multi = int(info.get("n_times", 1)) > 1
-        if multi:
-            print(f"      · 자기 대조는 건너뛴다 — 시각이 "
-                  f"{int(info['n_times'])}개인데 대조는 첫 시각 탭 하나를 "
-                  f"전부에 고정한다")
+        # 🚨 2026-09-08 — **건너뛰지 않는다.** 24시각 계통에서 이 대조가 깨졌을 때
+        #    「시험의 한계」로 보고 건너뛰게 했던 적이 있는데, 실제 원인은 엔진이
+        #    시각별 탭을 앱에 안 넘긴 것이었다. 앱이 적은 탭이 그 시각 계산에
+        #    정말 쓰였는지가 이 시험의 본론이므로 시각을 갈라서 끝까지 본다.
+        nt, nT = int(getattr(o, "self_nt", 1)), int(getattr(o, "self_T", 1))
+        when = f"(시각 {nT}개 중 {nt}개 대조)" if nT > 1 else ""
+        ef = _s(getattr(o, "e_fix", ""))
+        if ef:
+            ok(False, "자기 대조를 돌린다", f"— 오류: {ef[:70]}")
         else:
             sv = float(o.self_V)
             ok(np.isfinite(sv) and sv < 1e-9,
                f"자기 대조(전압) — 그 탭을 고정으로 넣고 손 안 댄 길로 풀면 같다 "
-               f"{sv:.3e}")
+               f"{sv:.3e}", when)
             sf, sfn = float(o.self_F), int(o.self_Fn)
             ok(sfn > 0 and np.isfinite(sf) and sf < 1e-9,
                f"자기 대조(조류표) — {sf:.3e}", f"(선로 {sfn}개 대조)")
@@ -439,10 +502,9 @@ disp('DONE');
                f"위상이 자리 위에 있다 — {pv:.4f}° = {round(kk):+d}×0.5°")
             ok(abs(psz - 0.5) < 1e-9, f"위상 10열 = 한 단 {psz:g}°")
             ok(int(o.ph_state) == 1, f"위상 11열 = 계단으로 내렸다 ({int(o.ph_state)})")
-            if not multi:
-                ok(float(o.ph_selfV) < 1e-9 and int(o.ph_selfN) > 0,
-                   f"위상 자기 대조 — 전압 {float(o.ph_selfV):.3e} · "
-                   f"조류 {float(o.ph_selfF):.3e}", f"(선로 {int(o.ph_selfN)}개)")
+            ok(float(o.ph_selfV) < 1e-9 and int(o.ph_selfN) > 0,
+               f"위상 자기 대조 — 전압 {float(o.ph_selfV):.3e} · "
+               f"조류 {float(o.ph_selfF):.3e}", f"(선로 {int(o.ph_selfN)}개)")
         else:
             print(f"      · 위상 계단은 이 계통에서 안 돌렸다 "
                   f"({_s(getattr(o, 'e_ph', ''))[:50]})")
@@ -455,10 +517,9 @@ disp('DONE');
                f"션트가 자리 위에 있다 — {hv:.4f} Mvar = {round(kk):+d}×5")
             ok(abs(hsz - 5.0) < 1e-9, f"션트 10열 = 한 단 {hsz:g} Mvar")
             ok(int(o.sh_state) == 1, f"션트 11열 = 계단으로 내렸다 ({int(o.sh_state)})")
-            if not multi:
-                ok(float(o.sh_selfV) < 1e-9 and int(o.sh_selfN) > 0,
-                   f"션트 자기 대조 — 전압 {float(o.sh_selfV):.3e} · "
-                   f"조류 {float(o.sh_selfF):.3e}", f"(선로 {int(o.sh_selfN)}개)")
+            ok(float(o.sh_selfV) < 1e-9 and int(o.sh_selfN) > 0,
+               f"션트 자기 대조 — 전압 {float(o.sh_selfV):.3e} · "
+               f"조류 {float(o.sh_selfF):.3e}", f"(선로 {int(o.sh_selfN)}개)")
         else:
             print(f"      · 스위치드 션트 계단은 이 계통에서 안 돌렸다 "
                   f"({_s(getattr(o, 'e_sh', ''))[:50]})")
