@@ -56,12 +56,15 @@ def _new_chart(c, title):
 def _view(ch, c):
     v = QChartView(ch)
     v.setRenderHint(QPainter.Antialiasing)
-    # 🍎 **그래프 판도 유리다** (2026-09-08 사용자: *"결과 나오는 곳이 유리면 좋겠어"*).
-    #    `QChart` 자체는 `setBackgroundVisible(False)` 라 안 칠하므로, 판의
-    #    배경만 반투명으로 주면 뒤 얼룩이 그대로 비친다.
-    #    ⚠️ 표(0.34)보다 **덜 비치게** 한다 — 선과 점이 얼룩과 겹치면 읽기 어렵다.
-    v.setStyleSheet(f"background:{c.get('glass_plot', c['plot'])};"
-                    f"border:1px solid {c['glass_edge']};border-radius:14px;")
+    # 🍎 **그래프는 판 «위» 에 그린다** (2026-09-09). 유리 판(`GlassTabs`)이 이미
+    #    깔려 있으므로 여기에 또 배경을 주면 «상자 속 상자» 가 된다(실측 — 흰 판
+    #    안에 흰 판이 하나 더 보였다). 선과 글자만 남기고 배경은 비운다.
+    #    ⚠️ `QGraphicsView` 는 스타일시트만으로는 안 비친다 — 뷰포트가 제 배경을
+    #       칠하므로 `NoBrush` 와 `setAutoFillBackground(False)` 를 같이 걸어야 한다.
+    v.setStyleSheet("background:transparent;border:none;")
+    v.setFrameShape(QChartView.NoFrame)
+    v.setBackgroundBrush(Qt.NoBrush)
+    v.viewport().setAutoFillBackground(False)
     v.setMinimumHeight(150)
     return v
 
@@ -319,7 +322,7 @@ class FlowHeatmap(QFrame):
 
     def __init__(self, title, mat, used, names, unit, c, on_pick=None):
         super().__init__()
-        self.setObjectName("plot")
+        self.setObjectName("plotclear")
         self.title, self.mat, self.used, self.names = title, mat, used, names
         self.unit, self.c = unit, c
         # 칸을 누르면 부르는 콜백 (출발 이름, 도착 이름) — 앱이 그 선로 팝업을 띄운다
@@ -348,7 +351,7 @@ class FlowHeatmap(QFrame):
         c = self.c
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, False)
-        p.fillRect(self.rect(), QColor(c["plot"]))
+        # 배경을 안 칠한다 — 뒤의 유리 판이 비쳐야 한다 (2026-09-09).
 
         # 제목
         p.setPen(QColor(c["text"]))
@@ -475,7 +478,7 @@ class NoData(QFrame):
 
     def __init__(self, title, why, c):
         super().__init__()
-        self.setObjectName("plot")
+        self.setObjectName("plotclear")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumHeight(150)
         v = QVBoxLayout(self)

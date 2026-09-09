@@ -35,9 +35,11 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import (Qt, QThread, QTimer, Signal, QUrl, QPointF,
+                            QPoint, QRect, QRectF,
                             QPropertyAnimation, QEasingCurve)
 from PySide6.QtGui import (QColor, QGuiApplication, QDesktopServices,
-                          QPainter, QPen, QRadialGradient, QLinearGradient)
+                          QPainter, QPen, QBrush, QPainterPath, QImage,
+                          QRadialGradient, QLinearGradient)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
@@ -1262,11 +1264,45 @@ def dropped_path(event):
 # 색 얼룩을 깔고 그 위 카드를 반투명으로 두면, 카드가 뒤 색을 머금는다.
 # 어디서나 같게 보이고 `grab()` 으로 찍힌다.
 GLASS_BLOBS = [          # (x비율, y비율, 반지름비율, 밝은색, 어두운색)
-    (0.34, 0.14, 0.46, "#7cc4ff", "#1d4a7a"),
-    (0.88, 0.10, 0.42, "#ffb3d9", "#6d2a52"),
-    (0.46, 0.88, 0.50, "#b9a8ff", "#3c3470"),
-    (0.92, 0.72, 0.44, "#8ee6c8", "#1f5c4a"),
+    # 🚨 **색을 뺐다** (2026-09-09 사용자: *"배경을 저렇게 무지개로 하면 너무
+    #    안이쁜데"* → 색 수를 줄인 안 넷 중 **「나 · 색 없이 밝기만」** 확정).
+    #    앞서는 파랑·분홍·보라·초록 넷이라 판 안이 무지개로 보였다. 이제 얼룩은
+    #    **밝기 차이일 뿐** 색이 없다.
+    #    ⚠️ 대가 — 채도 증폭(`GLASS_SAT`)이 무채색에서는 아무 일도 안 한다.
+    #       그래서 유리는 **명도 대비**(`GLASS_CON`)로 세운다.
+    #    ⚠️ 얼룩은 **바탕 반대쪽으로 기운다** — 밝은 화면에서는 바탕(#f2f2f7)보다
+    #       어둡게, 어두운 화면에서는 바탕(#1c1c1e)보다 밝게. 같은 쪽으로 두면
+    #       (흰 바탕에 흰 얼룩) 판 안팎이 구별되지 않아 유리가 안 보인다.
+    (0.34, 0.14, 0.46, "#e4e4ec", "#37373d"),
+    (0.88, 0.10, 0.42, "#d6d6e0", "#26262b"),
+    (0.46, 0.88, 0.50, "#e8e8ef", "#323238"),
+    (0.92, 0.72, 0.44, "#d0d0da", "#202024"),
 ]
+
+
+_DITHER = None
+
+
+def dither_brush():
+    """🚨 **띠(banding) 를 깨는 미세 노이즈** (2026-09-09).
+
+    옅은 그라디언트는 8비트에서 계단이 진다. 얼룩을 바탕 반대쪽으로 기울이고
+    명도를 2.4배 벌리자 배경에 **동심원 띠**가 눈에 띄게 드러났다(실측). 색 단계를
+    늘릴 방법이 없으니 — 그래픽 카드가 8비트다 — 경계를 **흩뜨린다.** 사진·영화가
+    쓰는 것과 같은 수법이고, 알파 7 이면 띠만 깨지고 노이즈 자체는 안 보인다.
+    """
+    global _DITHER
+    if _DITHER is None:
+        import random
+        n = 64
+        img = QImage(n, n, QImage.Format_ARGB32)
+        rnd = random.Random(7)              # 늘 같은 무늬 — 다시 그려도 안 흔들린다
+        for y in range(n):
+            for x in range(n):
+                v = rnd.randint(0, 255)
+                img.setPixelColor(x, y, QColor(v, v, v, 7))
+        _DITHER = QBrush(img)               # 텍스처 브러시 — 저절로 이어 붙는다
+    return _DITHER
 
 
 class Ground(QWidget):
@@ -1292,15 +1328,18 @@ class Ground(QWidget):
             alpha = self.ALPHA_DARK if dark else self.ALPHA_LIGHT
         self.c, self.dark, self.alpha = c, dark, alpha
 
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        W, H = self.width(), self.height()
+    # 유리 판이 «비추어 쓸» 그림. 창 크기가 바뀔 때만 다시 만든다.
+    _img = None
+    _frost = None
+    _key = None
+    _seed = None            # 채도를 올린 **작은** 얼룩 — 창 크기와 무관하다
+
+    def _draw(self, p, W, H, dither=True):
         base = QColor(self.c["bg"])
         g = QLinearGradient(0, 0, 0, H)
         g.setColorAt(0.0, base if not self.dark else base.lighter(115))
         g.setColorAt(1.0, base.darker(103) if not self.dark else base)
-        p.fillRect(self.rect(), g)
+        p.fillRect(0, 0, W, H, g)
         for fx, fy, fr, light, dark in GLASS_BLOBS:
             col = QColor(dark if self.dark else light)
             r = fr * max(W, H)          # 긴 변 기준 — 넓은 창에서도 색이 돈다
@@ -1313,6 +1352,220 @@ class Ground(QWidget):
             p.setBrush(rg)
             p.setPen(Qt.NoPen)
             p.drawEllipse(QPointF(fx * W, fy * H), r, r)
+        # 🚨 **작은 seed 에는 얹지 않는다** — seed(168×126)를 창 폭으로 늘리면
+        #    노이즈 한 점이 일곱 점짜리 덩어리가 되어 판 안이 오돌토돌해진다(실측).
+        #    디더는 «원본 해상도로 그리는 바탕» 에만 뜻이 있다.
+        if dither:
+            p.fillRect(0, 0, W, H, dither_brush())
+
+    # 채도를 올릴 작은 그림의 크기. 🚨 **창 크기와 무관하게 못 박는다** —
+    # 픽셀을 파이썬으로 훑기 때문에, 창에 비례시키면 큰 화면에서 창을 끌 때마다
+    # 수만 픽셀을 다시 훑어 버벅인다. 얼룩 위치는 비율(`fx*W`)이라 작은 격자에
+    # 그려도 자리가 같고, 늘려 쓰면 어차피 흐려진다.
+    SEED = (168, 126)
+
+    def _make_seed(self):
+        """🍎 **간유리** — 작은 격자에 얼룩을 그리고 **채도를 올린다**.
+
+        애플 유리를 통과한 색은 바깥보다 진해 보인다. 이 «판 안이 판 밖보다
+        진하다» 가 유리로 읽히게 하는 결정적인 한 가지다. 창 크기가 바뀌어도
+        이 그림은 그대로 두고 늘려 쓴다.
+        """
+        w, h = self.SEED
+        img = QImage(w, h, QImage.Format_RGB32)
+        pp = QPainter(img)
+        pp.setRenderHint(QPainter.Antialiasing)
+        self._draw(pp, w, h, dither=False)
+        pp.end()
+        # 기준 밝기 — 얼룩이 없는 바탕색. 이 값을 축으로 밝기를 벌린다.
+        pivot = QColor(self.c["bg"]).value()
+        con = GLASS_CON_DARK if self.dark else GLASS_CON
+        for y in range(h):
+            for x in range(w):
+                col = img.pixelColor(x, y)
+                hu, sv, v, a = col.getHsv()
+                v = int(pivot + (v - pivot) * con)
+                col.setHsv(hu, min(255, int(sv * GLASS_SAT)),
+                           max(0, min(255, v)), a)
+                img.setPixelColor(x, y, col)
+        self._seed = img
+
+    def _build(self):
+        """바탕 그림과 «간유리로 본 바탕» 을 한 벌 만든다."""
+        W, H = max(1, self.width()), max(1, self.height())
+        if self._key == (W, H):
+            return
+        self._key = (W, H)
+        img = QImage(W, H, QImage.Format_RGB32)
+        pp = QPainter(img)
+        pp.setRenderHint(QPainter.Antialiasing)
+        self._draw(pp, W, H)
+        pp.end()
+        self._img = img
+        if self._seed is None:
+            self._make_seed()
+        self._frost = self._seed.scaled(W, H, Qt.IgnoreAspectRatio,
+                                        Qt.SmoothTransformation)
+
+    def frost(self):
+        """유리 판이 잘라 쓸 «흐리고 진한 바탕»."""
+        self._build()
+        return self._frost
+
+    def paintEvent(self, e):
+        self._build()
+        p = QPainter(self)
+        p.drawImage(0, 0, self._img)
+
+
+# 🍎 유리를 통과하면 뒤가 **바깥보다 또렷하다**. 이 둘이 1.0 이면 판 안팎이 같아
+#    «유리» 가 아니라 «반투명 흰 판» 으로 보인다.
+#    `GLASS_SAT` = 채도 증폭. 얼룩에 색이 있을 때만 듣는다.
+#    `GLASS_CON` = **명도 대비 증폭**. 무채색 얼룩에서 유리를 세우는 것은 이쪽이다
+#                  — 밝은 데는 더 밝게, 어두운 데는 더 어둡게 벌린다.
+GLASS_SAT = 1.0
+GLASS_CON = 2.4           # 밝은 화면
+GLASS_CON_DARK = 1.3      # 어두운 화면 — 세게 벌리면 흐린 글자가 4.5:1 아래로 떨어진다
+
+
+class GlassCard(QFrame):
+    """🍎 **애플 유리 판** (2026-09-09).
+
+    🚨 **Qt QSS 에는 `backdrop-filter` 가 없다.** 그래서 `background:rgba(...)` 로
+       만든 판은 뒤가 «비치기만» 하고 **흐려지지 않는다** — 색유리이지 간유리가
+       아니다. 게다가 알파 0.90 이면 뒤가 10%만 비쳐 그냥 흰 판이 된다
+       (사용자 지적: *"유리 느낌이 안나는데?"*).
+
+    ⇒ 판을 직접 그린다. 네 겹이다.
+
+      1. **뒤 바탕을 흐리게 비춘다** — 조상 `Ground` 의 간유리 그림에서 내 자리를
+         잘라 온다. 바깥보다 채도가 높아 판 안이 더 진하다.
+      2. **틴트** — 흰빛(어두우면 회색)을 덮되 **위가 진하고 아래로 옅어진다**.
+         유리의 두께감이 여기서 나온다.
+      3. **가장자리 빛** — 위쪽 테두리는 밝고 아래로 갈수록 사라진다. 애플 유리의
+         가장 알아보기 쉬운 표시다.
+      4. 그림자는 밖에서 `float_panel` 이 건다.
+
+    ⚠️ 뒤에 `Ground` 가 없으면(대화상자 등) 틴트만 그린다 — 그때는 옛 모습 그대로다.
+    """
+
+    def __init__(self, c, dark, radius=16, tint=None, parent=None):
+        super().__init__(parent)
+        self.c, self.dark, self.radius = c, dark, radius
+        self._hot = False
+        # 위·아래 틴트 진하기. 낮출수록 뒤가 많이 비친다.
+        if tint is None:
+            tint = (0.62, 0.40) if not dark else (0.60, 0.40)
+        self.tint = tint
+
+    def set_hot(self, on):
+        """끌어온 파일이 위에 있을 때 — 파랗게 물든다."""
+        if self._hot != on:
+            self._hot = on
+            self.update()
+
+    def paintEvent(self, e):
+        paint_glass(self, QPainter(self), self.rect(), self.radius,
+                    self.c, self.dark, self.tint, self._hot)
+
+
+def _ground_of(w):
+    """조상 중 `Ground` 를 찾는다 — 유리가 비출 바탕."""
+    w = w.parentWidget()
+    while w is not None:
+        if isinstance(w, Ground):
+            return w
+        w = w.parentWidget()
+    return None
+
+
+def paint_glass(w, p, rect, radius, c, dark, tint, hot=False):
+    """유리 판 하나를 그린다 — 세 겹.
+
+    ⚠️ `rect` 는 위젯 안의 **판 자리**다(탭 판은 탭 줄 아래만 판이다).
+    """
+    p.setRenderHint(QPainter.Antialiasing)
+    R = float(radius)
+    box = QRectF(rect.x() + 0.5, rect.y() + 0.5,
+                 rect.width() - 1.0, rect.height() - 1.0)
+    path = QPainterPath()
+    path.addRoundedRect(box, R, R)
+
+    # 1) 뒤 바탕을 흐리게 비춘다
+    g = _ground_of(w)
+    if g is not None:
+        frost = g.frost()
+        if frost is not None:
+            off = w.mapTo(g, QPoint(rect.x(), rect.y()))
+            p.save()
+            p.setClipPath(path)
+            p.drawImage(rect.x(), rect.y(), frost, off.x(), off.y(),
+                        rect.width(), rect.height())
+            # ⚠️ 판 «안» 에는 디더를 안 얹는다 — 작은 그림을 크게 늘린 것이라
+            #    보간으로 이미 부드럽고, 노이즈만 오돌토돌하게 도드라진다(실측).
+            p.restore()
+
+    # 2) 틴트 — 위가 진하고 아래로 옅어진다 (유리의 두께감)
+    top, bot = tint
+    if hot:
+        t1 = QColor(c["accent"]); t1.setAlphaF(0.34)
+        t2 = QColor(c["accent"]); t2.setAlphaF(0.16)
+    elif dark:
+        t1 = QColor(86, 86, 92); t1.setAlphaF(top)
+        t2 = QColor(52, 52, 56); t2.setAlphaF(bot)
+    else:
+        t1 = QColor(255, 255, 255); t1.setAlphaF(top)
+        t2 = QColor(255, 255, 255); t2.setAlphaF(bot)
+    lg = QLinearGradient(0, rect.y(), 0, rect.y() + rect.height())
+    lg.setColorAt(0.0, t1)
+    lg.setColorAt(1.0, t2)
+    p.setPen(Qt.NoPen)
+    p.setBrush(lg)
+    p.drawPath(path)
+
+    # 3) 가장자리 빛 — 위가 밝고 아래로 사라진다
+    if hot:
+        e1 = QColor(c["accent"]); e1.setAlphaF(0.90)
+        e2 = QColor(c["accent"]); e2.setAlphaF(0.55)
+    elif dark:
+        e1 = QColor(255, 255, 255); e1.setAlphaF(0.30)
+        e2 = QColor(255, 255, 255); e2.setAlphaF(0.05)
+    else:
+        e1 = QColor(255, 255, 255); e1.setAlphaF(0.95)
+        e2 = QColor(255, 255, 255); e2.setAlphaF(0.30)
+    eg = QLinearGradient(0, rect.y(), 0, rect.y() + rect.height())
+    eg.setColorAt(0.0, e1)
+    eg.setColorAt(1.0, e2)
+    p.setPen(QPen(QBrush(eg), 1.2))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(path)
+
+
+class GlassTabs(QTabWidget):
+    """🍎 그래프 판 — **탭 줄 아래만** 유리다 (2026-09-09).
+
+    🚨 `QTabWidget::pane` 은 위젯이 아니라 **`QStyle` 이 그리는 조각**이라
+       `GlassCard` 로 갈아 끼울 수 없다. 그래서 탭 판 자리를 직접 재서 거기에만
+       유리를 그린다. QSS 쪽 `::pane` 은 투명하게 비워 둔다.
+    """
+
+    def __init__(self, c, dark, radius=16, parent=None):
+        super().__init__(parent)
+        self.c, self.dark, self.radius = c, dark, radius
+        self.tint = (0.58, 0.38) if not dark else (0.58, 0.38)
+
+    def _pane(self):
+        """탭 판 자리 — 탭 줄(그리고 모서리 단추) 아래 6px 부터."""
+        bottom = self.tabBar().geometry().bottom()
+        cw = self.cornerWidget(Qt.TopRightCorner)
+        if cw is not None and cw.isVisible():
+            bottom = max(bottom, cw.geometry().bottom())
+        top = bottom + 1 + 6            # QSS 의 `top:6px` 과 같은 값
+        return QRect(0, top, self.width(), max(0, self.height() - top))
+
+    def paintEvent(self, e):
+        paint_glass(self, QPainter(self), self._pane(), self.radius,
+                    self.c, self.dark, self.tint)
 
 
 class Combo(QComboBox):
@@ -1396,6 +1649,11 @@ def slide_width(w, start, end, ms=240):
     a.start()
     w._slide_anim = a
     return w
+
+
+# 🍎 시작 화면의 판 둘(파일 놓는 자리 · 최근 목록)은 **폭이 같아야 한다**.
+#    폭을 안 박으면 각자 «담은 글자» 만큼만 잡혀 왼쪽 끝이 어긋난다(2026-09-09).
+START_CARD_W = 560
 
 
 def float_panel(w, dark, strong=False):
@@ -1552,8 +1810,20 @@ class Proto(QMainWindow):
            카드와 같은 팔레트로 못 박아 라이트·다크 양쪽에서 읽히게 한다. */
         QToolTip {{ background:{c['surface']}; color:{c['text']};
             border:1px solid {c['border']}; padding:6px 9px; font-size:13px; }}
-        #dropzone {{ background:{c['surface']}; border:2px dashed {c['border']};
-            border-radius:14px; }}
+        /* 🍎 **시작 화면도 떠 있는 유리다** (2026-09-09 사용자 지정 —
+           *"여기에 요소들도 유리 floating 느낌나게"*). 파일 놓는 자리와
+           최근 목록이 결과 화면의 판 셋과 같은 재질이라야 앱이 한 벌로 보인다.
+           ⚠️ 점선 테두리를 뺐다 — 점선은 «임시로 그린 자리» 로 보여 유리와 안 맞는다.
+              끌어온 파일이 창 위에 올라오면 그때 점선이 나타난다(`set_hot`). */
+        /* ⚠️ 이 둘은 `GlassCard` 가 **직접 그린다** — QSS 로 배경을 주면
+              그 위에 덮여 유리가 안 보인다. 여기서는 비워 둔다. */
+        #dropzone, #recentcard {{ background:transparent; border:none; }}
+        QPushButton#recentrow {{ background:transparent; border:none;
+            border-radius:10px; text-align:left; padding:9px 14px;
+            font-size:14px; font-weight:400; color:{c['text']}; }}
+        QPushButton#recentrow:hover {{ background:{c['accent_soft']};
+            color:{c['accent']}; }}
+        QPushButton#recentrow:pressed {{ background:{c['accent']}; color:#ffffff; }}
         /* 🍎 **유리** — 카드는 불투명 판이 아니라 **반투명 유리**다. 뒤 바탕의
            색 얼룩(`Ground`)이 비쳐 들어온다. 테두리는 선이 아니라 **밝은
            하이라이트** — 애플 유리의 가장자리 빛을 흉내낸다.
@@ -1563,22 +1833,24 @@ class Proto(QMainWindow):
             border-radius:14px; }}
         #plot {{ background:{c['glass_plot']}; border:1px solid {c['glass_edge']};
             border-radius:14px; }}
+        /* ⚠️ 유리 판 **안** 에 놓이는 것들 — 여기에 또 배경을 주면 «상자 속 상자» 다. */
+        #plotclear {{ background:transparent; border:none; }}
         /* 🍎 **머리줄·바닥줄은 판이 아니다** — 바탕 위에 글자만 얹는다. 이 둘까지
            판으로 만들면 화면이 판 다섯 장으로 갈려 어느 것이 «내용» 인지 흐려진다.
            떠 있는 판은 셋뿐이다 — **사이드바 · 그래프 · 표**(2026-09-08 사용자 지정). */
         #topbar, #statusbar {{ background:transparent; border:none; }}
         /* 사이드바는 떠 있는 **판**이다 — 둥근 모서리에 옅은 가장자리 빛.
            결과가 아니므로 거의 불투명하다. */
-        #sidebar {{ background:{c['glass_bar']};
-            border:1px solid {c['glass_edge']}; border-radius:16px; }}
+        /* ⚠️ 배경·테두리는 `GlassCard`·`GlassTabs` 가 **직접 그린다**.
+              QSS 로 여기에 색을 주면 그 위에 덮여 유리가 사라진다. */
+        #sidebar {{ background:transparent; border:none; }}
         /* 결과가 나오는 두 판 — 여기가 유리다. */
         /* ⚠️ `top:-1px` 은 판을 탭 줄 **위로 끌어올려 붙이는** 값이다(웹 탭의 관습).
            떠 있는 판에서는 탭이 판을 파고든 것처럼 보인다(2026-09-08 사용자 지적).
            양수로 바꿔 **탭 줄과 판 사이를 벌린다.** */
-        QTabWidget#graphpanel::pane {{ background:{c['glass_plot']};
-            border:1px solid {c['glass_edge']}; border-radius:16px; top:6px; }}
-        QWidget#tablepanel {{ background:{c['glass_solid']};
-            border:1px solid {c['glass_edge']}; border-radius:16px; }}
+        QTabWidget#graphpanel::pane {{ background:transparent;
+            border:none; top:6px; }}
+        QWidget#tablepanel {{ background:transparent; border:none; }}
         /* 🍎 맥 단추 = **테두리 없는 옅은 판**. 누를 수 있다는 것은 테두리가 아니라
            바탕색이 알린다. 굵기는 500 까지만 쓴다(600 이상은 맥에서 무겁다). */
         QPushButton {{ background:{c['glass']}; color:{c['text']};
@@ -2030,7 +2302,7 @@ class Proto(QMainWindow):
            디자인 다듬기 때 다시 본다(사용자 확정 — *"아이콘은 디자인 다듬을 때 보자"*).
         """
         c = self.c
-        sb = QFrame()
+        sb = GlassCard(c, self.dark, radius=16, tint=(0.80, 0.66))
         sb.setObjectName("sidebar")
         sb.setFixedWidth(56)
         v = QVBoxLayout(sb)
@@ -2073,7 +2345,7 @@ class Proto(QMainWindow):
 
     def sidebar(self):
         c = self.c
-        sb = QFrame()
+        sb = GlassCard(c, self.dark, radius=16, tint=(0.80, 0.66))
         sb.setObjectName("sidebar")
         sb.setFixedWidth(280)
         v = QVBoxLayout(sb)
@@ -2332,7 +2604,7 @@ class Proto(QMainWindow):
 
         # ── 그래프 (접혀 있으면 안내 띠로 바뀐다) ──
         if not self.numbers:
-            gt = QTabWidget()
+            gt = GlassTabs(c, self.dark, radius=16)
             for name, plots, layout in GRAPHS[self.mode]:
                 page = QWidget()
                 lay = QHBoxLayout(page) if layout == "h" else QVBoxLayout(page)
@@ -2494,7 +2766,7 @@ class Proto(QMainWindow):
             v.addWidget(note)
 
         # ── 표 ──
-        tw = QWidget()
+        tw = GlassCard(c, self.dark, radius=16, tint=(0.50, 0.34))
         tv = QVBoxLayout(tw)
         # 판 안쪽 여백 — 0 이면 도구 줄과 표가 둥근 모서리에 붙어 판 밖처럼 보인다.
         # ⚠️ 가로는 **표 열을 그만큼 밀어낸다**(실측: 12px 씩 주니 열 넘침이 24px
@@ -3099,11 +3371,13 @@ class Proto(QMainWindow):
         v.addSpacing(24)
 
         # 파일 놓는 자리
-        drop = QFrame()
+        drop = GlassCard(c, self.dark, radius=18)
         drop.setObjectName("dropzone")
-        drop.setMinimumHeight(170)
-        drop.setMaximumWidth(720)
+        drop.setMinimumHeight(178)
+        drop.setFixedWidth(START_CARD_W)
+        float_panel(drop, self.dark)      # 🍎 떠 있는 유리 판
         dv = QVBoxLayout(drop)
+        dv.setContentsMargins(28, 26, 28, 26)
         dv.setSpacing(7)
         d1 = QLabel("계통 파일을 여기로 끌어다 놓으세요")
         d1.setAlignment(Qt.AlignCenter)
@@ -3149,19 +3423,31 @@ class Proto(QMainWindow):
             cap = QLabel("최근에 연 파일")
             cap.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
             cw = QWidget()
-            cw.setMaximumWidth(720)
+            cw.setFixedWidth(START_CARD_W)
             cvv = QVBoxLayout(cw)
             cvv.setContentsMargins(0, 0, 0, 0)
-            cvv.setSpacing(7)
+            cvv.setSpacing(9)
+            # 머리말은 **판 안쪽 글자와 세로줄을 맞춘다**(애플 묶음 목록).
+            # 테두리 1 + 판 여백 6 + 줄 안쪽 여백 14 = 21px.
+            cap.setContentsMargins(21, 0, 0, 0)
             cvv.addWidget(cap)
+            # 🍎 줄마다 판을 띄우면 화면이 판 일곱 장으로 갈린다. 애플은 **판 하나**에
+            #    줄을 담고 줄 사이를 여백으로만 가른다(설정 앱의 묶음 목록).
+            box = GlassCard(c, self.dark, radius=18)
+            box.setObjectName("recentcard")
+            float_panel(box, self.dark)
+            bv = QVBoxLayout(box)
+            bv.setContentsMargins(6, 6, 6, 6)
+            bv.setSpacing(2)
             for item in recent:
                 name = Path(item["path"]).name
                 b = QPushButton(f"{name}\n{item.get('info', '')}")
-                b.setMinimumHeight(54)
-                b.setStyleSheet(
-                    f"text-align:left;padding:9px 14px;font-size:14px;")
+                b.setObjectName("recentrow")
+                b.setMinimumHeight(52)
+                b.setCursor(Qt.PointingHandCursor)
                 b.clicked.connect(lambda _, p=item["path"]: self.open_path(p))
-                cvv.addWidget(b)
+                bv.addWidget(b)
+            cvv.addWidget(box)
             hb2 = QHBoxLayout()
             hb2.addStretch(); hb2.addWidget(cw); hb2.addStretch()
             v.addLayout(hb2)
@@ -3238,15 +3524,13 @@ class Proto(QMainWindow):
             return
         c = self.c
         if on:
-            self.dropzone.setStyleSheet(
-                f"#dropzone {{ background:{c['accent_soft']};"
-                f" border:2px dashed {c['accent']}; border-radius:14px; }}")
+            self.dropzone.set_hot(True)
             if self.drop_label is not None:
                 self.drop_label.setText("놓으면 바로 계산합니다")
                 self.drop_label.setStyleSheet(
                     f"color:{c['accent']};font-size:19px;font-weight:600;")
         else:
-            self.dropzone.setStyleSheet("")
+            self.dropzone.set_hot(False)
             if self.drop_label is not None:
                 self.drop_label.setText("계통 파일을 여기로 끌어다 놓으세요")
                 self.drop_label.setStyleSheet(

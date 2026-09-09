@@ -195,6 +195,9 @@ def _page(c, sol, plots, layout, t, bus_row):
     if box is not None and box.widget() is not None:
         inner = box.widget()
         inner.setParent(None)
+        # 화면의 계통도는 유리 판 위에 그려져 배경이 없다. 떼어 내 잡으면
+        # 투명한 PNG 가 나오므로 여기서만 불투명 배경을 켠다 (2026-09-09).
+        inner.solid_bg = True
         page.deleteLater()
         inner.resize(max(inner.minimumWidth(), FIG_W),
                      max(inner.minimumHeight(), 420))

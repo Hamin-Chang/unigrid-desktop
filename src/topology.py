@@ -940,7 +940,7 @@ class TopologyView(QFrame):
                  vstyle="badge", cstyle="badge", on_line_click=None,
                  zoom=1.0, on_zoom=None, on_bus_click=None):
         super().__init__()
-        self.setObjectName("plot")
+        self.setObjectName("plotclear")
         self.g, self.c, self.case_name = g, c, case_name
         self.on_move = on_move
         # 선로를 클릭하면 부르는 콜백 (g, edge_index) — 앱이 24h 부하율 팝업을 띄운다
@@ -1412,7 +1412,11 @@ class TopologyView(QFrame):
         c = self.c
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor(c["plot"]))
+        # 🍎 화면에서는 **안 칠한다** — 뒤의 유리 판이 비쳐야 한다 (2026-09-09).
+        # ⚠️ 내보내기는 이 캔버스를 부모에서 **떼어 내** 통째로 잡으므로 배경이
+        #    없으면 투명한 PNG 가 나온다. 그때만 `solid_bg` 를 켠다(`exporter`).
+        if getattr(self, "solid_bg", False):
+            p.fillRect(self.rect(), QColor(c["plot"]))
         if not self.g.keys:
             p.end(); return
         # 🚨 **여기서 한 번에 늘린다** (2026-09-08 점검 i17). 아래는 전부 논리
@@ -1953,17 +1957,17 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
                         on_line_click=on_line_click,
                         zoom=zoom, on_bus_click=on_bus_click)
     box = QScrollArea()
-    box.setObjectName("plot")
+    box.setObjectName("plotclear")
     box.setWidget(view)
     box.setWidgetResizable(True)          # 작은 계통은 화면에 꽉 채운다
     box.setFrameShape(QFrame.NoFrame)
     box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     box.setMinimumHeight(300)
-    box.viewport().setStyleSheet(f"background:{c['plot']};")
+    box.viewport().setStyleSheet("background:transparent;")
 
     # ── 위반 보기 켜기/끄기 (계통도 위 작은 토글) ──
     wrap = QWidget()
-    wrap.setObjectName("plot")
+    wrap.setObjectName("plotclear")
     wv = QVBoxLayout(wrap)
     wv.setContentsMargins(0, 0, 0, 0)
     wv.setSpacing(7)
