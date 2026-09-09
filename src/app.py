@@ -1655,6 +1655,10 @@ def slide_width(w, start, end, ms=240):
 #    폭을 안 박으면 각자 «담은 글자» 만큼만 잡혀 왼쪽 끝이 어긋난다(2026-09-09).
 START_CARD_W = 560
 
+# `float_panel` 의 그림자가 판 밖으로 퍼지는 거리 — blur 26(반지름 13) + 아래로 5.
+# 판을 감싸는 위젯에 이만큼 여백이 없으면 그림자가 잘려 모서리가 각져 보인다.
+SHADOW_ROOM = 20
+
 
 def float_panel(w, dark, strong=False):
     """판을 **떠 있게** 만든다 — 그림자 (2026-09-08).
@@ -1994,6 +1998,11 @@ class Proto(QMainWindow):
         QProgressBar::chunk {{ background:{c['accent']}; border-radius:5px; }}
         QScrollArea {{ border:none; background:transparent; }}
         /* 🍎 맥 스크롤 막대 = **가는 알약**, 홈은 안 그린다. */
+        /* 🚨 가로·세로 스크롤바가 만나는 **구석**. 규칙이 없으면 Qt 기본 스타일이
+           «┌» 모양 검은 선을 그린다 — 유리 판 오른쪽 아래에 떠서 거슬린다
+           (2026-09-09 실측). 표의 머리글 구석 단추도 같이 지운다. */
+        QAbstractScrollArea::corner {{ background:transparent; border:none; }}
+        QTableCornerButton::section {{ background:transparent; border:none; }}
         QScrollBar:vertical {{ background:transparent; width:11px; margin:0; }}
         QScrollBar:horizontal {{ background:transparent; height:11px; margin:0; }}
         QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
@@ -3423,9 +3432,14 @@ class Proto(QMainWindow):
             cap = QLabel("최근에 연 파일")
             cap.setStyleSheet(f"color:{c['muted']};font-size:13px;font-weight:600;")
             cw = QWidget()
-            cw.setFixedWidth(START_CARD_W)
+            # 🚨 **그림자가 퍼질 자리를 남긴다** (2026-09-09 사용자 지적 — 판
+            #    오른쪽 아래에 «각진 귀» 가 남아 거슬렸다). 위젯은 자식을 제
+            #    사각형으로 자르는데, 이 위젯이 판에 딱 맞아 있어서 그림자가
+            #    둥근 모서리 밖으로 못 나가고 직각으로 잘려 있었다.
+            #    ⚠️ 파일 놓는 자리는 큰 위젯 안이라 멀쩡했다 — 이 판만 그랬다.
+            cw.setFixedWidth(START_CARD_W + SHADOW_ROOM * 2)
             cvv = QVBoxLayout(cw)
-            cvv.setContentsMargins(0, 0, 0, 0)
+            cvv.setContentsMargins(SHADOW_ROOM, 0, SHADOW_ROOM, SHADOW_ROOM)
             cvv.setSpacing(9)
             # 머리말은 **판 안쪽 글자와 세로줄을 맞춘다**(애플 묶음 목록).
             # 테두리 1 + 판 여백 6 + 줄 안쪽 여백 14 = 21px.
