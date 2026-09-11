@@ -19,12 +19,19 @@ REM       cmd.exe misreads UTF-8 Korean and chokes on LF-only blocks.
 setlocal
 cd /d "%~dp0.."
 
-set "PY=%USERPROFILE%\venvs\unigrid-acdc\Scripts\python.exe"
+REM Which python: the repo-local .venv first (what README tells people to
+REM make), then the old shared venv. 2026-09-11: a clean clone made .venv
+REM as README says and this file only looked in %USERPROFILE%\venvs.
+set "PY=%CD%\.venv\Scripts\python.exe"
+if not exist "%PY%" set "PY=%USERPROFILE%\venvs\unigrid-acdc\Scripts\python.exe"
 if not exist "%PY%" (
-    echo [UNIGRID] Python not found: %PY%
-    echo           Edit PY in this file to point at your venv.
+    echo [UNIGRID] Python not found. Looked in:
+    echo           %CD%\.venv\Scripts\python.exe
+    echo           %USERPROFILE%\venvs\unigrid-acdc\Scripts\python.exe
+    echo           Make one: python -m venv .venv
     exit /b 1
 )
+echo [UNIGRID] python: %PY%
 
 REM Check the inputs first. Building without them gives an app that
 REM starts but cannot calculate, and you find out on a customer's PC.
@@ -36,10 +43,10 @@ if not exist "EULA.txt" echo [UNIGRID] missing: EULA.txt & exit /b 1
 REM The app imports pandas/openpyxl to read cases. If they are not in the
 REM venv they are not frozen in either, and the app opens but cannot read
 REM any grid file. Check here instead of finding out on a demo machine.
-"%PY%" -c "import numpy, pandas, openpyxl, PySide6" 2>nul
+"%PY%" -c "import numpy, pandas, openpyxl, PySide6, PyInstaller" 2>nul
 if errorlevel 1 (
     echo [UNIGRID] missing packages in %PY%
-    echo           run: "%PY%" -m pip install -r requirements.txt
+    echo           run: "%PY%" -m pip install -r requirements.txt pyinstaller
     exit /b 1
 )
 
