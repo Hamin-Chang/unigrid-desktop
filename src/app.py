@@ -1804,10 +1804,17 @@ class Proto(QMainWindow):
            없는 QWidget 들이 전부 덮어 **결과 판이 `#f2f2f7` 그대로**였다(실측).
            ⇒ 바탕을 칠하는 것은 **창과 대화상자뿐**이고, 보통 위젯은 **투명**이다.
               색과 글꼴은 그대로 물려준다. */
-        QMainWindow, QDialog {{ background:{c['bg']}; }}
         QWidget {{ background:transparent; color:{c['text']};
             font-family:'Apple SD Gothic Neo','Helvetica Neue',sans-serif; }}
         QLabel, QCheckBox {{ background:transparent; }}
+        /* 🚨🚨 **창·대화상자 규칙은 반드시 `QWidget` 규칙 «뒤에»** (2026-09-11).
+           Qt 스타일시트에서 `QDialog` 와 `QWidget` 은 **무게가 같다** — 하위 클래스라고
+           특별 대우가 없고, 무게가 같으면 **뒤에 온 규칙이 이긴다.** 이 줄이 위에 있을
+           때는 `QWidget {{ transparent }}` 가 이겨서 **대화상자가 전부 투명**했다(맥·윈도우
+           실측 알파 0). 윈도우는 투명한 창 뒤를 **검정**으로 칠해 불러오기 창이 까맣게
+           떴다(사용자 지적 — *"이거 왜 검은색이야"*). `QMessageBox`·`QInputDialog` 도
+           `QDialog` 의 하위라 이 한 줄로 같이 고쳐진다. */
+        QMainWindow, QDialog {{ background:{c['bg']}; }}
         /* 툴팁 — 전용 규칙이 없으면 macOS 는 배경을 어둡게 그리는데 위 QWidget
            규칙이 글자색까지 어둡게 강제해 '어두운 글자+어두운 배경'으로 안 보였다
            (계통도 위반 요소 손말풍선이 빈 상자로 떴다). 배경·글자·테두리를
