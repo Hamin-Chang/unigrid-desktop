@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# ↑ 🚨 지우지 말 것 (2026-09-11). 한국어 윈도우의 pip 는 이 파일을 **cp949** 로 읽으려다
+#   아래 한글·줄표(—)에서 깨진다(`UnicodeDecodeError: 'cp949' codec can't decode byte 0xe2`).
+#   pip 는 첫 두 줄의 `coding:` 표시를 보고 그 인코딩으로 읽는다(pip/_internal/utils/encoding.py).
+#   맥은 기본이 UTF-8 이라 안 드러났다.
 # UNIGRID Desktop — 필요한 파이썬 패키지
 # 파이썬 3.12 에서 만들었고 3.12 로 시험한다.
 #
