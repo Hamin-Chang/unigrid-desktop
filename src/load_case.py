@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 import case_guard
@@ -162,16 +163,50 @@ def load_case(path: str | Path) -> ACDCCase:
     case_guard.check_case_file(path)
     ext = Path(path).expanduser().suffix.lower()
     if ext in (".xlsx", ".xls"):
-        return load_acdc_case(path)
-    if ext == ".m":
+        case = load_acdc_case(path)
+    elif ext == ".m":
         from unigrid_convert import matpower_to_case
-        return matpower_to_case(path)
-    if ext == ".raw":
+        case = matpower_to_case(path)
+    elif ext == ".raw":
         from unigrid_convert import psse_to_case
-        return psse_to_case(path)
-    raise ValueError(
-        f"지원하지 않는 입력 형식입니다: '{ext}'. .xlsx / .xls / .m / .raw 만 지원합니다."
-    )
+        case = psse_to_case(path)
+    else:
+        raise ValueError(
+            f"지원하지 않는 입력 형식입니다: '{ext}'. .xlsx / .xls / .m / .raw 만 지원합니다."
+        )
+    case.tables["DC_Bus_dat"] = dc_bus_8(case.tables.get("DC_Bus_dat", pd.DataFrame()))
+    return case
+
+
+def dc_bus_8(frame: pd.DataFrame) -> pd.DataFrame:
+    """DC Bus Data 를 늘 8열(Bus | Z_p | I_p | P_p | V0 | V_base | VM min | VM max)로 맞춘다.
+
+    앱 2.3 (알고리즘 v17) 부터 DC 부하가 ZIP 이다(`format_v2` DC Bus Data 머리말).
+    옛 6열은 2열 `Nominal Current` 가 0 일 때만 바꾼다 — 그때 정전력(0·0·1)과 답이 같다.
+    0 이 아니면 8열로는 옮길 수 없어(그 항은 8열에 없다) 조용히 버리지 않고 막는다.
+    """
+    if frame.size == 0 and frame.shape[1] not in (6, 8):
+        return frame                                   # 시트가 없는 계통(AC 전용 등)
+    a = frame.to_numpy(dtype=float)
+    if a.shape[1] not in (6, 8):
+        raise ValueError(f"DC Bus Data 열이 {a.shape[1]}개입니다. 6열(옛) 또는 8열만 읽습니다.")
+    blank = np.isnan(a).all(axis=1)                    # 「데이터 없음」 NaN 줄은 그대로 둔다
+    if a.shape[1] == 6:
+        nom = a[~blank, 1]
+        bad = np.isfinite(nom) & (nom != 0)
+        if bad.any():
+            raise ValueError(
+                f"DC Bus Data 의 Nominal Current 가 0 이 아닌 버스가 {int(bad.sum())}곳 있습니다.\n"
+                "  앱 2.3 은 DC 부하를 Z_p · I_p · P_p (ZIP 비율) 로 받습니다.\n"
+                "  → Nominal Current 열을 지우고 Z_p · I_p · P_p 열을 넣어 주십시오.")
+        out = np.full((a.shape[0], 8), np.nan)
+        out[:, 0] = a[:, 0]
+        out[:, 4:8] = a[:, 2:6]
+    else:
+        out = a.copy()
+    for j, d in ((1, 0.0), (2, 0.0), (3, 1.0)):       # 빈 비율 = 정전력
+        out[np.isnan(out[:, j]) & ~blank, j] = d
+    return pd.DataFrame(out)
 
 
 def _read_mode(path: Path) -> float:

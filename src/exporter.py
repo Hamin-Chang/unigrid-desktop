@@ -118,7 +118,8 @@ def _check_sheets(wb, sol) -> None:
     for t in range(max(1, int(sol.n_time))):
         viol = checks.real_violations(sol, t)
         ws = wb.create_sheet(f"{t + 1}H")
-        ws.append(["점검 결과", f"모두 {checks.violation_count(viol)}건"])
+        ws.append(["점검 결과", f"위반 {checks.violation_count(viol)}건 · "
+                                 f"한계 도달 {checks.reached_count(viol)}건"])
         for title, (cols, rows) in viol.items():
             ws.append([])
             ws.append([f"▶ {title}", f"{len(rows)}건"])

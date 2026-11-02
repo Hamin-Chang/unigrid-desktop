@@ -971,7 +971,28 @@ class TopologyView(QFrame):
                 self.pos[i] = places[key]
         self.drag = None
         self._pan = None                 # 휠을 눌러 끄는 중인 자리 (i17)
+        self._prog = 1.0                 # 앱 2.3 — 가운데부터 펼쳐지는 정도(1 = 다 보임)
         self._fit()
+
+    def _play(self):
+        """앱 2.3 — 계통도가 가운데부터 둥글게 펼쳐진다(`charts._anim` 과 같은 결)."""
+        from charts import _anim
+        # 한 번 그리는 데 0.1초 넘게 걸린다(case24 · 145 ms 실측) — 장면마다 다시 그리면
+        # 끊긴다. 다 그린 그림을 한 장 떠 두고, 움직이는 동안은 그 그림만 오려 붙인다.
+        self._prog = 1.0
+        self._snap = self.grab()
+        # 🚨 뜬 직후 바로 0 으로 — 움직임의 첫 장면이 오기 전 한 번 칠하는 사이
+        #    `_prog` 가 1 로 남아 **다 그려진 판이 한 장 먼저** 보였다(2026-11-02 실제 맥 창
+        #    0.08초 간격으로 찍음: 다 그려짐 → 가운데만 → 펼쳐짐).
+        self._prog = 0.0
+        self.update()
+
+        def step(t):
+            self._prog = t
+            if t >= 1.0:
+                self._snap = None
+            self.update()
+        _anim(self, 650, step)
 
     def _scroller(self):
         """이 위젯을 담고 있는 스크롤 상자 (없으면 None).
@@ -1417,6 +1438,18 @@ class TopologyView(QFrame):
         #    없으면 투명한 PNG 가 나온다. 그때만 `solid_bg` 를 켠다(`exporter`).
         if getattr(self, "solid_bg", False):
             p.fillRect(self.rect(), QColor(c["plot"]))
+        if self._prog < 1.0:             # 앱 2.3 — 보이는 둘레의 가운데부터 둥글게 펼친다
+            vis = self.visibleRegion().boundingRect()
+            if vis.isEmpty():
+                vis = self.rect()
+            r = 0.5 * (vis.width() ** 2 + vis.height() ** 2) ** 0.5 * self._prog
+            clip = QPainterPath()
+            clip.addEllipse(QPointF(vis.center()), r, r)
+            p.setClipPath(clip)
+            snap = getattr(self, "_snap", None)
+            if snap is not None:
+                p.drawPixmap(0, 0, snap)
+                p.end(); return
         if not self.g.keys:
             p.end(); return
         # 🚨 **여기서 한 번에 늘린다** (2026-09-08 점검 i17). 아래는 전부 논리
@@ -1963,7 +1996,10 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
     box.setFrameShape(QFrame.NoFrame)
     box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     box.setMinimumHeight(300)
-    box.viewport().setStyleSheet("background:transparent;")
+    # 🚨 선택자 없는 QSS 는 **모든 자식에게 번진다** — 계통도를 부모로 뜨는 풍선말까지
+    #    투명이 되어 맥에서 빈 검은 상자로 떴다(2026-11-01 사용자 지적). 이 판에만 건다.
+    box.viewport().setObjectName("topovp")
+    box.viewport().setStyleSheet("#topovp { background:transparent; }")
 
     # ── 위반 보기 켜기/끄기 (계통도 위 작은 토글) ──
     wrap = QWidget()

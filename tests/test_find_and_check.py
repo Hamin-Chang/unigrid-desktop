@@ -139,9 +139,11 @@ with tempfile.TemporaryDirectory() as d:
     ws = wb[wb.sheetnames[0]]
     rows = [[c for c in r] for r in ws.iter_rows(values_only=True)]
     head = rows[0]
-    n_screen = checks.violation_count(checks.real_violations(sol, 0))
-    ok(str(head[1]) == f"모두 {n_screen}건", "첫 줄 건수가 화면과 같다",
-       f"{head[1]} vs 화면 {n_screen}건")
+    v0 = checks.real_violations(sol, 0)
+    n_v, n_r = checks.violation_count(v0), checks.reached_count(v0)
+    n_screen = n_v + n_r                     # 줄 수 = 위반 + 한계 도달
+    ok(str(head[1]) == f"위반 {n_v}건 · 한계 도달 {n_r}건", "첫 줄 건수가 화면과 같다",
+       f"{head[1]} vs 화면 위반 {n_v} · 도달 {n_r}")
     titles = [str(r[0]) for r in rows if r and str(r[0]).startswith("▶")]
     ok(len(titles) == 4, "네 가지가 다 들어간다", " · ".join(titles))
     n_data = sum(1 for r in rows[1:]

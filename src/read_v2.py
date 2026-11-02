@@ -223,7 +223,11 @@ def read_tables(path: str | Path) -> dict[str, np.ndarray]:
             if sheet.name not in wb.sheetnames:
                 tables[key] = np.zeros((0, 0))
                 continue
-            tables[key] = read_sheet(sheet, wb[sheet.name])
+            ws = wb[sheet.name]
+            if sheet.name == F.DC_BUS_OLD.name and any(
+                    _key(h) == "nominal current" for h in _sheet_rows(ws)[0]):
+                sheet = F.DC_BUS_OLD                  # 앱 2.2 의 6열 — load_case 가 8열로 바꾼다
+            tables[key] = read_sheet(sheet, ws)
         return tables
     finally:
         wb.close()

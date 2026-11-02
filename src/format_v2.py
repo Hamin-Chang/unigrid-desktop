@@ -203,14 +203,19 @@ SHEETS: list[Sheet] = [
         _c("Bus / 시각", "Mvar", 1),
     ]),
 
+    # 🚨 DC 부하 ZIP (2026-11-01, 앱 2.3 · 알고리즘 v17) — 엔진이 6열·8열을 **열 수로** 가른다
+    #    (`preprocess_DC_bus_zip.m`). 앱은 늘 8열로 들고 있고, 옛 6열은 `DC_BUS_OLD` 로 읽어
+    #    `load_case.dc_bus_8` 에서 8열로 바꾼다. 비우면 정전력(0·0·1) — 옛 6열과 같은 답이다.
     Sheet("DC Bus Data", optional_sheet=True, cols=[
         _c("Bus", "", 1),
-        _c("Nominal Current", "?", 2, note="⚠️ v1 에 단위가 안 적혀 있다 — 확인 전까지 그대로 둔다"),
-        _c("V0", "pu", 3),
-        _c("V_base", "kV", 4, V_TO_KV),
-        _c("VM min", "pu", 5),
-        _c("VM max", "pu", 6),
-    ], v1_widths=(6,)),
+        _c("Z_p", "", 2, required=False, default=0.0),
+        _c("I_p", "", 3, required=False, default=0.0),
+        _c("P_p", "", 4, required=False, default=1.0),
+        _c("V0", "pu", 5),
+        _c("V_base", "kV", 6, V_TO_KV),
+        _c("VM min", "pu", 7),
+        _c("VM max", "pu", 8),
+    ], v1_widths=(8,)),
 
     Sheet("DC Line Data", optional_sheet=True, cols=[
         _c("Line #", "", 1, required=False),
@@ -275,6 +280,17 @@ SHEETS: list[Sheet] = [
 
 BY_NAME = {s.name: s for s in SHEETS}
 BY_V1_NAME = {s.source_name: s for s in SHEETS}
+
+# 앱 2.2 까지의 DC Bus Data (6열). **읽을 때만** 쓴다 — 머리글에 `Nominal Current` 가 있거나
+# (v2) 열이 6개면(v1) 이것으로 읽고, `load_case.dc_bus_8` 이 8열로 바꾼다.
+DC_BUS_OLD = Sheet("DC Bus Data", optional_sheet=True, cols=[
+    _c("Bus", "", 1),
+    _c("Nominal Current", "?", 2, note="v1 에 단위가 안 적혀 있다 — 0 이 아니면 읽기를 막는다"),
+    _c("V0", "pu", 3),
+    _c("V_base", "kV", 4, V_TO_KV),
+    _c("VM min", "pu", 5),
+    _c("VM max", "pu", 6),
+], v1_widths=(6,))
 
 
 # ─────────────────────────────────────────────── 읽어보기 시트에 넣을 글

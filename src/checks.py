@@ -191,8 +191,19 @@ def gen_limit_rows(sol):
     return rows
 
 
+# 한계를 「넘은」 것과 한계에 「도달한」 것을 따로 센다 (2026-11-01, 앱 2.3).
+# 변환기·발전기 한계 줄은 엔진이 출력을 한계값에 묶은 것이라 넘지 않았다 —
+# 예전에는 이것까지 「한계를 벗어난 항목」·「위반」으로 셌다.
+EXCEED = ("전압 위반", "과부하 선로")
+
+
 def violation_count(viol) -> int:
-    """점검할 것이 모두 몇 건인가."""
-    return sum(len(rows) for _, rows in viol.values())
+    """한계를 넘은 것(전압 위반 · 과부하 선로)이 몇 건인가."""
+    return sum(len(rows) for k, (_, rows) in viol.items() if k in EXCEED)
+
+
+def reached_count(viol) -> int:
+    """한계에 도달한 것(변환기 한계 · 발전기 한계)이 몇 건인가."""
+    return sum(len(rows) for k, (_, rows) in viol.items() if k not in EXCEED)
 
 

@@ -35,16 +35,17 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import (Qt, QThread, QTimer, Signal, QUrl, QPointF,
-                            QPoint, QRect, QRectF,
-                            QPropertyAnimation, QEasingCurve)
+                            QPoint, QRect, QRectF, QEvent, QObject, QSize,
+                            QPropertyAnimation, QVariantAnimation, QEasingCurve,
+                            QAbstractAnimation)
 from PySide6.QtGui import (QColor, QGuiApplication, QDesktopServices,
                           QPainter, QPen, QBrush, QPainterPath, QImage,
-                          QRadialGradient, QLinearGradient)
+                          QRadialGradient, QLinearGradient, QConicalGradient)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QLabel, QPushButton, QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
-    QComboBox, QSpinBox, QDialog, QCheckBox, QLineEdit, QButtonGroup,
+    QComboBox, QSpinBox, QDialog, QCheckBox, QLineEdit, QButtonGroup, QTabBar,
     QHeaderView, QScrollArea, QSizePolicy, QSplitter, QSplitterHandle,
     QFileDialog,
     QProgressDialog, QMessageBox, QInputDialog, QSlider,
@@ -57,7 +58,7 @@ import paths
 import charts
 import checks
 from checks import (col_index, gen_limit_rows, real_violations,   # noqa: F401
-                    unrated_lines, violation_count, GEN_LIMIT_COLS,
+                    unrated_lines, violation_count, reached_count, GEN_LIMIT_COLS,
                     overloaded_rows as checks_overloaded)
 import exporter
 
@@ -373,9 +374,16 @@ VERSION = "2.2"
 #    ⭐ 맥 앱의 뼈대 = **바탕은 옅은 회색 · 내용은 흰 카드 · 카드에 테두리를 안 쓴다.**
 #    그래서 `bg` 가 창 전체(사이드바 포함) 바탕이고 `surface` 가 카드다 — 지금까지
 #    사이드바가 흰색이고 본문이 회색이라 **맥과 반대**였다.
+# 🎨 **앱 2.3 — 테마색은 먹색(무채색)이다** (2026-11-01 사용자 확정 「① 먹색」).
+#    그래프 · 계통도가 채도 있는 색을 거의 다 쓴다 — AC 빨강 2° · 경고 15° · IC 24° ·
+#    AC slack 33° · 위상각 초록 145° · DC slack 청록 174° · **DC 파랑 216°** · DC/DC 보라 271° ·
+#    위반 자홍 324°. 옛 강조색 `#007aff`(211°)는 DC 파랑과 거의 같았다. 테마를 무채색으로
+#    두면 화면에서 색이 보이는 곳은 곧 데이터다. 경고(`warn`) · 정상(`ok`)은 상태 색이라 그대로.
+#    `on_accent` = 강조색 바탕 위 글자색 · `rail*` = 왼쪽 사이드바(B 꼴 · `RailButton`).
 LIGHT = dict(
     bg="#f2f2f7", surface="#ffffff", border="#d8d8dd", text="#1d1d1f",
-    muted="#55555a", accent="#007aff", accent_soft="#e8f1ff",
+    muted="#55555a", accent="#1f232b", accent_soft="#e7e8eb", on_accent="#ffffff",
+    rail="#1f232b", rail_fg="#aeb4bf", rail_on="#ffffff", rail_on_fg="#1f232b",
     ok="#248a3d", warn="#c93400", plot="#ffffff",
     side="#ececf0", hair="#e5e5ea",   # 사이드바 바탕 · 표 가로 구분선
     # 유리 — 뒤 얼룩이 비치는 정도. `glass_solid` 는 표·그래프가 앉는 판이라 덜 비친다.
@@ -388,7 +396,8 @@ LIGHT = dict(
 )
 DARK = dict(
     bg="#1c1c1e", surface="#2c2c2e", border="#3a3a3c", text="#f5f5f7",
-    muted="#a8a8ae", accent="#0a84ff", accent_soft="#0a2540",
+    muted="#a8a8ae", accent="#e6e7ea", accent_soft="#3a3c42", on_accent="#16171a",
+    rail="#111215", rail_fg="#8d929c", rail_on="#e6e7ea", rail_on_fg="#16171a",
     ok="#30d158", warn="#ff9f0a", plot="#2c2c2e",
     side="#242426", hair="#38383a",
     glass="rgba(58,58,62,0.92)", glass_solid="rgba(44,44,46,0.40)",
@@ -1553,6 +1562,7 @@ class GlassTabs(QTabWidget):
 
     def __init__(self, c, dark, radius=16, parent=None):
         super().__init__(parent)
+        self.setTabBar(_PillTabBar(c["surface"], self))   # 앱 2.3 — 고른 탭 알약이 미끄러진다
         self.c, self.dark, self.radius = c, dark, radius
         self.tint = (0.58, 0.38) if not dark else (0.58, 0.38)
 
@@ -1584,6 +1594,53 @@ class Combo(QComboBox):
     def __init__(self, color, parent=None):
         super().__init__(parent)
         self._chev = QColor(color)
+        # 앱 2.3 — 펼침 목록은 **아래로 10줄**(QSS `combobox-popup:0`)이고 모서리가 둥글다.
+        # 맥 기본은 고른 줄에 겹쳐 24줄을 다 펼쳤고, 둘레가 검은 판으로 보였다(2026-11-01
+        # 사용자 *"이 드랍버튼도 좀 깔끔하게"*). 펼침 창(`view().window()`)을 투명 창으로
+        # 만들어 둥근 목록 판만 보이게 한다 — 이 속성은 창이 처음 뜨기 **전에** 걸어야 먹는다.
+        self.setMaxVisibleItems(10)
+        box = self.view().window()
+        box.setObjectName("combopop")
+        box.setAttribute(Qt.WA_TranslucentBackground)
+        box.setProperty("own_motion", True)          # 내려오는 움직임은 `showPopup` 이 직접
+
+    def showPopup(self):
+        # 🚨 `combobox-popup:0` 이어도 맥 스타일은 펼침 창을 **콤보 위에 겹쳐** 띄웠다
+        #    (2026-11-02 실제 맥 창에서 찍음 — 콤보보다 8px 왼쪽 · 23px 좁아 ⌄ 가 삐져나옴.
+        #    오프스크린 시험은 창 자리를 안 봐서 못 잡았다). 띄운 뒤 콤보 바로 아래 ·
+        #    같은 폭으로 옮긴다. 아래 자리가 모자라면 콤보 위로 붙인다.
+        #    내려오는 움직임(`popup_in`)은 앱 전체 필터가 Show 순간의 **옛 자리**를 끝점으로
+        #    잡아 창을 도로 끌고 갔다 ⇒ 콤보 펼침 창은 필터가 건너뛰고(`own_motion`)
+        #    여기서 자리를 잡은 **뒤에** 움직인다.
+        super().showPopup()
+        box = self.view().window()
+        self._pop_mv = None
+        self._place_popup()
+        popup_in(box)
+        self._pop_mv = box._pop_anims[1]
+        # 앱이 맨 앞이 아닐 때는 Show 가 한 박자 늦게 와서 맥이 창을 옛 자리로 되돌렸다
+        # (2026-11-02 실측) — 그 뒤에 한 번 더 놓는다.
+        QTimer.singleShot(0, self._place_popup)
+        QTimer.singleShot(40, self._place_popup)
+
+    def _place_popup(self):
+        box = self.view().window()
+        if not box.isVisible():
+            return
+        gap = 4
+        top = self.mapToGlobal(QPoint(0, 0))
+        h = box.height()
+        y = top.y() + self.height() + gap
+        scr = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        if y + h > scr.bottom() and top.y() - gap - h >= scr.top():
+            y = top.y() - gap - h
+        mv = getattr(self, "_pop_mv", None)
+        if mv is not None and mv.state() == QAbstractAnimation.Running:
+            mv.setStartValue(QPoint(top.x(), y - 6))
+            mv.setEndValue(QPoint(top.x(), y))
+            box.resize(self.width(), h)
+        else:
+            box.setGeometry(top.x(), y, self.width(), h)
 
     def paintEvent(self, e):
         super().paintEvent(e)
@@ -1601,7 +1658,7 @@ class Combo(QComboBox):
                         QPointF(cx + w, cy - h + 1)])
 
 
-def fade_in(w, ms=200):
+def fade_in(w, ms=200, delay=0):
     """새로 뜬 내용을 **살짝 밝아지며** 들어오게 한다 (2026-09-08).
 
     사용자: *"버튼 같은거나 그래프 바뀔때 전환 모션도 애플처럼 바꿀 수 있나?"*
@@ -1625,9 +1682,646 @@ def fade_in(w, ms=200):
     a.setEasingCurve(QEasingCurve.OutCubic)
     # 끝나면 효과를 뗀다 — 남겨 두면 그 위젯이 계속 오프스크린 버퍼를 거쳐 느려진다
     a.finished.connect(lambda: w.setGraphicsEffect(None))
-    a.start()
+    if delay:                                 # `rise_in` 이 카드를 차례로 띄울 때
+        def _start():
+            try:
+                a.start()
+            except RuntimeError:              # 기다리는 새 화면을 갈아 끼워 위젯이 지워졌다
+                pass
+        QTimer.singleShot(delay, _start)
+    else:
+        a.start()
     w._fade_anim = a
     return w
+
+
+# ── 앱 2.3 움직임 (2026-11-01) ───────────────────────────────────────────
+# 사용자: *"클릭하거나 다른 항목으로 넘어갈 때 스무스한 애니메이션"* → Dribbble
+# 「Motion UI Design for Data Dashboards」(TheMotionDot) 를 0.5초 간격 장면 48장으로
+# 쪼개 읽고 셋을 옮겼다 — ① 고른 칸의 바탕이 옆 칸으로 **미끄러진다** ② 내용이
+# 바뀌면 카드가 **차례로** 나타난다 ③ 숫자가 **올라가며** 바뀐다.
+# 길이·곡선은 `fade_in` 과 같은 결(0.2초 안팎 · 끝에서 느려짐)로 맞춘다.
+SLIDE_MS = 220
+STAGGER_MS = 45
+
+
+def rise_in(page):
+    """② 탭을 바꾸면 그 탭의 카드(`#card`)가 위에서부터 차례로 나타난다.
+
+    카드가 둘 미만이면 지금까지처럼 판 전체를 `fade_in` 한다.
+    ③ `_count_fmt` 를 단 이름표는 숫자가 0 에서 올라간다(`count_up`).
+    """
+    if page is None:
+        return page
+    cards = page.findChildren(QFrame, "card")
+    if len(cards) < 2:
+        fade_in(page)
+    else:
+        for i, cd in enumerate(cards[:12]):           # 그 뒤는 한꺼번에 — 기다리게 하지 않는다
+            fade_in(cd, delay=i * STAGGER_MS)
+    for lab in page.findChildren(QLabel):
+        if getattr(lab, "_count_fmt", None):
+            count_up(lab)
+    return page
+
+
+def play_charts(page):
+    """앱 2.3 — 결과 그래프가 제 움직임으로 나타난다(`charts._anim` · 그래프마다 `_play`).
+
+    하나라도 돌렸으면 True — 부르는 쪽은 False 일 때만 판 전체를 `fade_in` 한다.
+    """
+    if page is None:
+        return False
+    # 보이는 것만 — 뒤에 숨은 탭의 계통도까지 그림을 뜨면 0.1초씩 멈춘다
+    ws = [w for w in page.findChildren(QWidget)
+          if callable(getattr(w, "_play", None)) and w.isVisible()]
+    for w in ws:
+        w._play()
+    return bool(ws)
+
+
+def reveal(w):
+    """앱 2.3 — 가운데 판이 바뀔 때: 판은 밝아지고 그 안의 그래프는 제 움직임으로 그려진다.
+
+    🚨 **새 판이 처음 그려질 때 시작한다.** 다시 그린 판은 첫 장면까지 0.1 ~ 0.25 초
+    걸린다(모드 바꾸기 실측) — 바로 시작하면 0.2 초짜리 밝아짐이 화면에 뜨기 전에
+    거의 끝나 있었다. 그때까지는 거의 투명(0.01)으로 둔다 — 0 이면 Qt 가 판을 아예
+    안 그려 «첫 장면» 이 오지 않는다.
+    """
+    if w is None:
+        return w
+    eff = QGraphicsOpacityEffect(w)
+    eff.setOpacity(0.01)
+    w.setGraphicsEffect(eff)
+
+    def go():
+        if _alive(w):
+            fade_in(w)
+            play_charts(w)
+    _OnFirstPaint(w, go)
+    return w
+
+
+def _alive(w):
+    try:
+        w.objectName()
+        return True
+    except RuntimeError:                      # 그새 화면을 또 갈아 끼워 지워졌다
+        return False
+
+
+def count_up(lab, ms=420):
+    """③ 이름표의 숫자를 0 에서 제 값까지 올린다. `lab._count_fmt(t)` 가 0~1 의 t 로 글을 만든다."""
+    a = QVariantAnimation(lab)
+    a.setDuration(ms)
+    a.setStartValue(0.0)
+    a.setEndValue(1.0)
+    a.setEasingCurve(QEasingCurve.OutCubic)
+    a.valueChanged.connect(lambda t: lab.setText(lab._count_fmt(float(t))))
+    a.start()
+    lab._count_anim = a
+
+
+class _OnFirstPaint(QObject):
+    """`w` 가 처음 그려지면 `fn` 을 한 번 부른다. 끝내 안 그려져도 `fallback_ms` 뒤에는 부른다."""
+
+    def __init__(self, w, fn, fallback_ms=180):
+        super().__init__(w)
+        self._w, self._fn, self._done = w, fn, False
+        w.installEventFilter(self)
+        QTimer.singleShot(fallback_ms, self._fire)
+
+    def eventFilter(self, o, e):
+        if e.type() == QEvent.Paint:
+            QTimer.singleShot(0, self._fire)
+        return False
+
+    def _fire(self):
+        if self._done:
+            return
+        self._done = True
+        try:
+            self._w.removeEventFilter(self)
+        except RuntimeError:                      # 그새 화면을 또 갈아 끼워 위젯이 지워졌다
+            pass
+        self._fn()
+
+
+def snap_central(win):
+    """다시 그리기 직전 가운데 판을 (그림, 자리) 로 찍는다. 안 보이면 None."""
+    cw = win.centralWidget()
+    if cw is None or not cw.isVisible():
+        return None
+    return cw.grab(), cw.geometry()
+
+
+def crossfade_from(win, snap, then, probe, ms=SLIDE_MS + 40):
+    """화면을 **통째로 다시 그리는** 전환을 매끄럽게 한다 (2026-11-01, 앱 2.3).
+
+    다시 그리는 동안 UI 가 약 0.2초 멈추고(점검 탭 실측 215 ms) 새 화면이 처음 그려질 때까지
+    빈 판이 보였다. 그래서 다시 그리기 **직전 화면**(`snap`)을 그대로 덮어 두었다가, 새 화면이
+    처음 그려지면(`probe`) 그 위에서 옅어지며 걷는다. `then()` 은 그때 부른다(카드가 차례로 나타남).
+
+    `snap` = `snap_central(win)` 이 돌려준 (그림, 자리). ⚠️ 자리는 **찍을 때** 잰 것을 쓴다 —
+    다시 그린 직후의 새 판은 아직 크기가 안 정해져(기본 640×480) 덮개가 일부만 덮었다.
+    """
+    if snap is None:
+        then()
+        return
+    pm, rect = snap
+    ov = QLabel(win)
+    ov.setPixmap(pm)
+    ov.setGeometry(rect)
+    ov.setAttribute(Qt.WA_TransparentForMouseEvents)
+    eff = QGraphicsOpacityEffect(ov)
+    eff.setOpacity(1.0)
+    ov.setGraphicsEffect(eff)
+    ov.show()
+    ov.raise_()
+
+    def go():
+        try:
+            a = QPropertyAnimation(eff, b"opacity", ov)
+            a.setDuration(ms)
+            a.setStartValue(1.0)
+            a.setEndValue(0.0)
+            a.setEasingCurve(QEasingCurve.OutCubic)
+            a.finished.connect(ov.deleteLater)
+            a.start()
+            ov._anim = a
+            then()
+        except RuntimeError:
+            pass
+
+    def gone():
+        try:
+            ov.deleteLater()
+        except RuntimeError:
+            pass
+    QTimer.singleShot(2000, gone)                 # 무슨 일이 있어도 덮개는 남지 않는다
+    _OnFirstPaint(probe.viewport() if hasattr(probe, "viewport") else probe, go)
+
+
+class _Ripple(QWidget):
+    """D 단추를 누른 자리에서 원이 퍼지며 옅어진다 (레퍼런스 — 핀을 누른 자리의 원)."""
+
+    def __init__(self, btn, pos, color, ms=380):
+        super().__init__(btn)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setGeometry(btn.rect())
+        self._p, self._c, self._t = QPointF(pos), QColor(color), 0.0
+        dx = max(pos.x(), btn.width() - pos.x())
+        dy = max(pos.y(), btn.height() - pos.y())
+        self._R = (dx * dx + dy * dy) ** 0.5           # 가장 먼 모서리까지
+        a = QVariantAnimation(self)
+        a.setDuration(ms)
+        a.setStartValue(0.0)
+        a.setEndValue(1.0)
+        a.setEasingCurve(QEasingCurve.OutCubic)
+        a.valueChanged.connect(self._step)
+        a.finished.connect(self.deleteLater)
+        a.start()
+        self._a = a
+        self.show()
+        self.raise_()
+
+    def _step(self, t):
+        self._t = float(t)
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(self.rect()), 9, 9)  # 단추 모서리(QSS 9px) 밖으로 안 번지게
+        p.setClipPath(clip)
+        col = QColor(self._c)
+        col.setAlphaF(0.28 * (1.0 - self._t))
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        r = self._R * self._t
+        p.drawEllipse(self._p, r, r)
+
+
+def dialog_in(d, ms=160):
+    """E 대화상자가 투명에서 나타난다. (크기를 키우는 움직임은 창이 떨릴 수 있어 뺐다.)"""
+    d.setWindowOpacity(0.0)
+    a = QPropertyAnimation(d, b"windowOpacity", d)
+    a.setDuration(ms)
+    a.setStartValue(0.0)
+    a.setEndValue(1.0)
+    a.setEasingCurve(QEasingCurve.OutCubic)
+    a.start()
+    d._in_anim = a
+
+
+class OrbRing(QWidget):
+    """계산 중 — 살아 있는 듯 출렁이는 빛 고리 (2026-11-01, 앱 2.3 · 사용자 「C 좋다」).
+
+    레퍼런스 = Dribbble 「Sentient Orb — AI Loading State Concept」. 색은 테마(먹색 · 은빛)로.
+    고리 반지름에 사인 물결 셋(3 · 5 · 2 마디, 서로 다른 속도)을 더해 쉬지 않고 모양이 바뀌고,
+    먹색 → 은빛 원뿔 그라디언트가 둘레를 돈다. 흐림 효과 대신 굵기 · 투명도가 다른 선
+    다섯 겹으로 빛 번짐을 낸다(Qt 2D 로 실시간에 그릴 수 있는 방식).
+    """
+
+    WAVES = ((3.0, 3, 1.7), (2.2, 5, -2.3), (1.5, 2, 1.1))     # (크기 · 마디 · 속도) — 지름 120 기준
+    GLOW = ((14, .06), (9, .12), (5, .25), (2.6, .6), (1.3, 1.0))   # (굵기 · 투명도)
+
+    def __init__(self, dark, size=120, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._pal = (("#e6e7ea", "#a9aeb8", "#5a5f6a") if dark
+                     else ("#1f232b", "#6b7180", "#c9ced8"))
+        self._t0 = time.perf_counter()
+        self._tm = QTimer(self)
+        self._tm.timeout.connect(self.update)
+        self._tm.start(16)                                  # 약 60장/초
+
+    def stop(self):
+        self._tm.stop()
+
+    def paintEvent(self, e):
+        t = time.perf_counter() - self._t0
+        s = self.width() / 120.0
+        cx = cy = self.width() / 2
+        R, n = 36 * s, 120
+        path = QPainterPath()
+        for i in range(n + 1):
+            a = i / n * 2 * math.pi
+            d = sum(amp * math.sin(k * a + sp * t) for amp, k, sp in self.WAVES) * s
+            pt = QPointF(cx + (R + d) * math.cos(a), cy + (R + d) * math.sin(a))
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        path.closeSubpath()
+        grad = QConicalGradient(cx, cy, -math.degrees(t * 0.8))
+        dk, md, lt = (QColor(x) for x in self._pal)
+        for pos, col in ((0.0, dk), (0.4, md), (0.7, lt), (1.0, dk)):
+            grad.setColorAt(pos, col)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        for w, a in self.GLOW:
+            pen = QPen(QBrush(grad), w * s)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setOpacity(a)
+            p.setPen(pen)
+            p.drawPath(path)
+
+
+class SolvingDialog(QDialog):
+    """계산 중 창 — 출렁이는 고리 + 글 (앱 2.3 · 옛 `QProgressDialog` 막대 자리)."""
+
+    def __init__(self, parent, c, dark, text="조류계산 중입니다..."):
+        super().__init__(parent)
+        self.setWindowTitle("UNIGRID")
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumWidth(340)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(28, 22, 28, 22)
+        v.setSpacing(6)
+        self.orb = OrbRing(dark, 120)
+        v.addWidget(self.orb, 0, Qt.AlignHCenter)
+        lab = QLabel(text)
+        lab.setAlignment(Qt.AlignCenter)
+        lab.setStyleSheet(f"color:{c['text']};font-size:14px;")
+        v.addWidget(lab)
+
+    def close(self):
+        try:
+            self.orb.stop()
+        except RuntimeError:
+            pass
+        return super().close()
+
+
+def popup_in(w, ms=150, drop=6):
+    """드롭다운 · 메뉴 펼침 창이 투명에서 나타나며 `drop` 픽셀 위에서 내려온다."""
+    end = w.pos()
+    w.setWindowOpacity(0.0)
+    w.move(end.x(), end.y() - drop)
+    op = QPropertyAnimation(w, b"windowOpacity", w)
+    mv = QPropertyAnimation(w, b"pos", w)
+    for a, s, e in ((op, 0.0, 1.0), (mv, QPoint(end.x(), end.y() - drop), end)):
+        a.setDuration(ms)
+        a.setStartValue(s)
+        a.setEndValue(e)
+        a.setEasingCurve(QEasingCurve.OutCubic)
+        a.start()
+    w._pop_anims = (op, mv)
+
+
+class _MotionFilter(QObject):
+    """앱 전체에 한 곳에서 건다 — D 단추 누름 물결 · E 대화상자 나타남."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self._win = win
+
+    def eventFilter(self, o, e):
+        try:
+            t = e.type()
+            if (t == QEvent.MouseButtonPress and isinstance(o, QPushButton)
+                    and o.isEnabled() and o.isVisible()):
+                # 누르는 순간 단추 바탕이 파랗게 바뀐다(QSS `QPushButton:pressed`) — 그 위엔
+                # 흰 물결. `seg_off` 만 옅은 파랑(`accent_soft`)으로 바뀌므로 파란 물결.
+                light = o.objectName() == "seg_off"
+                c = self._win.c
+                col = (c["rail_on"] if o.objectName() == "railbtn"     # 진한 사이드바 위
+                       else c["accent"] if light else c["on_accent"])
+                _Ripple(o, e.position().toPoint(), col)
+            elif (t == QEvent.Show and isinstance(o, QDialog) and o.isWindow()
+                    and not isinstance(o, QFileDialog)
+                    and not getattr(o, "_motion_shown", False)):
+                o._motion_shown = True
+                dialog_in(o)
+            elif (t == QEvent.Show and isinstance(o, QWidget) and o.isWindow()
+                    and o.windowType() == Qt.Popup and not o.property("own_motion")):
+                # 앱 2.3 — 펼침 창이 살짝 내려오며 나타난다. `Qt.Popup` 꼴이면 모두 —
+                # 드롭다운 목록(표 고르기 · 시간 · 해법 …) · 메뉴 · 비교 항목 고르기 판.
+                # (풍선말은 `Qt.ToolTip` 꼴이라 여기 안 걸리고 Qt 효과로 따로 켠다)
+                popup_in(o)
+        except Exception:                             # 움직임 때문에 앱이 서면 안 된다
+            pass
+        return False
+
+
+def _rail_icon(p, kind, ox, oy, s=1.0):
+    """사이드바 아이콘을 선으로 그린다 — 20×20 칸 기준 좌표 · (ox, oy) = 칸 왼쪽 위.
+
+    글꼴 기호(⚠ ▦ …)는 맥 · 윈도우에서 모양이 달라 직접 그린다.
+    """
+    def P(x, y):
+        return QPointF(ox + x * s, oy + y * s)
+
+    def poly(*pts, close=False):
+        path = QPainterPath(P(*pts[0]))
+        for q in pts[1:]:
+            path.lineTo(P(*q))
+        if close:
+            path.closeSubpath()
+        p.drawPath(path)
+
+    if kind == "open":            # 폴더
+        poly((2, 6), (8, 6), (10, 8), (18, 8), (18, 16), (2, 16), close=True)
+    elif kind == "result":        # 꺾은선 그래프 + 축
+        poly((2, 2), (2, 18), (18, 18))
+        poly((5, 14), (9, 9), (12, 12), (17, 5))
+    elif kind == "check":         # 경고 세모 + 느낌표
+        poly((10, 2.5), (18, 17), (2, 17), close=True)
+        poly((10, 7.5), (10, 12))
+        p.drawPoint(P(10, 14.5))
+    elif kind == "grid":          # 표
+        p.drawRoundedRect(QRectF(P(2, 3), P(18, 17)), 2 * s, 2 * s)
+        poly((2, 8), (18, 8)); poly((2, 12.5), (18, 12.5)); poly((8, 3), (8, 17))
+    elif kind == "scenario":      # 겹친 판
+        p.drawRoundedRect(QRectF(P(6, 2), P(18, 13)), 2 * s, 2 * s)
+        poly((14, 15), (14, 18), (2, 18), (2, 6), (4.5, 6))
+    elif kind == "curve":         # PV 곡선 (코 모양)
+        path = QPainterPath(P(3, 3))
+        path.quadTo(P(22, 9), P(3, 17))
+        p.drawPath(path)
+        poly((2, 2), (2, 18), (18, 18))
+    elif kind == "export":        # 상자 밖으로 화살표
+        poly((6, 9), (3, 9), (3, 18), (17, 18), (17, 9), (14, 9))
+        poly((10, 13), (10, 2)); poly((6.5, 5.5), (10, 2), (13.5, 5.5))
+    elif kind == "excel":         # 문서 + 더하기
+        poly((4, 2), (12.5, 2), (16.5, 6), (16.5, 18), (4, 18), close=True)
+        poly((12.5, 2), (12.5, 6), (16.5, 6))
+        poly((10.2, 9), (10.2, 15)); poly((7.2, 12), (13.2, 12))
+    elif kind == "info":          # 원 안의 i
+        p.drawEllipse(P(10, 10), 8 * s, 8 * s)
+        poly((10, 9), (10, 14.5))
+        p.drawPoint(P(10, 6))
+
+
+class RailButton(QPushButton):
+    """B 꼴 사이드바의 칸 — 위에 선 아이콘, 아래에 이름 (2026-11-01, 앱 2.3).
+
+    `QPushButton` 을 이어받아 `text()`(이름) · 키보드 · 풍선말은 그대로 쓴다.
+    고른 칸은 밝은 둥근 판(`rail_on`) 위에 진한 아이콘 — 레퍼런스 B 의 「고른 칸은 밝은 원」.
+    """
+
+    def __init__(self, kind, name, c, on=False, parent=None):
+        super().__init__(name, parent)
+        self._kind, self._c, self._on = kind, c, on
+        self.setFixedSize(64, 58)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("railbtn")
+
+    def set_on(self, on):
+        self._on = on
+        self.update()
+
+    def sizeHint(self):
+        return QSize(64, 58)
+
+    def minimumSizeHint(self):
+        return QSize(64, 58)
+
+    def paintEvent(self, e):
+        c = self._c
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(4, 1, -4, -1)
+        if self._on:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(c["rail_on"]))
+            p.drawRoundedRect(r, 11, 11)
+        elif self.underMouse() and self.isEnabled():
+            hov = QColor(c["rail_on"]); hov.setAlphaF(0.12)
+            p.setPen(Qt.NoPen)
+            p.setBrush(hov)
+            p.drawRoundedRect(r, 11, 11)
+        fg = QColor(c["rail_on_fg"] if self._on else c["rail_fg"])
+        if not self.isEnabled():
+            fg.setAlphaF(0.35)
+        pen = QPen(fg, 1.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        _rail_icon(p, self._kind, self.width() / 2 - 10, 7)
+        f = p.font()
+        f.setPixelSize(10)
+        f.setBold(self._on)
+        p.setFont(f)
+        # 이름이 길면(계통 데이터 · PV·QV 곡선 · 엑셀로 만들기) 두 줄로 접는다
+        p.drawText(QRectF(2, 30, self.width() - 4, 26),
+                   Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self.text())
+
+    def enterEvent(self, e):
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.update()
+        super().leaveEvent(e)
+
+
+class ThemeSwitch(QPushButton):
+    """C 밝게 / 어둡게 — 해 · 달 사이를 손잡이가 미끄러진 뒤 테마를 바꾼다.
+
+    `QPushButton` 을 이어받아 키보드(스페이스)·풍선말·글자(`text()`)는 그대로 쓴다.
+    글자는 그리지 않고 손잡이로 대신한다.
+    """
+    flipped = Signal()
+
+    def __init__(self, dark, c, parent=None):
+        super().__init__("밝게" if dark else "어둡게", parent)
+        self._c = c
+        self._x = 1.0 if dark else 0.0                 # 0 = 해(밝게) 쪽 · 1 = 달(어둡게) 쪽
+        self.setFixedSize(64, 30)
+        # 바탕은 `paintEvent` 가 다 그린다. ⚠️ 여기에 선택자 없는 QSS 를 걸면 이 단추의
+        # 풍선말까지 투명해져 맥에서 빈 검은 상자로 뜬다(2026-11-01).
+        self._a = QVariantAnimation(self)
+        self._a.setDuration(SLIDE_MS)
+        self._a.setEasingCurve(QEasingCurve.OutCubic)
+        self._a.valueChanged.connect(self._step)
+        self._a.finished.connect(self.flipped.emit)
+        self.clicked.connect(self._go)
+
+    # 글자를 안 그리므로 글자 기준 권장 크기(71×37)를 쓰지 않는다 — `shot_layout` 이 잘림으로 잡았다
+    def sizeHint(self):
+        return QSize(64, 30)
+
+    def minimumSizeHint(self):
+        return QSize(64, 30)
+
+    def _go(self):
+        if self._a.state() == QVariantAnimation.Running:
+            return
+        self._a.setStartValue(self._x)
+        self._a.setEndValue(1.0 - self._x)
+        self._a.start()
+
+    def _step(self, v):
+        self._x = float(v)
+        self.update()
+
+    def paintEvent(self, e):
+        c = self._c
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor(c["border"]), 1))
+        p.setBrush(QColor(c["side"]))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        d = r.height() - 6
+        kx = r.left() + 3 + (r.width() - 6 - d) * self._x
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(c["surface"]))
+        p.drawEllipse(QRectF(kx, r.top() + 3, d, d))
+        f = p.font()
+        f.setPointSize(11)
+        p.setFont(f)
+        p.setPen(QColor(c["muted"]))
+        p.drawText(QRectF(r.left() + 3, r.top(), d, r.height()), Qt.AlignCenter, "☀")
+        p.drawText(QRectF(r.right() - 3 - d, r.top(), d, r.height()), Qt.AlignCenter, "☾")
+
+
+class _Pill(QWidget):
+    """① 선택 단추 밑을 미끄러지는 알약 — `slide_segs` 가 잠깐 띄웠다가 지운다."""
+
+    def __init__(self, parent, color):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._color)
+        p.drawRoundedRect(QRectF(self.rect()), 8, 8)     # `#seg_on` 의 border-radius
+
+
+def slide_segs(root, prev, color):
+    """① 다시 그린 화면의 선택 단추 묶음(`#segwrap`)마다, 고른 단추가 바뀌었으면
+    알약을 **옛 단추 자리에서 새 단추 자리로** 민다.
+
+    화면은 누를 때마다 통째로 다시 그려지므로(`rebuild`) 옛 단추는 이미 없다 —
+    묶음을 단추 글자로 알아보고(`prev` = {글자 묶음: 고른 글자}) 새 묶음의 같은 글자
+    단추 자리에서 출발한다. 미는 동안 새 `#seg_on` 의 바탕만 비워 알약이 대신한다.
+    """
+    for seg in root.findChildren(QFrame, "segwrap"):
+        bs = [b for b in seg.findChildren(QPushButton) if b.parent() is seg]
+        on = next((b for b in bs if b.objectName() == "seg_on"), None)
+        key = tuple(b.text() for b in bs)
+        old = prev.get(key)
+        prev[key] = on.text() if on else None
+        src = next((b for b in bs if b.text() == old), None)
+        if on is None or src is None or src is on:
+            continue
+        pill = _Pill(seg, color)
+        pill.setGeometry(src.geometry())
+        pill.lower()                                  # 단추 글자 밑에
+        pill.show()
+        on.setStyleSheet("QPushButton { background:transparent; }")   # 선택자 — 풍선말에 안 번지게
+        a = QPropertyAnimation(pill, b"geometry", pill)
+        a.setDuration(SLIDE_MS)
+        a.setStartValue(src.geometry())
+        a.setEndValue(on.geometry())
+        a.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _done(p=pill, b=on):
+            try:
+                b.setStyleSheet("")
+                p.deleteLater()
+            except RuntimeError:                      # 그새 화면을 또 갈아 끼웠다
+                pass
+        a.finished.connect(_done)
+        a.start()
+
+
+class _PillTabBar(QTabBar):
+    """① 그래프 탭 — 고른 탭 밑의 알약이 옛 탭에서 새 탭으로 미끄러진다.
+
+    QSS 는 `QTabBar#pillbar::tab:selected` 바탕을 비우고, 알약은 여기서 직접 그린다.
+    """
+
+    def __init__(self, color, parent=None):
+        super().__init__(parent)
+        self.setObjectName("pillbar")
+        self._color = QColor(color)
+        self._r = None                                # 미는 중일 때의 알약 자리
+        self._last = -1
+        self._a = QVariantAnimation(self)
+        self._a.setDuration(SLIDE_MS)
+        self._a.setEasingCurve(QEasingCurve.OutCubic)
+        self._a.valueChanged.connect(self._step)
+        self._a.finished.connect(self._end)
+        self.currentChanged.connect(self._go)
+
+    def _go(self, i):
+        old, self._last = self._last, i
+        if old < 0 or old == i or old >= self.count():
+            return
+        self._a.stop()
+        self._a.setStartValue(QRectF(self.tabRect(old)))
+        self._a.setEndValue(QRectF(self.tabRect(i)))
+        self._a.start()
+
+    def _step(self, r):
+        self._r = r
+        self.update()
+
+    def _end(self):
+        self._r = None
+        self.update()
+
+    def paintEvent(self, e):
+        r = self._r
+        if r is None and self.currentIndex() >= 0:
+            r = QRectF(self.tabRect(self.currentIndex()))
+        if r is not None:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(self._color)
+            p.drawRoundedRect(r.adjusted(0, 0, -4, 0), 7, 7)   # -4 = QSS margin-right
+            p.end()
+        super().paintEvent(e)
 
 
 def slide_width(w, start, end, ms=240):
@@ -1686,6 +2380,13 @@ class Proto(QMainWindow):
         self.dropzone = None
         self.drop_label = None
         self.dark = False
+        # 앱 2.3 D·E — 단추 누름 물결 · 대화상자 나타남을 앱 전체에 한 곳에서 건다
+        self._motion = _MotionFilter(self)
+        QApplication.instance().installEventFilter(self._motion)
+        # 앱 2.3 — 풍선말이 흐려졌다 나타난다 (Qt 에 이미 있는 효과를 켠다)
+        #    ⚠️ 개별 효과는 「UI 효과 전체(`UI_General`)」가 켜져 있어야 돈다
+        for eff in (Qt.UI_General, Qt.UI_AnimateTooltip, Qt.UI_FadeTooltip):
+            QApplication.setEffectEnabled(eff, True)
         # ── 무엇을 할까 (PDR §7 4단계 F1d · 2026-08-12 사용자 확정 "조류계산이랑 아예 분리")
         #    곡선은 조류계산 결과(`self.sol`)에 **기대지 않는다.** 조류계산을 한 번도
         #    안 돌려도 곡선만 돌릴 수 있다. 공유하는 것은 케이스와 계통 조건뿐이다.
@@ -1836,7 +2537,7 @@ class Proto(QMainWindow):
             font-size:14px; font-weight:400; color:{c['text']}; }}
         QPushButton#recentrow:hover {{ background:{c['accent_soft']};
             color:{c['accent']}; }}
-        QPushButton#recentrow:pressed {{ background:{c['accent']}; color:#ffffff; }}
+        QPushButton#recentrow:pressed {{ background:{c['accent']}; color:{c['on_accent']}; }}
         /* 🍎 **유리** — 카드는 불투명 판이 아니라 **반투명 유리**다. 뒤 바탕의
            색 얼룩(`Ground`)이 비쳐 들어온다. 테두리는 선이 아니라 **밝은
            하이라이트** — 애플 유리의 가장자리 빛을 흉내낸다.
@@ -1872,12 +2573,12 @@ class Proto(QMainWindow):
         QPushButton:hover {{ background:{c['accent_soft']}; color:{c['accent']}; }}
         /* 🍎 맥 단추는 누르는 **그 순간** 어두워진다. Qt QSS 에는 전환 시간이 없어
            애니메이션은 못 넣지만, `:pressed` 상태 하나로 «눌렸다» 는 느껴진다. */
-        QPushButton:pressed {{ background:{c['accent']}; color:#ffffff; }}
+        QPushButton:pressed {{ background:{c['accent']}; color:{c['on_accent']}; }}
         QPushButton#seg_off:pressed {{ background:{c['accent_soft']};
             color:{c['accent']}; }}
-        QPushButton#primary {{ background:{c['accent']}; color:#ffffff;
+        QPushButton#primary {{ background:{c['accent']}; color:{c['on_accent']};
             border:none; font-weight:500; }}
-        QPushButton#primary:hover {{ background:{c['accent']}; color:#ffffff; }}
+        QPushButton#primary:hover {{ background:{c['accent']}; color:{c['on_accent']}; }}
         /* 🚨 잠긴 단추가 **잠겨 보이게** (2026-08-31). 이 규칙이 없어 `setEnabled(False)`
            를 걸어도 파란색 그대로였다 — 눌러도 아무 일 없는 파란 단추가 된다. */
         QPushButton:disabled {{ background:{c['side']}; color:{c['border']};
@@ -1886,7 +2587,7 @@ class Proto(QMainWindow):
             border:none; font-weight:500; }}
         /* ⚠️ 세로 여백 8px 은 **표 셀 안**(행 30px)에서 넘친다 — 「켜짐」이
            24px 자리에 33px 을 요구했다. 5px 으로 줄여 두 자리 다 맞춘다. */
-        QPushButton#seg_on {{ background:{c['accent']}; color:#ffffff;
+        QPushButton#seg_on {{ background:{c['accent']}; color:{c['on_accent']};
             border:none; font-weight:500; font-size:14px;
             border-radius:8px; padding:5px 14px; }}
         QPushButton#seg_off {{ background:transparent; color:{c['muted']};
@@ -1939,6 +2640,9 @@ class Proto(QMainWindow):
         QComboBox, QSpinBox, QLineEdit {{ background:{c['glass']}; color:{c['text']};
             border:1px solid {c['glass_edge']}; border-radius:9px;
             padding:9px 12px; font-size:15px; }}
+        QComboBox {{ combobox-popup:0; }}
+        QComboBoxPrivateContainer {{ background:{c['surface']}; border:none; }}
+        #combopop {{ background:transparent; border:none; }}
         QComboBox:focus, QSpinBox:focus, QLineEdit:focus {{
             border:2px solid {c['accent']}; padding:7px 10px; }}
         /* 🚨 **펼친 목록은 창이 따로다** — `QWidget` 을 투명으로 바꾼 뒤 이 창이
@@ -1977,6 +2681,8 @@ class Proto(QMainWindow):
         QTabBar::tab:hover {{ background:{c['accent_soft']}; color:{c['accent']}; }}
         QTabBar::tab:selected {{ background:{c['surface']}; color:{c['text']};
             font-weight:500; }}
+        /* 앱 2.3 — 그래프 탭은 알약을 `_PillTabBar` 가 직접 그려 미끄러지게 한다 */
+        QTabBar#pillbar::tab:selected {{ background:transparent; }}
         /* 🍎 **맥 표에는 세로 격자선이 없다** — 가로 구분선만 아주 옅게 긋고,
            숫자는 오른쪽·이름은 왼쪽으로 맞춘다(활성 상태 보기가 색을 딱 두 곳만
            쓰고도 안 답답한 까닭 · `디자인_참고/갈래별/다1_ActivityMonitor.png`).
@@ -2039,9 +2745,11 @@ class Proto(QMainWindow):
             #    그리는 것은 `Ground` 뿐인데, 시작 화면은 그걸 안 거쳐서 **아무도
             #    안 칠한 검은 창**이 됐다. 계산 중 화면도 같은 자리다.
             g = Ground(self.c, self.dark)
-            gv = QVBoxLayout(g)
-            gv.setContentsMargins(0, 0, 0, 0)
-            gv.addWidget(self.start_page())
+            gh = QHBoxLayout(g)                 # 앱 2.3 — 시작 화면에도 사이드바
+            gh.setContentsMargins(12, 12, 0, 12)
+            gh.setSpacing(0)
+            gh.addWidget(self.rail())
+            gh.addWidget(self.start_page(), 1)
             self.setCentralWidget(g)
             return
         root = Ground(self.c, self.dark)
@@ -2049,11 +2757,13 @@ class Proto(QMainWindow):
         v = QVBoxLayout(root)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        v.addWidget(self.topbar())
+        # 앱 2.3 — 위쪽 줄(로고 · 불러오기 · 내보내기 · 엑셀로 만들기 · 테마 · 정보)은 전부
+        # B 꼴 사이드바(`rail`)로 옮겼다. `topbar()` 는 남겨 두지만 부르지 않는다.
         mid = QHBoxLayout()
         # 판이 «떠» 보이려면 가장자리와 판 사이에 바탕이 보여야 한다
-        mid.setContentsMargins(14, 8, 14, 12)
+        mid.setContentsMargins(12, 12, 14, 12)
         mid.setSpacing(12)
+        mid.addWidget(self.rail())
         # 왼쪽 줄도 스크롤에 담는다 — 카드를 다섯 장 쌓아 665px 이라, 안 담으면
         # 이것 하나로 창 최소 높이가 781px 이 된다(2026-08-13 실측).
         side = QScrollArea()
@@ -2085,6 +2795,9 @@ class Proto(QMainWindow):
         # (다시 그리는 중이므로 돌아온 값은 안 본다 — 곧 그릴 화면이 이미 새 상태다.)
         self._fold_for_room()
         self.build()
+        # 앱 2.3 — 고른 단추가 바뀐 묶음은 알약을 옛 자리에서 민다(자리가 잡힌 뒤라 다음 차례에)
+        self._seg_prev = getattr(self, "_seg_prev", {})
+        QTimer.singleShot(0, lambda: slide_segs(self, self._seg_prev, self.c["accent"]))
 
     # ── 계통 데이터 표의 "보던 자리" ───────────────────────────────────
     # 값을 한 칸 고칠 때마다 화면을 통째로 다시 그리므로, 아무것도 안 하면 표가
@@ -2124,6 +2837,133 @@ class Proto(QMainWindow):
             pass
 
     # ── 상단 ──
+    # ── 앱 2.3 — B 꼴 사이드바 (2026-11-01 사용자 확정 「B로 · ① 먹색」) ───────────
+    # 갈 곳이 위쪽 줄 단추 · 「무엇을 할까」 · 「결과 | 시나리오」 띠 · 표 드롭다운 네 곳에
+    # 흩어져 있었다. 왼쪽에 위아래로 채운 진한 막대를 세워 「어디로 갈지」를 한 줄에 모은다.
+    # 옛 자리(조작판의 「무엇을 할까」 · 띠 · 드롭다운)는 그대로 둔다 — 같은 곳으로 간다.
+    def rail(self):
+        c = self.c
+        bar = QFrame()
+        bar.setObjectName("rail")
+        bar.setFixedWidth(76)
+        bar.setStyleSheet(f"#rail {{ background:{c['rail']}; border-radius:16px; }}")
+        v = QVBoxLayout(bar)
+        v.setContentsMargins(6, 14, 6, 12)
+        v.setSpacing(4)
+
+        logo = QLabel("UNI\nGRID")
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setStyleSheet(f"color:{c['rail_on']};font-size:11px;font-weight:700;"
+                           f"letter-spacing:1px;background:transparent;")
+        v.addWidget(logo)
+        v.addSpacing(8)
+
+        on = self._rail_on()
+        has_case = self.sol is not None
+        has_base = getattr(self, "base_case", None) is not None
+        n_sc = len(self.book.items) if getattr(self, "book", None) is not None else 0
+        self._rail_btns = {}
+
+        def add(kind, name, fn, enabled=True, tip=""):
+            b = RailButton(kind, name, c, on=(name == on))
+            b.clicked.connect(fn)
+            b.setEnabled(enabled)
+            if tip:
+                b.setToolTip(tip)
+            v.addWidget(b, 0, Qt.AlignHCenter)
+            self._rail_btns[name] = b
+
+        def sep():
+            ln = QFrame()
+            ln.setFixedSize(40, 1)
+            ln.setStyleSheet(f"background:{c['rail_fg']};")
+            v.addSpacing(4)
+            v.addWidget(ln, 0, Qt.AlignHCenter)
+            v.addSpacing(4)
+
+        add("open", "불러오기", self.do_import, tip="계통 파일을 엽니다")
+        sep()
+        add("result", "결과", lambda: self.rail_go("결과"), has_case)
+        add("check", "점검", lambda: self.rail_go("점검"), has_case,
+            "한계를 넘은 것 · 한계에 도달한 것")
+        add("grid", "계통 데이터", lambda: self.rail_go("계통 데이터"), has_case)
+        add("scenario", "시나리오", lambda: self.rail_go("시나리오"), has_case and n_sc >= 2,
+            "조건을 바꿔 푼 것이 둘 이상이면 열립니다" if n_sc < 2 else "")
+        add("curve", "PV·QV 곡선", lambda: self.rail_go("PV·QV 곡선"), has_base)
+        v.addStretch()
+        add("export", "내보내기", self.do_export, has_case)
+        add("excel", "엑셀로 만들기", lambda: ConvertDialog(self, c).exec(),
+            tip="MATPOWER · PSS/E · MatACDC 파일을 UNIGRID 엑셀로")
+        theme = ThemeSwitch(self.dark, c)
+        theme.setToolTip("화면을 어둡게/밝게 바꿉니다")
+        theme.setCursor(Qt.PointingHandCursor)
+        theme.flipped.connect(self.toggle_theme)
+        v.addSpacing(4)
+        v.addWidget(theme, 0, Qt.AlignHCenter)
+        v.addSpacing(4)
+        add("info", "정보", lambda: AboutDialog(self, c).exec(), tip="판·저작권·사용 조건")
+        return bar
+
+    def _rail_on(self):
+        """사이드바에서 지금 고른 칸."""
+        if self.sol is None:
+            return None
+        if self.task == "PV·QV 곡선":
+            return "PV·QV 곡선"
+        if getattr(self, "pane", "결과") == "시나리오":
+            return "시나리오"
+        tab = getattr(self, "table_tab", "")
+        return tab if tab in ("점검", "계통 데이터") else "결과"
+
+    def _sync_rail(self):
+        """화면을 다시 안 그리고 탭만 바뀐 때 — 사이드바의 고른 칸을 맞춘다."""
+        on = self._rail_on()
+        for name, b in getattr(self, "_rail_btns", {}).items():
+            try:
+                b.set_on(name == on)
+            except RuntimeError:            # 이미 지워진 단추
+                pass
+
+    def rail_go(self, name):
+        """사이드바 칸을 누르면 — 할 일 · 갈래 · 표 탭을 차례로 맞춘다."""
+        if name == "PV·QV 곡선":
+            if self.task != name:
+                self.set_task(name)
+            return
+        if self.task != "조류계산":
+            self.task = "조류계산"
+            snap = snap_central(self)             # 곡선 → 결과는 화면이 통째로 바뀐다
+            self.rebuild()
+            crossfade_from(self, snap, lambda: play_charts(self.centralWidget()), self.centralWidget())
+        if name == "시나리오":
+            self.set_pane("시나리오")
+            return
+        self.go_table(name)
+
+    def go_table(self, want):
+        """결과 표의 탭 하나로 간다. `want` = 「결과」(첫 탭) · 「점검」 · 「계통 데이터」."""
+        if want == "결과" and self.mode == "비교":
+            if getattr(self, "pane", "결과") != "결과":
+                self.set_pane("결과")
+            return                           # 비교 화면이 곧 결과다 — 표 탭은 없다
+        if self.mode == "비교":       # 비교 모드엔 표가 없으니 스냅샷으로 돌아간다
+            self.mode = "스냅샷"
+            self.rebuild()
+        if getattr(self, "pane", "결과") != "결과":
+            self.pane = "결과"
+            self.rebuild()
+            reveal(getattr(self, "_center_w", None))
+        tt = getattr(self, "_tabs", None)
+        if tt is None:
+            return
+        for i in range(tt.count()):
+            base = _tab_base(tt.tabText(i))
+            if (want == "결과" and i == 0) or base == want:
+                tt.setCurrentIndex(i)
+                self.table_tab = base        # 다시 그려도 여기 머문다
+                self._sync_rail()
+                return
+
     def topbar(self):
         c = self.c
         bar = QFrame()
@@ -2170,10 +3010,10 @@ class Proto(QMainWindow):
         #    자주 누를 것이 아니므로 오른쪽 끝에 조용히 둔다.
         # 🚨 **어두운 화면을 켤 길이 없었다** (2026-09-08 점검 i63). `toggle_theme` 은
         #    있는데 그것을 부르는 단추가 어디에도 없어, 시험 스크립트로만 켜 볼 수 있었다.
-        theme = QPushButton("밝게" if self.dark else "어둡게")
+        theme = ThemeSwitch(self.dark, c)    # 앱 2.3 C — 손잡이가 미끄러진 뒤 테마를 바꾼다
         theme.setToolTip("화면을 어둡게/밝게 바꿉니다")
         theme.setCursor(Qt.PointingHandCursor)
-        theme.clicked.connect(self.toggle_theme)
+        theme.flipped.connect(self.toggle_theme)
         h.addWidget(theme)
 
         info = QPushButton("정보")
@@ -2310,7 +3150,7 @@ class Proto(QMainWindow):
             return
         self.pane = name
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 결과 ↔ 시나리오
+        reveal(getattr(self, "_center_w", None))   # 결과 ↔ 시나리오
 
     def side_rail(self):
         """접힌 왼쪽 띠 — 폭 56px (2026-09-02 사용자 확정, 안 (나)).
@@ -2663,7 +3503,9 @@ class Proto(QMainWindow):
                 self.graph_tab = int(i)
                 if self._plot_seg is not None:
                     self._plot_seg.setVisible(int(i) in _stack)
-                fade_in(_gt.widget(int(i)))      # 🍎 새 그래프가 밝아지며 들어온다
+                pg = _gt.widget(int(i))          # 앱 2.3 — 그래프마다 제 움직임, 없으면 밝아지며
+                if not play_charts(pg):
+                    fade_in(pg)
             gt.currentChanged.connect(_on_graph_tab)
             # 그래프가 낮으면 QtCharts 가 x축 글자를 "..." 로 줄여 버린다. 그래서
             # **평소 높이**(아래 setSizes 620)는 넉넉히 준다. 다만 이걸 최소치로
@@ -2853,7 +3695,7 @@ class Proto(QMainWindow):
             vb = QPushButton(f"⚠ 위반 {n_v:,}")
             vb.setCursor(Qt.PointingHandCursor)
             vb.setFixedHeight(34)
-            vb.setToolTip(f"한계를 벗어난 것이 {n_v:,}건 있습니다 — 누르면 점검으로 갑니다")
+            vb.setToolTip(f"한계를 넘은 것이 {n_v:,}건 있습니다 — 누르면 점검으로 갑니다")
             vb.setStyleSheet(
                 f"background:{c['surface']};color:{c['warn']};font-weight:600;"
                 f"border:1px solid {c['warn']};border-radius:9px;"
@@ -3070,7 +3912,8 @@ class Proto(QMainWindow):
         # 점검 · 수렴 탭 — 카드를 세로로 쌓아서 키가 크다(점검 490 · 수렴 378).
         # 그대로 넣으면 그 키가 **창의 최소 높이**가 돼 창을 못 줄인다. 스크롤에
         # 담아 창이 작아도 아래까지 갈 수 있게 한다(2026-08-13).
-        n = violation_count(self.viol())
+        _v = self.viol()
+        n = violation_count(_v) + reached_count(_v)   # 탭에 든 줄 수 (위반 + 한계 도달)
         tt.addTab(_scrollable(self.check_page()), f"점검 ({n})" if n else "점검")
         conv_tab = _scrollable(self.conv_page())
         tt.addTab(conv_tab, "수렴")
@@ -3118,14 +3961,26 @@ class Proto(QMainWindow):
             split.setStretchFactor(1, 2)
             self._apply_split(split)
             # 탭을 옮기면 **그 탭에 맞는 자리**로 바꾼다 (화면은 다시 안 그린다)
-            tt.currentChanged.connect(
-                lambda i, w=tt, s=split: (self._table_tab_changed(
-                    _tab_base(w.tabText(i)), s), fade_in(w.widget(int(i)))))
+            def _switch(i, w=tt, s=split):
+                # 앱 2.3 — 탭이 바뀌면 카드가 차례로 나타난다. 자리가 모자라 화면을 통째로
+                # 다시 그린 경우(`_table_tab_changed` 가 True)에는 옛 탭이 곧 지워지므로
+                # **새로 그려진 화면의 탭**에 건다.
+                if self._table_tab_changed(_tab_base(w.tabText(i)), s):
+                    nt = getattr(self, "_tabs", None)
+                    snap, self._pre_snap = getattr(self, "_pre_snap", None), None
+                    if nt is not None:
+                        pg = nt.currentWidget()
+                        crossfade_from(self, snap, lambda p=pg: rise_in(p), pg)
+                else:
+                    rise_in(w.widget(int(i)))
+                    self._sync_rail()        # 화면을 안 다시 그렸으니 사이드바만 맞춘다
+            tt.currentChanged.connect(_switch)
             split.splitterMoved.connect(lambda *_: self._save_split(split))
         else:
             tt.currentChanged.connect(
                 lambda i, w=tt: (setattr(self, "table_tab", _tab_base(w.tabText(i))),
-                                 self._update_head_vis(), fade_in(w.widget(int(i)))))
+                                 self._update_head_vis(), rise_in(w.widget(int(i))),
+                                 self._sync_rail()))
         v.addWidget(split, 1)
         return w
 
@@ -3343,9 +4198,11 @@ class Proto(QMainWindow):
         # 자리가 모자라 접거나, 자리가 나서 도로 펴야 하면 화면을 다시 그린다
         # (그래프 자리가 통째로 안내 띠로 바뀌므로 split 만 고쳐서는 안 된다)
         if self._fold_for_room(name):
+            self._pre_snap = snap_central(self)
             self.rebuild()
-            return
+            return True              # 화면을 다시 그렸다 — 부른 쪽이 새 탭에 움직임을 건다
         self._apply_split(split)
+        return False
 
     # ── 시작 화면 (파일을 아직 안 불러왔을 때) ──
     def start_page(self):
@@ -4138,7 +4995,7 @@ class Proto(QMainWindow):
         self.changes = []
         self.applied = []
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 원본으로 되돌리기
+        reveal(getattr(self, "_center_w", None))   # 원본으로 되돌리기
 
     # ── ② 부하 일괄 증감 ──────────────────────────────────────────────
     # 칸을 하나씩 고치는 대신 **부하 전체에 한 수를 곱한다**. 부하 여유(margin)를 보는
@@ -4871,7 +5728,7 @@ class Proto(QMainWindow):
             self._grid_last_table = key
         self.grid_key = key
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 계통 데이터 표 갈아끼우기
+        reveal(getattr(self, "_center_w", None))   # 계통 데이터 표 갈아끼우기
 
     def flip_row(self, row):
         """그 줄을 켜거나 끈다. **계산은 안 한다** — 목록에만 얹는다."""
@@ -4896,6 +5753,7 @@ class Proto(QMainWindow):
         """아직 안 푼 것만 물린다. 이미 계산해서 보고 있는 조건은 그대로 둔다."""
         self.changes = []
         self.rebuild()
+        reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 되돌리기
 
     def run_changes(self):
         """[이 조건으로 계산] — 여기서만 푼다."""
@@ -5158,7 +6016,7 @@ class Proto(QMainWindow):
                 f"「{s.name}」 은 답을 못 찾은 조건입니다.\n조건만 깔아 두었으니 "
                 f"여기서 더 바꿔 다시 계산해 보세요.\n\n화면의 결과는 그대로 둡니다.")
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 시나리오 보기
+        reveal(getattr(self, "_center_w", None))   # 시나리오 보기
 
     def rename_scenario(self, s):
         name, ok = QInputDialog.getText(self, "이름 바꾸기", "시나리오 이름", text=s.name)
@@ -5173,7 +6031,7 @@ class Proto(QMainWindow):
                 self.show_scenario(back)          # 보고 있던 것을 지우면 원본으로
         self.book.remove(s)
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 시나리오 지우기
+        reveal(getattr(self, "_center_w", None))   # 시나리오 지우기
 
     def check_page(self):
         c = self.c
@@ -5191,7 +6049,13 @@ class Proto(QMainWindow):
         dot.setStyleSheet(
             f"color:{c['warn'] if n else c['ok']};font-size:15px;")
         hv.addWidget(dot)
-        msg = QLabel(f"한계를 벗어난 항목 {n}건" if n else "한계를 벗어난 항목 없음")
+        n_r = reached_count(self.viol())
+        msg = QLabel((f"위반 {n}건" if n else "위반 없음")
+                     + (f" · 한계 도달 {n_r}건" if n_r else ""))
+        # 앱 2.3 — 탭에 들어오면 건수가 0 에서 올라간다(`rise_in` → `count_up`)
+        msg._count_fmt = lambda t, a=n, b=n_r: (
+            (f"위반 {round(a * t)}건" if a else "위반 없음")
+            + (f" · 한계 도달 {round(b * t)}건" if b else ""))
         msg.setStyleSheet(
             f"color:{c['warn'] if n else c['ok']};font-size:15px;font-weight:600;")
         hv.addWidget(msg)
@@ -5688,6 +6552,7 @@ class Proto(QMainWindow):
             return
         self.plot_pick = i
         self.rebuild()
+        self._fade_graph()   # 앱 2.3 — 그래프만 바뀐다
 
     def reset_topo_places(self, case_name):
         """계통도에서 끌어 옮긴 버스 자리를 지우고 처음 배치로 (2026-09-08 i16).
@@ -5699,6 +6564,7 @@ class Proto(QMainWindow):
         if not topology.clear_places(case_name):
             return
         self.rebuild()
+        self._fade_graph()   # 앱 2.3 — 계통도 배치 처음으로
 
     def set_topo_zoom(self, z):
         """계통도가 배율을 바꿨다고 알려 온다. **다시 그리지 않는다** — 계통도가
@@ -5727,6 +6593,7 @@ class Proto(QMainWindow):
         close.clicked.connect(d.accept)
         row = QHBoxLayout(); row.addStretch(); row.addWidget(close)
         v.addLayout(row)
+        QTimer.singleShot(0, lambda: play_charts(d))     # 앱 2.3 — 창이 뜨면 그래프가 그려진다
         d.exec()
 
     def pick_line_by_bus(self, a, b):
@@ -5996,6 +6863,7 @@ class Proto(QMainWindow):
                 return
             self.grid_visible[key] = picked
             self.rebuild()
+            self._fade_table()   # 앱 2.3 — 열이 바뀐 표
 
     def pick_columns(self):
         # 🚨 탭 글자에는 개수 꼬리가 붙는다(「점검 (25)」) — `_tab_base` 로 뗀다.
@@ -6058,6 +6926,7 @@ class Proto(QMainWindow):
                 return
             self.visible[name] = picked
             self.rebuild()
+            self._fade_table()   # 앱 2.3 — 열이 바뀐 표
 
     def target_options(self):
         """지금 고를 수 있는 것들 — [(보일 글자, 넣을 값)]. 없으면 빈 목록.
@@ -6185,6 +7054,7 @@ class Proto(QMainWindow):
             pop.hide_done = True
             self.compare_targets = ", ".join(chosen[:50])
             self.rebuild()
+            reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 비교 대상 고른 뒤
         pop.hideEvent = lambda e: done(e)
 
         pop.adjustSize()
@@ -6260,6 +7130,7 @@ class Proto(QMainWindow):
             if not pop.hide_done:
                 pop.hide_done = True
                 self.rebuild()
+                reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 비교 항목 고른 뒤
         pop.hideEvent = lambda e: done(e)
         pop.adjustSize()
         g = near.mapToGlobal(near.rect().bottomRight())
@@ -6554,23 +7425,11 @@ class Proto(QMainWindow):
         tt.currentChanged.connect(_follow)
 
     def go_check(self):
-        """상태바의 위반 건수 → 점검 탭으로."""
-        if self.mode == "비교":       # 비교 모드엔 표가 없으니 스냅샷으로 돌아간다
-            self.mode = "스냅샷"
-            self.rebuild()
-        # 시나리오 갈래에 있으면 표가 숨어 있다 — 결과 쪽으로 돌아온다 (2026-09-08 i48)
-        if getattr(self, "pane", "결과") != "결과":
-            self.pane = "결과"
-            self.rebuild()
-            fade_in(getattr(self, "_center_w", None))   # 점검 탭으로
-        tt = getattr(self, "_tabs", None)
-        if tt is None:
-            return
-        for i in range(tt.count()):
-            if tt.tabText(i).startswith("점검"):
-                tt.setCurrentIndex(i)
-                self.table_tab = "점검"      # 다시 그려도 여기 머문다
-                return
+        """상태바의 위반 건수 → 점검 탭으로. (앱 2.3 — 사이드바와 같은 길 `go_table` 로 묶음)
+
+        비교 모드면 스냅샷으로, 시나리오 갈래면 결과 쪽으로 돌아온 뒤 간다(2026-09-08 i48).
+        """
+        self.go_table("점검")
 
     # ── 동작 ──
     def set_mode(self, m):
@@ -6580,11 +7439,12 @@ class Proto(QMainWindow):
         if self.side_lock_why():
             self.side_open = True
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 보기 갈래(스냅샷·다이나믹·비교)
+        reveal(getattr(self, "_center_w", None))   # 보기 갈래(스냅샷·다이나믹·비교)
 
     def set_axis(self, a):
         self.compare_axis = a
         self.rebuild()
+        reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 비교 축
 
     # ── PV·QV 곡선 (F1d) ──────────────────────────────────────────────
     def curve_case(self):
@@ -6698,17 +7558,19 @@ class Proto(QMainWindow):
         self.curve_pick = t
         if self.cur is not None:
             self.rebuild()          # 이미 그린 곡선이면 다시 계산하지 않고 골라 보기만
+            reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 곡선 버스
 
     def set_curve_x(self, x):
         self.curve_x = x
         self.rebuild()
+        reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 곡선 가로축
 
     def set_task(self, t):
         self.task = t
         if self.side_lock_why():        # 곡선 입력이 왼쪽에 있다 — 접혀 있으면 편다
             self.side_open = True
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 할 일 갈래(조류계산·PV·QV 곡선)
+        reveal(getattr(self, "_center_w", None))   # 할 일 갈래(조류계산·PV·QV 곡선)
 
     def run_curve(self):
         case = self.curve_case()
@@ -6719,6 +7581,7 @@ class Proto(QMainWindow):
         self.curve_busy = True
         self.curve_err = ""
         self.rebuild()
+        reveal(getattr(self, "_center_w", None))   # 앱 2.3 — 고리 화면으로 바뀔 때
         self._cthread = CurveThread(case, self._bus_list(self.curve_load),
                                     self._bus_list(self.curve_pick))
         self._cthread.done.connect(self._curve_done)
@@ -6731,12 +7594,14 @@ class Proto(QMainWindow):
         self.cur = cur
         self.curve_err = ""
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 곡선 다 그림
+        reveal(getattr(self, "_center_w", None))   # 곡선 다 그림
 
     def _curve_failed(self, msg):
         self.curve_busy = False
         self.curve_err = msg
+        snap = snap_central(self)   # 앱 2.3 — 실패 화면으로 바뀔 때 옛 화면이 옅어진다
         self.rebuild()
+        crossfade_from(self, snap, lambda: None, self.centralWidget())
 
     def curve_page(self):
         c = self.c
@@ -6753,9 +7618,17 @@ class Proto(QMainWindow):
             v.addWidget(charts.NoData("곡선 실패", self.curve_err, c))
             return w
         if self.curve_busy:
-            v.addWidget(charts.NoData(
-                "곡선을 그리는 중입니다…",
-                "부하를 조금씩 올리며 더는 안 풀리는 곳까지 갑니다.", c))
+            # 앱 2.3 — 조류계산 창과 같은 출렁이는 고리(`OrbRing`)를 띄운다
+            v.addStretch(1)
+            v.addWidget(OrbRing(self.dark, 120), 0, Qt.AlignHCenter)
+            for txt, css in (("곡선을 그리는 중입니다…", f"color:{c['text']};font-size:15px;font-weight:600;"),
+                             ("부하를 조금씩 올리며 더는 안 풀리는 곳까지 갑니다.",
+                              f"color:{c['muted']};font-size:13px;")):
+                lab = QLabel(txt)
+                lab.setAlignment(Qt.AlignCenter)
+                lab.setStyleSheet(css)
+                v.addWidget(lab)
+            v.addStretch(1)
             return w
         if self.cur is None:
             v.addWidget(charts.NoData(
@@ -6837,17 +7710,21 @@ class Proto(QMainWindow):
             #    되살아나 그래프가 최소 높이만 받는다 — 펼쳐 놓고도 못 읽는 꼴이 된다.
             if isinstance(self.split_sizes, dict):
                 self.split_sizes.pop(self._split_slot(), None)
+        # 🍎 접거나 펼치면 그래프 자리가 통째로 바뀐다 — 딱 끊기지 않게 (2026-09-08 사용자:
+        #    *"그래프 펼치고 접는것도 애플처럼 모션 넣고"*). 처음엔 가운데 판만 밝아지게
+        #    했는데(`fade_in`), 다시 그리는 동안 빈 판이 먼저 보여 끊겨 보였다(2026-11-01
+        #    사용자 「그래프 접기 눌렀을 때도 애니메이션」). 테마 전환처럼 **옛 화면이 새
+        #    화면 위에서 옅어지게** 바꾼다.
+        snap = snap_central(self)
         self.rebuild()
-        # 🍎 접거나 펼치면 그래프 자리가 통째로 바뀐다 — 딱 끊기지 않게 **밝아지며**
-        #    들어오게 한다 (2026-09-08 사용자: *"그래프 펼치고 접는것도 애플처럼
-        #    모션 넣고"*). 판마다 걸지 않고 **가운데 전체**에 한 번 건다 — 판에는
-        #    이미 그림자가 걸려 있어 효과를 겹칠 수 없다.
-        fade_in(getattr(self, "_center_w", None), 230)
+        crossfade_from(self, snap, lambda: play_charts(self.centralWidget()), self.centralWidget())
 
     def toggle_theme(self):
+        # 앱 2.3 C — 창 전체가 옛 테마에서 새 테마로 번진다(가운데 판만 밝아지던 것을 바꿈)
+        snap = snap_central(self)
         self.dark = not self.dark
         self.rebuild()
-        fade_in(getattr(self, "_center_w", None), 230)
+        crossfade_from(self, snap, lambda: None, self.centralWidget())
 
     def do_import(self):
         # 파일 고르기 창이 처음 보여 줄 자리. 저장소의 검증용 케이스 폴더가 있으면 거기서
@@ -6936,11 +7813,8 @@ class Proto(QMainWindow):
         if method is None:
             method = getattr(self, "solver", "nr")
         self.solver = method
-        self.prog = QProgressDialog("조류계산 중입니다...", None, 0, 0, self)
-        self.prog.setWindowTitle("UNIGRID")
-        self.prog.setWindowModality(Qt.WindowModal)
-        self.prog.setMinimumWidth(340)
-        self.prog.setCancelButton(None)
+        # 앱 2.3 — 오가는 막대 대신 출렁이는 빛 고리(`OrbRing`)
+        self.prog = SolvingDialog(self, self.c, self.dark)
         self.prog.show()
 
         self.thread = SolveThread(path, case, method)
@@ -7040,8 +7914,43 @@ class Proto(QMainWindow):
         save_recent(str(getattr(self, "_last_path", sol.case_name)), self.case[1])
         if not self.case_has_vsc:
             self.show_vsc = False
-        self.rebuild()
-        fade_in(getattr(self, "_center_w", None))   # 계산이 끝나 화면이 처음 뜰 때
+        # 앱 2.3 B — 그래프가 그려지며 나타난다. 버스가 많으면 끈다(점이 많아 느려진다).
+        # ponytail: 문턱 600 버스는 어림값 — 큰 계통에서 느리면 낮춘다.
+        charts.SERIES_ANIM = (sol.AC.shape[0] + sol.DC.shape[0]) <= 600
+        try:
+            self.rebuild()
+        finally:
+            charts.SERIES_ANIM = False
+        self._rise_result()                       # 계산이 끝나 화면이 처음 뜰 때
+
+    def _fade_graph(self):
+        """앱 2.3 — 그래프만 바뀌는 조작: 그래프 판의 지금 탭만 밝아진다(표는 그대로)."""
+        gt = next(iter(self.findChildren(GlassTabs)), None)
+        pg = gt.currentWidget() if gt is not None else getattr(self, "_center_w", None)
+        if not play_charts(pg):
+            fade_in(pg)
+
+    def _fade_table(self):
+        """앱 2.3 — 표만 바뀌는 조작(열 고르기): 표 판의 지금 탭만 밝아진다."""
+        tt = getattr(self, "_tabs", None)
+        fade_in(tt.currentWidget() if tt is not None else getattr(self, "_center_w", None))
+
+    def _rise_result(self):
+        """앱 2.3 A — 계산이 끝나 결과가 처음 뜰 때 그래프 판 → 표 판 차례로 나타난다.
+
+        판(`float_panel`)에는 그림자 효과가 걸려 있어 겹칠 수 없으므로 판 **안의 내용**에 건다.
+        """
+        gt = next(iter(self.findChildren(GlassTabs)), None)
+        tt = getattr(self, "_tabs", None)
+        targets = [w for w in (gt.currentWidget() if gt else None,
+                               tt.currentWidget() if tt else None) if w is not None]
+        if not targets:
+            reveal(getattr(self, "_center_w", None))
+            return
+        for i, w in enumerate(targets):
+            fade_in(w, ms=260, delay=i * 90)
+        if gt is not None:
+            play_charts(gt.currentWidget())       # 그래프는 제 움직임으로 그려지며
 
     def _when_tag(self, sol=None) -> str:
         """시나리오 이름에 붙일 시각 꼬리표 — **여러 시각짜리 계통에서만** (2026-09-08).
@@ -7130,7 +8039,9 @@ class Proto(QMainWindow):
                           name=self._new_name(pending))
             self.changes = []          # applied 는 그대로 — 화면은 직전 결과 그대로다
             self._pending = None
+            snap = snap_central(self)   # 앱 2.3 — 실패 화면으로 바뀔 때 옛 화면이 옅어진다
             self.rebuild()
+            crossfade_from(self, snap, lambda: None, self.centralWidget())
             self._fail_box(
                 "안 풀렸습니다",
                 f"{SC.describe(pending)} — 이 조건으로는 답을 찾지 못했습니다.\n"

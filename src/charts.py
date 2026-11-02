@@ -16,8 +16,9 @@ from math import ceil
 import numpy as np
 from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QScatterSeries,
                               QValueAxis, QCategoryAxis, QBarSet, QBarSeries,
-                              QStackedBarSeries, QBarCategoryAxis)
-from PySide6.QtCore import Qt
+                              QStackedBarSeries, QBarCategoryAxis,
+                              QAbstractBarSeries)
+from PySide6.QtCore import Qt, QEasingCurve, QVariantAnimation, QPointF, QRectF
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (QFrame, QSizePolicy, QToolTip,
                                QVBoxLayout, QLabel)
@@ -29,6 +30,11 @@ ANGLE_GREEN = "#1f9d55"
 LIMIT_GRAY = "#8a94a3"
 
 MAX_TICKS = 25          # 버스가 많으면 x축 글자를 솎는다 (MATLAB 과 동일)
+
+# 앱 2.3 B — 선·막대가 **그려지며** 나타난다. 계산이 끝나 결과가 처음 뜰 때만 앱이 켠다
+# (`Proto._solved`). 시각 바꾸기·위반 보기처럼 자주 다시 그리는 때는 꺼 둔다 — 돌면
+# 깜빡여서 못 쓴다(`tests/shot_motion.py` 「안 넣은 곳」).
+SERIES_ANIM = False
 
 
 # ─────────────────────────────────────────── 공통 틀
@@ -49,7 +55,12 @@ def _new_chart(c, title):
     lf = QFont()
     lf.setPointSize(9)
     ch.legend().setFont(lf)
-    ch.setAnimationOptions(QChart.NoAnimation)   # 다시 그릴 때 튀지 않게
+    if SERIES_ANIM:
+        ch.setAnimationOptions(QChart.SeriesAnimations)
+        ch.setAnimationDuration(450)
+        ch.setAnimationEasingCurve(QEasingCurve(QEasingCurve.OutCubic))
+    else:
+        ch.setAnimationOptions(QChart.NoAnimation)   # 다시 그릴 때 튀지 않게
     return ch
 
 
@@ -61,11 +72,23 @@ def _view(ch, c):
     #    안에 흰 판이 하나 더 보였다). 선과 글자만 남기고 배경은 비운다.
     #    ⚠️ `QGraphicsView` 는 스타일시트만으로는 안 비친다 — 뷰포트가 제 배경을
     #       칠하므로 `NoBrush` 와 `setAutoFillBackground(False)` 를 같이 걸어야 한다.
-    v.setStyleSheet("background:transparent;border:none;")
+    # 선택자를 붙인다 — 맨 「background:transparent」 는 그래프 풍선말까지 투명하게 해
+    # 맥에서 빈 검은 상자가 된다(계통도와 같은 결함 · 2026-11-01).
+    v.setStyleSheet("QChartView { background:transparent; border:none; }")
     v.setFrameShape(QChartView.NoFrame)
     v.setBackgroundBrush(Qt.NoBrush)
     v.viewport().setAutoFillBackground(False)
     v.setMinimumHeight(150)
+    # 앱 2.3 — 모든 그래프에 움직임을 단다(2026-11-01 사용자 *"왜 다이나믹에는 적용 안 됐어?
+    # … 전수조사해서 반영해"*). 막대가 있으면 막대가 튀어 오르고, 없으면 선이 그려진다.
+    # 그래프마다 따로 고르는 것(전압 · 부하율 · 곡선)은 만든 쪽이 이 뒤에 다시 단다.
+    bars = [b for sr in ch.series() if isinstance(sr, QAbstractBarSeries) for b in sr.barSets()]
+    if bars:
+        _bars_play(v, bars)
+    else:
+        xy = [sr for sr in ch.series() if isinstance(sr, (QLineSeries, QScatterSeries))]
+        if xy:
+            _trace_play(v, xy)
     return v
 
 
@@ -122,6 +145,95 @@ def _dots(pts, color, name, size=8.0):
     for x, y in pts:
         s.append(float(x), float(y))
     return s
+
+
+# ── 앱 2.3 — 결과 그래프마다 제 움직임 (2026-11-01) ─────────────────────────
+# 사용자: *"4개에 대한 결과 띄우는 것도 각 결과마다 고유 애니메이션 … 막대그래프가
+# 순차적으로 파박 펼쳐진다던가"*. 그래프 위젯에 `_play` 를 달아 두면 앱이 그래프 탭을
+# 고르거나 결과가 처음 뜰 때 부른다(`app.play_charts`). 시각 바꾸기처럼 자주 다시
+# 그리는 때는 안 부른다 — 돌면 깜빡여서 못 쓴다.
+#   전압·위상 = 선이 왼쪽부터 그려진다 · 조류 P·Q = 칸이 왼쪽 위부터 물결로 차오른다
+#   부하율 = 막대가 하나씩 튀어 오른다 · 토폴로지 = 가운데부터 둥글게 펼쳐진다
+def _anim(owner, ms, step, curve=QEasingCurve.OutCubic):
+    a = QVariantAnimation(owner)
+    a.setDuration(ms)
+    a.setStartValue(0.0)
+    a.setEndValue(1.0)
+    a.setEasingCurve(curve)
+    a.valueChanged.connect(lambda t: step(float(t)))
+    owner._play_anim = a              # 지역 변수면 함수가 끝나며 사라진다
+    a.start()
+
+
+def _trace_play(view, series, by_index=False):
+    """선이 왼쪽에서 오른쪽으로 그려지고 점이 그 뒤를 따라 찍힌다.
+
+    `by_index` = 가로값이 아니라 **점 차례**로 그린다 — PV 곡선은 코 끝에서 가로값이 되돌아가
+    가로값으로 자르면 위아래 가지가 한꺼번에 나타난다.
+    """
+    full = [[QPointF(p) for p in s.points()] for s in series]
+    xs = [p.x() for pts in full for p in pts]
+    if not xs:
+        return
+    x0, x1 = min(xs), max(xs)
+    span = (x1 - x0) or 1.0
+    # 점마다 0~1 의 «언제 나타나나»
+    when = [[i / max(1, len(pts) - 1) for i in range(len(pts))] if by_index
+            else [(p.x() - x0) / span for p in pts] for pts in full]
+    if by_index:
+        # 점만 찍는 계열(코 끝점)은 제 차례가 아니라 **선이 그 점에 닿을 때** 나타난다 —
+        # 버스마다 점 하나씩이라 제 차례로는 i/7 에 떠, 곡선이 닿기 전부터 보였다(2026-11-02).
+        reach = {}
+        for s, pts, u in zip(series, full, when):
+            if type(s) is QLineSeries:
+                for p, w in zip(pts, u):
+                    reach.setdefault((p.x(), p.y()), w)
+        when = [u if type(s) is QLineSeries else [reach.get((p.x(), p.y()), 1.0) for p in pts]
+                for s, pts, u in zip(series, full, when)]
+
+    def step(t):
+        for s, pts, u in zip(series, full, when):
+            k = 0
+            while k < len(pts) and u[k] <= t + 1e-9:
+                k += 1
+            keep = pts[:k] if type(s) is QLineSeries else \
+                [p for p, w in zip(pts, u) if w <= t + 1e-9]
+            if type(s) is QLineSeries and 0 < k < len(pts) and u[k] > u[k - 1]:
+                a, b = pts[k - 1], pts[k]          # 선 끝을 다음 점 쪽으로 이어 늘린다
+                f = (t - u[k - 1]) / (u[k] - u[k - 1])
+                keep = keep + [QPointF(a.x() + (b.x() - a.x()) * f, a.y() + (b.y() - a.y()) * f)]
+            s.replace(keep)
+
+    def play():
+        view.chart().setAnimationOptions(QChart.NoAnimation)
+        _anim(view, 750, step, QEasingCurve.InOutCubic)
+    view._play = play
+
+
+def _bars_play(view, sets):
+    """부하율 — 막대가 왼쪽부터 하나씩 «파박» 튀어 오른다(살짝 넘쳤다 제자리로)."""
+    full = [[s.at(i) for i in range(s.count())] for s in sets]
+    n = max((len(v) for v in full), default=0)
+    span = 0.3                           # 막대 하나가 자라는 길이(전체 대비)
+    ease = QEasingCurve(QEasingCurve.OutBack)
+
+    def play():
+        view.chart().setAnimationOptions(QChart.NoAnimation)
+        cur = [[None] * len(v) for v in full]
+
+        def step(t):
+            for s, vals, now in zip(sets, full, cur):
+                for i, v in enumerate(vals):
+                    if v == 0.0:
+                        continue
+                    d = i / max(1, n - 1) * (1 - span)
+                    lt = min(1.0, max(0.0, (t - d) / span))
+                    y = v * ease.valueForProgress(lt)
+                    if y != now[i]:      # 다 자랐거나 아직 안 시작한 막대는 건드리지 않는다
+                        s.replace(i, y)
+                        now[i] = y
+        _anim(view, 950, step, QEasingCurve.Linear)
+    view._play = play
 
 
 def _hide_from_legend(ch, series):
@@ -197,7 +309,9 @@ def voltage_chart(c, sol, t):
         s.attachAxis(ax); s.attachAxis(ay)
     _hide_from_legend(ch, body)
     _hide_from_legend(ch, hi)
-    return _view(ch, c)
+    v = _view(ch, c)
+    _trace_play(v, [body] + dots)
+    return v
 
 
 # ─────────────────────────────────────────── 위상각
@@ -232,7 +346,9 @@ def angle_chart(c, sol, t):
     dt.attachAxis(ax); dt.attachAxis(ay)
     # 선이 하나뿐이라 범례가 제목("위상각 [deg]")을 되풀이할 뿐 → 안 띄운다
     ch.legend().setVisible(False)
-    return _view(ch, c)
+    v = _view(ch, c)
+    _trace_play(v, [ln, dt])
+    return v
 
 
 # ─────────────────────────────────────────── 선로 조류 (출발버스 × 도착버스)
@@ -334,6 +450,14 @@ class FlowHeatmap(QFrame):
         self.setMinimumHeight(180)
         self.setMouseTracking(True)      # 칸에 마우스를 올리면 값을 띄우려고
         self._cell = None
+        self._prog = 1.0                 # 앱 2.3 — 칸이 물결로 차오르는 정도(1 = 다 참)
+
+    def _play(self):
+        """조류 P·Q — 칸이 왼쪽 위에서 오른쪽 아래로 물결처럼 커지며 차오른다."""
+        def step(t):
+            self._prog = t
+            self.update()
+        _anim(self, 800, step, QEasingCurve.Linear)
 
     # ── 격자 자리 계산 ──
     def _geom(self):
@@ -366,13 +490,23 @@ class FlowHeatmap(QFrame):
         x0, y0, cell, n = g
 
         # 칸 채우기
+        pr, S = self._prog, 0.35
         for i in range(n):
             for j in range(n):
                 rx, ry = x0 + j * cell, y0 + i * cell
                 if not self.used[i, j]:
                     continue                       # 선로가 없는 칸은 비워 둔다
-                p.fillRect(int(rx), int(ry), int(cell) + 1, int(cell) + 1,
-                           _diverging(self.mat[i, j], self.vmax, c))
+                col = _diverging(self.mat[i, j], self.vmax, c)
+                if pr < 1.0:                       # 앱 2.3 — 물결: 왼쪽 위 칸부터 커진다
+                    d = (i + j) / max(1, 2 * (n - 1))
+                    lt = min(1.0, max(0.0, (pr - d * (1 - S)) / S))
+                    if lt <= 0.0:
+                        continue
+                    k = cell * (1 - lt) / 2
+                    col = QColor(col); col.setAlphaF(col.alphaF() * lt)
+                    p.fillRect(QRectF(rx + k, ry + k, cell * lt + 1, cell * lt + 1), col)
+                    continue
+                p.fillRect(int(rx), int(ry), int(cell) + 1, int(cell) + 1, col)
 
         # 격자선 (칸이 넉넉할 때만 — 좁으면 선이 칸을 덮는다)
         p.setPen(QPen(QColor(c["border"]), 1))
@@ -759,7 +893,9 @@ def loading_chart(c, sol, t, on_pick=None):
             if 0 <= idx < len(_br):
                 on_pick(str(int(_br[idx][0])), str(int(_br[idx][1])))
         bars.clicked.connect(_picked)
-    return _view(ch, c)
+    v = _view(ch, c)
+    _bars_play(v, [ok, over])
+    return v
 
 
 def voltage_profile_view(c, times, values, limits, title):
@@ -1516,7 +1652,9 @@ def curve_chart(c, cur, buses=None, x_axis="MW"):
     ay.setRange(max(0.0, ymin - pad), ymax + pad)
     ax.setLabelFormat("%.0f" if x_axis == "MW" else "%.2f")
     ay.setLabelFormat("%.2f")
-    return _view(ch, c)
+    v = _view(ch, c)
+    _trace_play(v, list(ch.series()), by_index=True)
+    return v
 
 
 def curve_q_chart(c, cur, x_axis="MW"):
@@ -1553,4 +1691,6 @@ def curve_q_chart(c, cur, x_axis="MW"):
     ay.setRange(lo - pad, hi + pad)
     ax.setLabelFormat("%.0f" if x_axis == "MW" else "%.2f")
     ay.setLabelFormat("%.0f")
-    return _view(ch, c)
+    v = _view(ch, c)
+    _trace_play(v, list(ch.series()), by_index=True)
+    return v

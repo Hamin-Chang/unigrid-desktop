@@ -172,6 +172,8 @@ def convert_file(path: Path, out_dir: Path | None = None,
             if not sheet.optional_sheet and not sheet.time_series:
                 notes.append(f"⚠️ 시트 없음: {name}")
             continue
+        if sheet.name == F.DC_BUS_OLD.name and _width(src[name]) == 6:
+            sheet = F.DC_BUS_OLD                     # v1 의 6열은 옛 머리글 그대로 옮긴다
         try:
             head, rows = convert_sheet(sheet, src[name])
         except Refused as exc:

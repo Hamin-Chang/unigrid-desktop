@@ -16,8 +16,8 @@
   · `DC/DC` 의 3·4·5번째 칸 — v1 의 효율곡선 C0·C1·C2 다. **지금 솔버가 안 읽고**
     케이스 56개가 전부 0 이라 `format_v2` 가 이름조차 안 붙였다. 열어 봐야 아무 일도
     안 일어나므로 회색으로 둔다.
-  · `DC 버스` 의 `Nominal Current` — **v1 에 단위가 안 적혀 있다**(`format_v2.py:208`).
-    무엇을 넣으라고 말할 수 없어 확인 전까지 그대로 둔다.
+  · (앱 2.2 까지) `DC 버스` 의 `Nominal Current` — 단위 미상이라 안 열었다. 앱 2.3 부터
+    DC 버스 표는 8열이고 그 열은 없다(옛 파일을 읽을 때 `load_case.dc_bus_8` 이 거른다).
 """
 from __future__ import annotations
 
@@ -39,12 +39,13 @@ PAIRS = {
     "AC_gen_dat": [(12, 11), (14, 13)],      # Qmin≤Qmax · Pmin≤Pmax
     "DC_gen_dat": [(10, 9)],                 # Pmin≤Pmax
     "AC_Bus_dat": [(14, 15)],                # V_min≤V_max
-    "DC_Bus_dat": [(4, 5)],                  # VM min≤VM max
+    "DC_Bus_dat": [(6, 7)],                  # VM min≤VM max (8열 — 앱 2.3)
 }
 
 # 합이 1 이어야 하는 묶음 — ZIP 부하 (설명, 칸들)
 SUMS = {
     "AC_Bus_dat": [("유효전력 ZIP 비율", (3, 4, 5)), ("무효전력 ZIP 비율", (6, 7, 8))],
+    "DC_Bus_dat": [("DC 부하 ZIP 비율", (1, 2, 3))],
 }
 
 RULES = {
@@ -77,9 +78,8 @@ RULES = {
         3: SHARE, 4: SHARE, 5: SHARE, 6: SHARE, 7: SHARE, 8: SHARE,
         9: FREE, 10: FREE, 11: POS, 12: FREE, 13: POS, 14: POS, 15: POS, 16: INT,
     },
-    "DC_Bus_dat": {
-        0: BUS_DC, 2: POS, 3: POS, 4: POS, 5: POS,
-        # 1(Nominal Current) 은 안 연다 — 단위 미상 (머리말 참조)
+    "DC_Bus_dat": {   # 8열 (앱 2.3): Bus | Z_p | I_p | P_p | V0 | V_base | VM min | VM max
+        0: BUS_DC, 1: SHARE, 2: SHARE, 3: SHARE, 4: POS, 5: POS, 6: POS, 7: POS,
     },
 }
 

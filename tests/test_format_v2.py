@@ -25,7 +25,8 @@ if SRC.is_dir() and str(SRC) not in sys.path:
 
 import convert_case                      # noqa: E402
 import read_v2                           # noqa: E402
-from load_case import load_case          # noqa: E402
+from load_case import dc_bus_8, load_case  # noqa: E402
+import pandas as pd                        # noqa: E402
 
 # 엔진에 실제로 넘어가는 표들 (app_worker.TABLE_ORDER 와 같다)
 KEYS = ("Base_dat", "AC_Bus_dat", "AC_Line_dat", "AC_gen_dat", "AC_3wtrans_dat",
@@ -97,6 +98,8 @@ def check(path: Path, out_dir: Path) -> list[str]:
     if out is None:
         return [f"변환 안 됨 — {'; '.join(notes)}"]
     v2 = read_v2.read_tables(out)
+    # 앱 2.3: `load_case` 가 DC Bus Data 를 8열로 맞추므로 v2 쪽도 같은 단계에서 견준다
+    v2["DC_Bus_dat"] = dc_bus_8(pd.DataFrame(v2["DC_Bus_dat"])).to_numpy()
 
     bad = []
     for k in KEYS:

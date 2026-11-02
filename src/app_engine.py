@@ -1070,6 +1070,31 @@ def _gen_limit_arr(raw: dict) -> np.ndarray:
     if a.ndim != 2 or a.shape[1] != 11:
         print(f"[결과] 발전기 한계 표의 열 수가 11이 아니라 비웁니다: {a.shape}")
         return np.empty((0, 11))
+    return _mark_touching(a.astype(float))
+
+
+# 한계에 「닿은」 발전기도 포화로 표시한다 (2026-11-01, 앱 2.3).
+# 엔진은 `Q > Qmax` 로만 판정해서 199.9999999998 처럼 끝자리만 모자란 발전기를
+# 「한계 안」으로 둔다(`solve_ACDC_newton_aug_v17.m:1322·1470`). 계산 값은 맞으므로
+# 알고리즘(v17)은 그대로 두고 **표시만** 여기서 고친다.
+TOUCH_TOL = 1e-6   # 한계값 크기에 곱하는 비율 (한계가 1 보다 작으면 절대값 1e-6)
+
+
+def _mark_touching(a: np.ndarray) -> np.ndarray:
+    for val, lo, hi, sat in ((2, 3, 4, 5), (6, 7, 8, 9)):   # (P 열들) · (Q 열들)
+        for r in a:
+            if r[sat] != 0:
+                continue
+            # P 는 droop(종류 1·2)만 엔진이 푼다. 전압제어(3·4)의 P 는 입력값이라
+            # P=Pmin=0 인 조상기(case14 버스 3)를 「하한에 걸림」으로 찍으면 틀린다.
+            if sat == 5 and r[0] not in (1, 2):
+                continue
+            for lim, sign in ((r[hi], 1), (r[lo], -1)):
+                if np.isfinite(lim) and abs(r[val] - lim) <= TOUCH_TOL * max(1.0, abs(lim)):
+                    r[sat] = sign
+                    if sat == 9 and r[10] == 0:
+                        r[10] = 1   # 사각 한계
+                    break
     return a
 
 

@@ -27,7 +27,7 @@ from load_case import ACDCCase, TABLE_ORDER
 
 # AC-only일 때 비워 둘 DC 계열 테이블과 기본 열 개수(빈 표라 값에는 영향 없음).
 _EMPTY_DC_COLS = {
-    "DC_Bus_dat": 6,
+    "DC_Bus_dat": 8,
     "DC_Line_dat": 8,
     "DC_gen_dat": 9,
     "IC_dat": 21,
@@ -786,15 +786,15 @@ def matacdc_to_case(ac_path: str | Path, dc_path: str | Path) -> ACDCCase:
     # ---- AC Gen Data (n x 15) — inf 버스는 slack 더미 발전기를 만든다 ----
     AC_gen = _matacdc_gen(bus, gen, baseMVA, pos)
 
-    # ---- DC Bus Data (n x 6) ----
+    # ---- DC Bus Data (n x 8 — 앱 2.3 DC 부하 ZIP) ----
     ndc = busdc.shape[0]
-    DC_Bus = np.full((ndc, 6), np.nan)
+    DC_Bus = np.full((ndc, 8), np.nan)
     DC_Bus[:, 0] = busdc[:, 0]            # DC 버스 번호
-    DC_Bus[:, 1] = 0.0                    # Nominal Current
-    DC_Bus[:, 2] = busdc[:, 4]            # V0 [pu]
-    DC_Bus[:, 3] = busdc[:, 5] * 1e3      # V_base [V]
-    DC_Bus[:, 4] = busdc[:, 7]            # VM min
-    DC_Bus[:, 5] = busdc[:, 6]            # VM max
+    DC_Bus[:, 1:4] = (0.0, 0.0, 1.0)      # Z_p · I_p · P_p — 정전력 (MatACDC 부하와 같다)
+    DC_Bus[:, 4] = busdc[:, 4]            # V0 [pu]
+    DC_Bus[:, 5] = busdc[:, 5] * 1e3      # V_base [V]
+    DC_Bus[:, 6] = busdc[:, 7]            # VM min
+    DC_Bus[:, 7] = busdc[:, 6]            # VM max
 
     # ---- DC Line Data (n x 8) ----
     posdc = {int(b): i for i, b in enumerate(busdc[:, 0])}

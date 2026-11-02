@@ -73,7 +73,8 @@ for rel in ("cases_v2/AConly_case118_v2.xlsx",
     check(f"{name} 못 잰 선로가 세어지나", unrated_lines(sol, 0) > 0, True)
 
 print("\n[2] 🚨 정격이 있는 케이스는 건수가 그대로인가")
-for rel, want in (("cases_v2/ACDC_case24_MatACDC_v2.xlsx", 2),
+#   case24 는 저장소 사례를 쓴다 — v14 사본은 IC6 가 CV_AC 라 알고리즘 v17 이 막는다 (2026-11-01)
+for rel, want in ((str(REPO / "cases/ACDC_case24_MatACDC.xlsx"), 2),
                   ("cases_v2/ACDC_71bus_v2.xlsx", 13),
                   ("cases_v2/AConly_case30_v2.xlsx", 1),
                   ("cases_v2/AConly_case6495rte_v2.xlsx", 20)):
@@ -98,7 +99,7 @@ check("꺼진 것이 실제로 있나 (시험이 헛돌지 않게)", n_all > n_o
 print("\n[5] 부하율 그래프의 세로축이 성한가 (정격이 있는 케이스)")
 # ⚠️ 예전에는 여기서 case118 을 썼는데, 이제 그 케이스는 **그래프가 아니라 안내**를
 #    돌려준다([6]). inf 가 축을 깨뜨리지 않는지는 [8](일부만 못 재는 경우)이 지킨다.
-sol = solve("cases_v2/ACDC_case24_MatACDC_v2.xlsx")
+sol = solve(str(REPO / "cases/ACDC_case24_MatACDC.xlsx"))
 view = CH.loading_chart(__import__("app").LIGHT, sol, 0)
 check("그래프가 만들어지나", view is not None, True)
 if view is not None:
@@ -140,7 +141,7 @@ if w is not None and not isinstance(w, QChartView):
     check("꺼진 선로를 빼고 32 라 말하나", "32" in txt, True)
 
 print("\n[8] 일부만 못 재면 나머지를 그리고 제목에 몇 개인지 붙이나")
-sol = solve("cases_v2/ACDC_case24_MatACDC_v2.xlsx")
+sol = solve(str(REPO / "cases/ACDC_case24_MatACDC.xlsx"))
 br = sol.at("Branch", 0)
 br[:3, col_index(sol.cols("Branch"), "Capacity[MVA]")] = 0.0   # 손으로 3개만 0 으로
 w = CH.loading_chart(APP.LIGHT, sol, 0)
