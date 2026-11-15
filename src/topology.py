@@ -817,6 +817,137 @@ def layered_layout(g):
     return pos
 
 
+# ─────────────────────────────────────────── 퍼짐 배치 (앱 2.3 · 2026-11-02)
+# 사용자: *"가운데를 기준으로 쫙 퍼지는 느낌이면 좋겠는데 전체 모양이 너무 세로도
+# 아니고 가로도 아닌"*. 층 배치(`layered_layout`)는 열이 길어져 case24 가 세로로
+# 640 × 1227 이 됐다. 시안 P7 일반판(케이스 8개로 확인)을 numpy 만으로 옮긴다 —
+# networkx 는 앱 의존 패키지가 아니다.
+LAYOUT = "spread"          # "spread"(퍼짐) / "layered"(층) — 계통도 위 단추가 바꾼다
+# 🚨 퍼짐 배치는 **버스가 많으면 끝나지 않는다** (2026-11-15 · `test_big_case` 가 잡음). 모든 버스 쌍의
+#    거리(파이썬 BFS n 번)와 n×n 행렬을 300번 고치는 셈이라 6,495버스에서 몇 분이 지나도 화면이 멎어 있었다.
+#    이보다 큰 계통은 층 배치로 그린다.
+# ponytail: 400 은 어림값(118버스는 바로 그려짐) — 큰 계통에서 퍼짐이 필요하면 거리 계산을 scipy 로 바꾼다.
+SPREAD_MAX = 400
+
+
+def layout_for(g):
+    """이 계통을 실제로 그릴 배치 — 고른 것이 퍼짐이어도 버스가 많으면 층."""
+    return LAYOUT if len(g.keys) <= SPREAD_MAX else "layered"
+
+
+def _hops(adj, src):
+    """src 에서 몇 단계인가 (BFS). 닿지 않으면 -1."""
+    d = np.full(len(adj), -1, dtype=int)
+    d[src] = 0
+    q = [src]
+    for i in q:
+        for j in adj[i]:
+            if d[j] < 0:
+                d[j] = d[i] + 1
+                q.append(j)
+    return d
+
+
+def _stress(D, iters=300):
+    """그래프 거리 D 를 화면 거리로 옮기는 힘-균형 배치 (stress 최소화 · SMACOF)."""
+    n = len(D)
+    if n <= 2:
+        return np.array([[float(i), 0.0] for i in range(n)])
+    W = np.zeros_like(D)
+    m = D > 0
+    W[m] = 1.0 / D[m] ** 2
+    V = -W.copy()
+    V[np.diag_indices(n)] = W.sum(1)
+    Vp = np.linalg.pinv(V)
+    rs = np.random.RandomState(1)
+    X = rs.uniform(-1, 1, (n, 2)) * D.max()
+    for _ in range(iters):
+        dx = np.sqrt(((X[:, None, :] - X[None, :, :]) ** 2).sum(-1))
+        B = np.zeros_like(D)
+        nz = dx > 1e-9
+        B[nz] = -W[nz] * D[nz] / dx[nz]
+        B[np.diag_indices(n)] = -B.sum(1)
+        Xn = Vp @ B @ X
+        if np.abs(Xn - X).max() < 1e-4:
+            X = Xn
+            break
+        X = Xn
+    return X
+
+
+def spread_layout(g):
+    """가운데에서 사방으로 퍼지는 배치. 0~1 정사각형 좌표.
+
+    1) 가운데 = DC 망(AC·DC 가 다 있으면) · 아니면 계통 한가운데 버스
+       (다른 버스까지 가장 먼 거리가 제일 짧은 버스).
+    2) 힘-균형 배치로 대략의 자리 — DC 버스는 보이지 않는 중심점에 묶어 가운데로 당긴다.
+    3) 가운데 기준 극좌표로 바꿔 각도 = 원래 각도와 고른 간격을 반반,
+       반지름 = (가운데에서 몇 단계, 원래 거리) 순위의 제곱근 → 원 안을 고르게 채운다.
+    4) DC 망은 크기만큼 가운데 원을 키워 그 안에 둔다(71버스 DC 33개).
+    """
+    n = len(g.keys)
+    if n == 0:
+        return np.zeros((0, 2))
+    adj = [set() for _ in range(n)]
+    for a, b, _k in g.edges:
+        adj[a].add(b); adj[b].add(a)
+    is_dc = [g.kind[i] == "DC" for i in range(n)]
+    has_dc = any(is_dc) and not all(is_dc)
+    if has_dc:                                   # 보이지 않는 중심점 = n
+        adj.append({i for i in range(n) if is_dc[i]})
+        for i in adj[n]:
+            adj[i].add(n)
+        src = n
+    else:
+        ecc = []
+        for i in range(n):
+            h = _hops(adj, i)
+            ecc.append((-(h >= 0).sum(), h.max()))   # 큰 덩어리 먼저, 그다음 이심률
+        src = min(range(n), key=lambda i: ecc[i])
+    N = len(adj)
+    D = np.array([_hops(adj, i) for i in range(N)], dtype=float)
+    D[D < 0] = D.max() + 1                       # 떨어진 덩어리
+    X = _stress(D)
+    rel = X - X[src]
+    ang = np.arctan2(rel[:, 1], rel[:, 0])
+    rad = np.hypot(rel[:, 0], rel[:, 1])
+    hop = D[src]
+    core = [i for i in range(n) if is_dc[i]] if has_dc else [src]
+    outer = [i for i in range(n) if i not in set(core)]
+    pos = np.zeros((n, 2))
+    if outer:
+        srt = sorted(outer, key=lambda i: ang[i])
+        a0 = ang[srt[0]]
+        for k, i in enumerate(srt):
+            ang[i] = 0.5 * ang[i] + 0.5 * (a0 + 2 * np.pi * k / len(srt))
+        r_in = 0.0
+        if has_dc:
+            r_in = min(0.62, max(0.30, np.sqrt(len(core) / n) * 1.05))
+        rk = sorted(outer, key=lambda i: (hop[i], rad[i]))
+        for k, i in enumerate(rk):
+            r = r_in + (1 - r_in) * np.sqrt((k + 0.5) / len(rk))
+            pos[i] = [np.cos(ang[i]) * r, np.sin(ang[i]) * r]
+        if has_dc:
+            P = rel[core]
+            sc = r_in * 0.8 / max(np.hypot(P[:, 0], P[:, 1]).max(), 1e-9)
+            pos[core] = P * sc
+    # 겹침 풀기 — 가까운 버스끼리 밀어낸다 (그림 좌표 −1~1 에서)
+    mind = 1.6 / max(np.sqrt(n), 1.0) * 0.55
+    rs = np.random.RandomState(0)
+    pos += rs.uniform(-1e-3, 1e-3, pos.shape)
+    for _ in range(200):
+        dv = pos[:, None, :] - pos[None, :, :]
+        dd = np.maximum(np.hypot(dv[..., 0], dv[..., 1]), 1e-6)
+        np.fill_diagonal(dd, 1e9)
+        push = np.clip(mind - dd, 0, None)
+        if push.max() < 1e-4:
+            break
+        pos += (dv / dd[..., None] * push[..., None] * 0.5).sum(1)
+    lo, hi = pos.min(0), pos.max(0)
+    span = max((hi - lo).max(), 1e-9)
+    return (pos - lo) / span + (1 - (hi - lo) / span) / 2
+
+
 # ─────────────────────────────────────────── 옮긴 자리 기억하기
 def load_places(case_name):
     try:
@@ -938,8 +1069,9 @@ class TopologyView(QFrame):
     def __init__(self, g, places, case_name, c, on_move=None,
                  show_violations=False, overlay=None,
                  vstyle="badge", cstyle="badge", on_line_click=None,
-                 zoom=1.0, on_zoom=None, on_bus_click=None):
+                 zoom=1.0, on_zoom=None, on_bus_click=None, layout="layered"):
         super().__init__()
+        self.spread = layout == "spread"     # 퍼짐 배치 — 곧은 선 · 짧은 막대 · 정사각형
         self.setObjectName("plotclear")
         self.g, self.c, self.case_name = g, c, case_name
         self.on_move = on_move
@@ -965,7 +1097,7 @@ class TopologyView(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
-        self.pos = layered_layout(g)
+        self.pos = spread_layout(g) if self.spread else layered_layout(g)
         for i, key in enumerate(g.keys):
             if key in places:
                 self.pos[i] = places[key]
@@ -1082,6 +1214,16 @@ class TopologyView(QFrame):
            겹쳐서 못 읽는 것보다 넘쳐서 미는 편이 낫다.
         """
         u = self.unit()
+        if self.spread:
+            # 퍼짐 배치는 정사각형 하나 — 버스 수의 제곱근만큼 한 변을 키운다
+            # (case24 57버스 ≈ 한 변 640px · 118버스 ≈ 650px). 화면이 더 크면 화면대로.
+            L, m = self._pads()
+            side = u * 3.6 * np.sqrt(max(1, len(self.g.keys))) + 2 * m
+            z = float(getattr(self, "zoom", 1.0))
+            bw, bh_ = self._logical()
+            self.setMinimumWidth(int(max(side, bw) * z))
+            self.setMinimumHeight(int(max(side, bh_) * z))
+            return
         cols_of = {}
         for i in range(len(self.g.keys)):
             k = round(float(self.pos[i][0]), 3)
@@ -1165,12 +1307,19 @@ class TopologyView(QFrame):
         self._base_wh = (max(1.0, self.width() / z), max(1.0, self.height() / z))
         super().resizeEvent(ev)
 
-    def _px(self):
+    def _frame(self):
+        """그림 좌표 0~1 → 화면 (원점 x, 원점 y, 폭, 높이). 퍼짐 배치는 정사각형을 가운데에."""
         L, m = self._pads()
         lw, lh = self._logical()
-        w = max(1, lw - L - m)
-        h = max(1, lh - 2 * m)
-        return (self.pos * np.array([w, h])) + np.array([L, m])
+        if self.spread:
+            pad = max(m, self.unit() * 1.6)          # 발전기 기호가 바깥으로 달린다
+            s = max(1, min(lw, lh) - 2 * pad)
+            return (lw - s) / 2, (lh - s) / 2, s, s
+        return L, m, max(1, lw - L - m), max(1, lh - 2 * m)
+
+    def _px(self):
+        x0, y0, w, h = self._frame()
+        return (self.pos * np.array([w, h])) + np.array([x0, y0])
 
     def unit(self):
         """기호 하나의 기준 크기. **버스가 많을수록 줄인다**(사용자 확정).
@@ -1235,6 +1384,15 @@ class TopologyView(QFrame):
         """
         n = len(self.g.keys)
         u = self.unit()
+        if self.spread:
+            # 퍼짐 배치 — 버스 가운데끼리 **곧게** 잇는다. 막대는 짧게(연결 수와 무관),
+            # 세로 구간이 없으니 점프도 없다.
+            half = {i: (u * 0.55 if self.g.role[i] == "3권선" else u * 0.62)
+                    for i in range(n)}
+            routes = [[(float(xy[a][0]), float(xy[a][1])),
+                       (float(xy[b][0]), float(xy[b][1]))]
+                      for a, b, _k in self.g.edges]
+            return half, {}, routes, []
         inc = {i: [] for i in range(n)}
         for ei, (a, b, k) in enumerate(self.g.edges):
             inc[a].append((ei, b)); inc[b].append((ei, a))
@@ -1474,7 +1632,17 @@ class TopologyView(QFrame):
         taken = []                       # 이미 자리를 차지한 것들
         for pts in routes:
             for k in range(len(pts) - 1):
-                taken.append(self._seg_box(pts[k], pts[k + 1], 1.5))
+                a, b = pts[k], pts[k + 1]
+                if self.spread:
+                    # 비스듬한 선을 네모 하나로 감싸면 번호·기호 자리가 다 막힌다 → 잘게 나눠 감싼다
+                    steps = max(1, int(np.hypot(b[0] - a[0], b[1] - a[1]) / (u * 0.6)))
+                    for s in range(steps):
+                        t0, t1 = s / steps, (s + 1) / steps
+                        taken.append(self._seg_box(
+                            (a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0),
+                            (a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1), 1.5))
+                else:
+                    taken.append(self._seg_box(a, b, 1.5))
         bars = []
         for i in range(len(self.g.keys)):
             x, y = float(xy[i][0]), float(xy[i][1])
@@ -1917,14 +2085,11 @@ class TopologyView(QFrame):
             else:
                 self.setCursor(Qt.ArrowCursor)
             return
-        L, m = self._pads()          # _px 와 같은 여백을 써야 끌린 자리가 안 어긋난다
-        lw, lh = self._logical()     # 배율을 되돌린 크기 (i17)
-        w = max(1, lw - L - m)
-        h = max(1, lh - 2 * m)
+        x0, y0, w, h = self._frame()  # _px 와 같은 틀을 써야 끌린 자리가 안 어긋난다
         lp = self._to_logical(ev.position())
         self.pos[self.drag] = [
-            min(1.0, max(0.0, (lp.x() - L) / w)),
-            min(1.0, max(0.0, (lp.y() - m) / h))]
+            min(1.0, max(0.0, (lp.x() - x0) / w)),
+            min(1.0, max(0.0, (lp.y() - y0) / h))]
         self.update()
 
     def mouseReleaseEvent(self, ev):
@@ -1984,11 +2149,14 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
         overlay = make_overlay(g, sol, t)
     else:
         overlay = {"load": {}, "vbad": voltage_bad(g, sol, t), "icbad": set()}
-    view = TopologyView(g, load_places(name), name, c,
-                        on_move=lambda pl: save_places(name, pl),
+    # 끌어 옮긴 자리는 배치마다 따로 적는다 — 층 배치의 자리가 퍼짐 배치를 덮지 않게
+    lay_now = layout_for(g)
+    pkey = name if lay_now == "layered" else f"{name}|퍼짐"
+    view = TopologyView(g, load_places(pkey), name, c,
+                        on_move=lambda pl: save_places(pkey, pl),
                         show_violations=show_violations, overlay=overlay,
                         on_line_click=on_line_click,
-                        zoom=zoom, on_bus_click=on_bus_click)
+                        zoom=zoom, on_bus_click=on_bus_click, layout=lay_now)
     box = QScrollArea()
     box.setObjectName("plotclear")
     box.setWidget(view)
@@ -2038,6 +2206,34 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
         leg.setStyleSheet(f"color:{c['muted']};font-size:12px;")
         bar.addSpacing(6); bar.addWidget(leg)
     bar.addStretch()
+
+    # ── 배치: 퍼짐 / 층 (앱 2.3 · 2026-11-02) ──
+    # 고르면 모듈 값만 바꾸고 앱에 다시 그려 달라고 한다(위반 보기 토글과 같은 길).
+    lwrap = QFrame(); lwrap.setObjectName("segwrap"); lwrap.setFixedHeight(40)
+    lwrap.setStyleSheet(f"#segwrap {{ background:{c['bg']};border:1px solid "
+                        f"{c['border']};border-radius:9px; }}")
+    lh = QHBoxLayout(lwrap); lh.setContentsMargins(3, 3, 3, 3); lh.setSpacing(3)
+    for txt, val, tip in [("퍼짐", "spread", "가운데에서 사방으로 퍼지게 놓는다"),
+                          ("층", "layered", "AC 왼쪽 · DC 오른쪽, 층마다 열로 놓는다")]:
+        b = QPushButton(txt)
+        b.setObjectName("seg_on" if lay_now == val else "seg_off")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFixedSize(48, 34)
+        b.setStyleSheet("padding:0px;")
+        b.setToolTip(tip)
+        if val == "spread" and len(g.keys) > SPREAD_MAX:
+            b.setEnabled(False)
+            b.setToolTip(f"버스가 {len(g.keys):,}개라 퍼짐 배치를 쓸 수 없습니다 ({SPREAD_MAX}개까지)")
+
+        def _pick(_=False, v=val):
+            global LAYOUT
+            if LAYOUT != v:
+                LAYOUT = v
+                if on_toggle is not None:
+                    on_toggle(show_violations)
+        b.clicked.connect(_pick)
+        lh.addWidget(b)
+    bar.addWidget(lwrap)
 
     # ── 확대·축소 (2026-08-19 사용자 요청) ──
     # 계통도는 버스가 많을수록 기호를 줄여 그리므로(`unit`), 큰 계통에서는 번호가
@@ -2102,11 +2298,11 @@ def topology_view(c, sol, t=0, show_violations=False, on_toggle=None,
         rb = QPushButton("자리 되돌리기")
         rb.setFixedHeight(40)
         rb.setCursor(Qt.PointingHandCursor)
-        moved = has_places(name)
+        moved = has_places(pkey)
         rb.setEnabled(moved)
         rb.setToolTip("끌어서 옮긴 버스 자리를 지우고 처음 배치로 되돌립니다"
                       if moved else "이 계통은 아직 버스를 옮긴 적이 없습니다")
-        rb.clicked.connect(lambda: on_reset_places(name))
+        rb.clicked.connect(lambda: on_reset_places(pkey))
         bar.addSpacing(6)
         bar.addWidget(rb)
 

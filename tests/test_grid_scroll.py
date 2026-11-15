@@ -115,6 +115,10 @@ pump(0.3)
 
 
 def open_grid_tab():
+    # 앱 2.3 — 계통 데이터는 사이드바에서 간다(결과는 개요부터 떠서 표 탭이 처음엔 없다 · 2026-11-15)
+    win.nav_go("계통 데이터")
+    pump(0.5)
+    return True
     for tw in win.findChildren(QTabWidget):
         if not tw.isVisible():
             continue

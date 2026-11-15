@@ -36,6 +36,8 @@ def ok(cond, what, note=""):
 
 def tab_now(win):
     tt = win._tabs
+    if tt is None:      # 앱 2.3 — 개요 · 점검 화면에는 표 탭이 없다. 앱이 기억하는 자리로 본다 (2026-11-15)
+        return APP._tab_base(win.table_tab)
     return APP._tab_base(tt.tabText(tt.currentIndex()))
 
 
@@ -49,6 +51,7 @@ case = load_case(str(CASE))
 win.thread = Fake(case)
 win._last_path = str(CASE)
 win._solved(app_engine.solve(case))
+win.open_details()          # 앱 2.3 — 결과는 개요부터 뜬다. 표 탭은 그래프와 표 화면에 있다 (2026-11-15)
 
 print("조건을 바꿔도 탭에 머무나")
 ok(tab_now(win) == "AC 결과", "처음엔 AC 결과", tab_now(win))

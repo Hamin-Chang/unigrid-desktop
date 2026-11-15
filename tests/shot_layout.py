@@ -36,6 +36,15 @@ def abs_rect(w, root):
 
 SKIP = (QScrollArea, QSplitter, QAbstractScrollArea)
 
+
+def backdrop(w):
+    """일부러 다른 것 **뒤에 깔아 둔** 바탕인가 (2026-11-15 · 앱 2.3 새 화면).
+
+    사이드바의 고른 칸 판(`navhl`)은 메뉴 줄 아래에 깔리고, 개요 요약 카드의 잘린 계통도
+    (`TopoMini`)는 글 뒤에 깔린다. 둘 다 겹치라고 만든 것이라 「겹침」 으로 세지 않는다.
+    """
+    return w.objectName() == "navhl" or w.__class__.__name__ in ("TopoMini", "_Cover", "_Dim", "_Ripple")
+
 def check(root, tag, out):
     """한 화면을 훑는다."""
     # ── 1) 형제 겹침 ──
@@ -53,6 +62,8 @@ def check(root, tag, out):
             for j in range(i + 1, len(vis)):
                 a, b = vis[i], vis[j]
                 if a.isAncestorOf(b) or b.isAncestorOf(a):
+                    continue
+                if backdrop(a) or backdrop(b):
                     continue
                 ra, rb = a.geometry(), b.geometry()
                 ov = ra.intersected(rb)
@@ -134,6 +145,17 @@ for _ in range(60):
 pump(1.2)
 
 found = []
+# 앱 2.3 — 결과는 개요부터 뜬다. 개요 · 점검 · 다이나믹 개요를 먼저 훑고, 그래프와 표 화면으로 간다.
+check(win.centralWidget(), "밝게·개요", found)
+win.nav_go("점검"); pump(1.0)
+check(win.centralWidget(), "밝게·점검", found)
+win.nav_go("계통 데이터"); pump(1.0)
+check(win.centralWidget(), "밝게·계통 데이터", found)
+win.nav_go("결과"); pump(0.8)
+win.set_mode("다이나믹"); pump(1.0)
+check(win.centralWidget(), "밝게·다이나믹 개요", found)
+win.set_mode("스냅샷"); pump(0.8)
+win.open_details(); pump(1.0)
 root = win.centralWidget()
 check(root, "밝게·전압", found)
 check_tables(root, "밝게·전압", found)

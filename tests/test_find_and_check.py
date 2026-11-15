@@ -85,7 +85,8 @@ ok(len(win.find_rows("IC_dat", ics)) == 3, "AC 쪽 번호로도 같은 3대")
 print("\n2) 좁힌 채로 끄기 — 화면 줄 ≠ 진짜 줄")
 win.grid_key = "AC_Line_dat"
 win.grid_find = "34"
-win.rebuild()
+# 앱 2.3 — 결과는 개요부터 뜬다. 표는 사이드바 「계통 데이터」 로 가야 만들어진다 (2026-11-15)
+win.nav_go("계통 데이터")
 seen = list(win._grid_rows)
 ok(seen == win.find_rows("AC_Line_dat", lines), "표가 고른 줄만 들고 있다",
    f"{len(seen)}줄")

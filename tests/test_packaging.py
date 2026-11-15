@@ -103,7 +103,12 @@ appsrc = (REPO / "src" / "app.py").read_text(encoding="utf-8")
 check("앱에 정보 창이 있나", "class AboutDialog" in appsrc, True)
 check("정보 창에 저작권 고지", "1984-2024 The MathWorks, Inc." in appsrc, True)
 # 🚨 고지에 **닿을 수 있어야** 뜻이 있다 — 시작 화면과 위쪽 줄 둘 다에서
-check("정보 단추가 두 곳에 있나", appsrc.count('AboutDialog(self, c).exec()'), 2)
+# 앱 2.3 (2026-11-03) — 위쪽 줄이 사이드바가 됐다. 시작 화면의 단추 · 사이드바의 「정보」 둘을 본다.
+navsrc = (REPO / "src" / "navside.py").read_text(encoding="utf-8")
+check("시작 화면에 정보 단추가 있나",
+      "about.clicked.connect(lambda: AboutDialog(self, c).exec())" in appsrc, True)
+check("사이드바에 정보 단추가 있나",
+      "inf.clicked.connect(app.open_about)" in navsrc and "def open_about" in appsrc, True)
 
 check("spec 이 EULA 를 넣나", "EULA.txt" in spec, True)
 for f, why in [("build_mac.sh", "맥 빌드"), ("build_win.bat", "윈도우 빌드"),

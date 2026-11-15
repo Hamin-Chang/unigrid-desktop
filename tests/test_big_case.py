@@ -73,6 +73,8 @@ print("\n2) 화면에 뜨는 말")
 
 
 def note_text(w):
+    # 앱 2.3 — 결과는 개요부터 뜬다. 접힘 안내는 그래프와 표 화면에 있다 (2026-11-15)
+    w.overview_on = False
     mid = w.center()
     for lb in mid.findChildren(QLabel):
         if "그래프를 접" in lb.text() or "접어 두었" in lb.text():

@@ -14,7 +14,7 @@ from __future__ import annotations
 from math import ceil
 
 import numpy as np
-from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QScatterSeries,
+from PySide6.QtCharts import (QChart, QChartView, QLineSeries, QScatterSeries, QLegend,
                               QValueAxis, QCategoryAxis, QBarSet, QBarSeries,
                               QStackedBarSeries, QBarCategoryAxis,
                               QAbstractBarSeries)
@@ -35,6 +35,7 @@ MAX_TICKS = 25          # 버스가 많으면 x축 글자를 솎는다 (MATLAB �
 # (`Proto._solved`). 시각 바꾸기·위반 보기처럼 자주 다시 그리는 때는 꺼 둔다 — 돌면
 # 깜빡여서 못 쓴다(`tests/shot_motion.py` 「안 넣은 곳」).
 SERIES_ANIM = False
+PLAY_MAX_POINTS = 3000
 
 
 # ─────────────────────────────────────────── 공통 틀
@@ -46,14 +47,15 @@ def _new_chart(c, title):
     #    좁히면 눈금 글자가 전부 "..." 로 줄어든다. 기본값을 그대로 쓴다.
     ch.setTitleBrush(QColor(c["text"]))
     f = QFont()
-    f.setPointSize(11)
+    f.setPixelSize(15)
     f.setBold(True)
     ch.setTitleFont(f)
     # 범례는 오른쪽에 세로로 — 위에 깔면 가뜩이나 낮은 그래프의 한 줄을 더 먹는다
     ch.legend().setAlignment(Qt.AlignRight)
+    ch.legend().setMarkerShape(QLegend.MarkerShapeCircle)   # 개요 그래프의 범례(둥근 점)와 같은 꼴 (2026-11-15)
     ch.legend().setLabelColor(QColor(c["muted"]))
     lf = QFont()
-    lf.setPointSize(9)
+    lf.setPixelSize(12)
     ch.legend().setFont(lf)
     if SERIES_ANIM:
         ch.setAnimationOptions(QChart.SeriesAnimations)
@@ -83,6 +85,12 @@ def _view(ch, c):
     # … 전수조사해서 반영해"*). 막대가 있으면 막대가 튀어 오르고, 없으면 선이 그려진다.
     # 그래프마다 따로 고르는 것(전압 · 부하율 · 곡선)은 만든 쪽이 이 뒤에 다시 단다.
     bars = [b for sr in ch.series() if isinstance(sr, QAbstractBarSeries) for b in sr.barSets()]
+    # 점 · 막대가 많으면 움직임을 안 단다 — 장면마다 수천 점을 다시 넣으면 끊긴다(판이 밝아지는 것만 남는다).
+    # ponytail: 3,000 은 어림값 — 큰 계통에서 끊기면 낮춘다.
+    n_pts = sum(b.count() for b in bars) + sum(
+        sr.count() for sr in ch.series() if isinstance(sr, (QLineSeries, QScatterSeries)))
+    if n_pts > PLAY_MAX_POINTS:
+        return v
     if bars:
         _bars_play(v, bars)
     else:
@@ -99,10 +107,10 @@ def _style_axis(ax, c, title=""):
     ax.setLinePenColor(QColor(c["border"]))
     ax.setGridLineColor(QColor(c["border"]))
     f = QFont()
-    f.setPointSize(9)
+    f.setPixelSize(12)
     ax.setLabelsFont(f)
     tf = QFont()
-    tf.setPointSize(10)
+    tf.setPixelSize(12)
     ax.setTitleFont(tf)
     return ax
 
@@ -171,6 +179,9 @@ def _trace_play(view, series, by_index=False):
     `by_index` = 가로값이 아니라 **점 차례**로 그린다 — PV 곡선은 코 끝에서 가로값이 되돌아가
     가로값으로 자르면 위아래 가지가 한꺼번에 나타난다.
     """
+    if sum(s.count() for s in series) > PLAY_MAX_POINTS:     # 점이 많으면 움직임 없이 (판만 밝아진다)
+        view._play = None
+        return
     full = [[QPointF(p) for p in s.points()] for s in series]
     xs = [p.x() for pts in full for p in pts]
     if not xs:
@@ -212,6 +223,9 @@ def _trace_play(view, series, by_index=False):
 
 def _bars_play(view, sets):
     """부하율 — 막대가 왼쪽부터 하나씩 «파박» 튀어 오른다(살짝 넘쳤다 제자리로)."""
+    if sum(s.count() for s in sets) > PLAY_MAX_POINTS:
+        view._play = None
+        return
     full = [[s.at(i) for i in range(s.count())] for s in sets]
     n = max((len(v) for v in full), default=0)
     span = 0.3                           # 막대 하나가 자라는 길이(전체 대비)

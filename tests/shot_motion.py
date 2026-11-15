@@ -19,11 +19,24 @@ def pump(s=0.5):
     while time.time() < e: qapp.processEvents(); time.sleep(0.005)
 
 win = APP.Proto(); win.resize(1700, 1000); win.show(); pump(0.5)
+
+# 앱 2.3 C — 테마 스위치는 **시작 화면**에만 있다(결과 화면은 사이드바의 해 · 달 단추).
+# 계통을 열기 전에 본다: 손잡이가 미끄러진 뒤 테마가 바뀐다.
+_sw = next(b for b in win.findChildren(APP.ThemeSwitch) if b.isVisible())
+_dark0 = win.dark
+_sw.click(); pump(0.06)
+SW_MID = 0.0 < _sw._x < 1.0
+pump(0.7)
+SW_FLIP = win.dark != _dark0
+win.toggle_theme(); pump(0.7)
+
 win._start_solve(str(REPO / "cases" / "ACDC_case24_MatACDC_24h.xlsx"))
 for _ in range(60):
     pump(0.5)
     if getattr(win, "sol", None) is not None: break
 pump(1.2)
+# 앱 2.3 — 결과는 개요부터 뜬다. 아래는 그래프와 표 화면의 움직임을 재므로 그 화면으로 간다.
+win.open_details(); pump(1.0)
 
 def fading():
     # 앱 2.3 — 화면을 통째로 바꾸는 전환(테마)은 옛 화면 덮개가 옅어진다(`crossfade_from`)
@@ -70,24 +83,33 @@ ok.append(probe("set_violations",      lambda: win.set_violations(True), False))
 ok.append(probe("set_find",            lambda: win.set_find("106"), False))
 win.set_find("")
 
-print("\n── 사이드바 폭 모션 ──")
-before = win._side_sa.width()
-win.toggle_side(); pump(0.05)
+print("\n── 사이드바 — 고른 칸의 판이 미끄러진다 ──")
+# 앱 2.3 (2026-11-03) 부터 사이드바는 접지 않는다(`navside.NavSide`). 대신 메뉴를 누르면
+# 고른 칸의 판(`hl`)이 그 줄로 미끄러진다 — 그 자취를 잰다.
+nav = win._nav
+y0 = nav.hl.y()
+nav._click("점검")
 seen = []
-for _ in range(12):
+for _ in range(9):
     pump(0.025)
-    seen.append(win._side_sa.maximumWidth())
-pump(0.4)
-after = win._side_sa.width()
+    try:
+        seen.append(nav.hl.y())
+    except RuntimeError:          # 다 미끄러져 화면을 다시 그렸다
+        break
+pump(0.9)
 moved = len(set(seen)) > 2
-print(f"  {'✅' if moved else '🚨'} 폭 자취 {seen[:8]} …  {before} → {after}")
+print(f"  {'✅' if moved else '🚨'} 판 세로 자취 {seen[:8]} …  처음 {y0}")
 ok.append(moved)
-win.toggle_side(); pump(0.6)
+on = win._rail_on()
+print(f"  {'✅' if on == '점검' else '🚨'} 누른 뒤 고른 칸 = {on}")
+ok.append(on == "점검")
+win.nav_go("결과"); pump(0.6)
+win.open_details(); pump(1.0)
 
 print("\n── 앱 2.3 — 단추 누름 물결(D) · 대화상자(E) · 테마 스위치(C) ──")
 # D: 누르기만 하고 떼지 않는다(떼면 눌린 것이 되어 창이 뜰 수 있다)
 btn = next(b for b in win.findChildren(QPushButton)
-           if b.isVisible() and b.isEnabled() and b.text() == "정보")
+           if b.isVisible() and b.isEnabled() and "정보" in b.text())
 QTest.mousePress(btn, Qt.LeftButton); pump(0.05)
 rip = [ch for ch in btn.children() if type(ch).__name__ == "_Ripple"]
 print(f"  {'✅' if rip else '🚨'} 단추를 누르면 물결이 생긴다  ({len(rip)}개)")
@@ -103,14 +125,16 @@ print(f"  {'✅' if op < 0.99 else '🚨'} 대화상자가 투명에서 나타�
 ok.append(op < 0.99)
 pump(0.3); dlg.close(); pump(0.1)
 # C: 테마 스위치 — 손잡이가 미끄러진 뒤 테마가 바뀐다
-sw = next(b for b in win.findChildren(APP.ThemeSwitch) if b.isVisible())
+# (시작 화면에서 미리 재 둔 값 — 맨 위)
+print(f"  {'✅' if SW_MID else '🚨'} 손잡이가 미끄러진다 · {'✅' if SW_FLIP else '🚨'} 테마가 바뀐다")
+ok.append(SW_MID); ok.append(SW_FLIP)
+# 결과 화면에서는 사이드바의 달 단추로 바꾼다
+moon = next(b for b in win.findChildren(QPushButton) if b.isVisible() and b.toolTip() == "어두운 화면")
 dark0 = win.dark
-sw.click(); pump(0.06)
-mid = 0.0 < sw._x < 1.0
-pump(0.6)
-print(f"  {'✅' if mid else '🚨'} 손잡이가 미끄러진다 · {'✅' if win.dark != dark0 else '🚨'} 테마가 바뀐다")
-ok.append(mid); ok.append(win.dark != dark0)
-win.toggle_theme(); pump(0.6)
+moon.click(); pump(0.8)
+print(f"  {'✅' if win.dark != dark0 else '🚨'} 사이드바 달 단추로 테마가 바뀐다")
+ok.append(win.dark != dark0)
+win.toggle_theme(); pump(0.7)
 
 print("\n── 앱 2.3 — 전수검사로 더한 곳 ──")
 from PySide6.QtWidgets import QWidget as _QW
