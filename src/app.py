@@ -377,7 +377,7 @@ class CurveThread(QThread):
 #             case24 위반이 26 → 23건이 됐다(3건이 가짜였다).
 # ⚠️ 올릴 때는 `packaging/unigrid.iss` 의 AppVer 도 같이 올린다 —
 #    설치본 파일 이름이 거기서 나온다.
-VERSION = "2.2"
+VERSION = "2.3"
 
 
 # ─────────────────────────────────────────── 색
